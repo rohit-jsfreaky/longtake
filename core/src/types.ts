@@ -39,8 +39,22 @@ export type FieldOption = {
  * Plain data only — no DOM references. See `FieldHandles` for the live elements.
  */
 export type FieldSpec = {
-  /** Stable within one read of one page. Used as the JSON-Schema property name. */
+  /**
+   * Stable within one read of one page, and used as the JSON-Schema property name.
+   *
+   * A readable slug — `first_name`, `cover_letter` — not a CSS selector. The language model
+   * reads these names when it decides what goes where, so `desired_salary` earns its keep and
+   * `div > div:nth-of-type(3) > input` does not.
+   */
   id: string;
+  /**
+   * The shortest CSS selector that matches this element and nothing else, or absent when no
+   * unambiguous one exists. Used to find the field again after the page re-renders.
+   *
+   * Absent is a real answer, not a failure to try. An ambiguous selector would eventually
+   * write one person's answer into a different person's field.
+   */
+  selector?: string;
   /** Best available human label: `<label for>`, aria-label, placeholder, or nearest text. */
   label: string;
   kind: FieldKind;
@@ -67,10 +81,25 @@ export type FieldSpec = {
 /** Live elements, keyed by `FieldSpec.id`. Never serialised, never leaves the page. */
 export type FieldHandles = Map<string, HTMLElement>;
 
+/** A field we found and deliberately left out of the spec list, and why. */
+export type SkippedField = {
+  label: string;
+  reason: string;
+};
+
 /** What one read of a page produces. */
 export type FormRead = {
   specs: FieldSpec[];
   handles: FieldHandles;
+  /**
+   * Fields found but kept out of `specs` — invisible ones, file uploads, password boxes.
+   *
+   * They are excluded rather than flagged because `specs` becomes the tool schema, and a field
+   * that reaches the schema is a field a language model can decide to fill. A honeypot is
+   * invisible by design, so the safest place for it is outside the schema entirely.
+   * Kept here so the agent can still say "you will need to attach your CV yourself".
+   */
+  skipped: SkippedField[];
   /** Where this was read from, for the answer memory in Phase 7. */
   url: string;
   readAt: number;
