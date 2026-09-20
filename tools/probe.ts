@@ -5,7 +5,13 @@
  * so `reader.ts` and `writer.ts` are exercised against a page we do not own and cannot change —
  * which is the only test of them that means anything.
  */
-import { readForm, writeValues, harvestOptions, CORE_VERSION } from "@longtake/core";
+import {
+  readForm,
+  writeValues,
+  harvestOptions,
+  whenSettled,
+  CORE_VERSION,
+} from "@longtake/core";
 
 declare global {
   interface Window {
@@ -14,6 +20,7 @@ declare global {
       readForm: typeof readForm;
       writeValues: typeof writeValues;
       harvestOptions: typeof harvestOptions;
+      whenSettled: typeof whenSettled;
       /** Read, then open every dropdown to learn its real choices. */
       inspectDeep: () => Promise<unknown>;
       /** The live read, kept so a fill can reuse the same element handles. */
@@ -29,12 +36,15 @@ window.__longtake = {
   readForm,
   writeValues,
   harvestOptions,
+  whenSettled,
   inspect: () => {
     const read = readForm();
     window.__longtake.last = read;
     return { url: read.url, count: read.specs.length, specs: read.specs, skipped: read.skipped };
   },
   inspectDeep: async () => {
+    // Wait for a React form to finish drawing before reading it, then learn every dropdown.
+    await whenSettled();
     const read = await harvestOptions(readForm());
     window.__longtake.last = read;
     return { url: read.url, count: read.specs.length, specs: read.specs, skipped: read.skipped };

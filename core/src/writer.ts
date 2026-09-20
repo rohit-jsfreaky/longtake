@@ -12,27 +12,47 @@
  *   - A form containing answers a person never gave is worse than an empty form. They are
  *     about to put their name on it.
  *
- * ## The other rule
+ * ## Never guess an option
  *
- * **Never guess an option.** If a spoken answer does not clearly match one of the choices the
- * page offers, the field is left alone and the reason is reported, so the agent can ask. Quietly
- * falling back to the first option is how a form ends up claiming someone attended a university
- * they have never been to, or worked somewhere they never worked.
+ * If a spoken answer does not clearly match one of the choices the page offers, the field is
+ * left alone and the reason is reported, so the agent can ask. Quietly falling back to the
+ * first option is how a form ends up claiming someone attended a university they have never
+ * been to, or worked somewhere they never worked.
+ *
+ * ## Why this file is async, and why "written" is checked against the page
+ *
+ * A modern dropdown is not a `<select>`. It is a component that keeps its selection in its own
+ * state and ignores the DOM. Assigning `.value` to one **changes what the box looks like and
+ * submits nothing** — measured on a live Greenhouse form, where the raw input read back `"No"`
+ * while the component still held nothing at all.
+ *
+ * So a custom widget is operated the way a person operates it: open it, wait for the options to
+ * exist, press one. And success is never taken on trust — every write is confirmed by reading
+ * what the page now shows, not by reading back the value we just set. That distinction is the
+ * difference between a demo that looks like it works and a form that is actually filled in.
  */
 
+import { closeWidget, openWidget, optionNodes, pressOption } from "./dom-path";
 import type { FieldHandles, FieldSpec, SpokenValue } from "./types";
 
 export type WriteOutcome =
   | { fieldId: string; status: "written"; wrote: string }
   /** We chose not to write, and why. Always safe to show a person. */
   | { fieldId: string; status: "refused"; reason: string }
-  /** We wrote, and the page did not keep it. Usually a framework fighting back. */
+  /** We tried, and the page did not take it. Never reported as success. */
   | { fieldId: string; status: "rejected-by-page"; wrote: string; found: string };
+
+/** How long to let a component draw its options before giving up on it. */
+const WIDGET_OPEN_MS = 400;
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
  * React (and Vue, and Svelte) keep their own copy of an input's value and overwrite anything
  * set directly on the element. Going through the prototype's native setter updates the value
  * the framework is actually watching, so the change survives the next render.
+ *
+ * This works for text. It does **not** work for a component's selection — see the file note.
  */
 function setNativeValue(el: HTMLElement, value: string): void {
   const prototype =
@@ -50,13 +70,6 @@ function setNativeValue(el: HTMLElement, value: string): void {
   }
 }
 
-/**
- * Tell the page something changed, the way a person would have.
- *
- * `pointerdown` is in the list because of a lesson from an earlier project: Radix — and so
- * shadcn/ui, and so a large share of forms built in the last two years — opens menus on
- * `pointerdown` and ignores a synthetic `click` entirely.
- */
 function announce(el: HTMLElement, kinds: string[]): void {
   for (const kind of kinds) {
     el.dispatchEvent(new Event(kind, { bubbles: true }));
@@ -72,7 +85,7 @@ function normalise(text: string): string {
  *
  * Returns `null` rather than a best guess. Every caller treats `null` as "leave it and ask".
  */
-function matchOption(spec: FieldSpec, spoken: string): string | null {
+function matchOption(spec: FieldSpec, spoken: string): { value: string; label: string } | null {
   if (!spec.options || spec.options.length === 0) return null;
 
   const want = normalise(spoken);
@@ -81,15 +94,15 @@ function matchOption(spec: FieldSpec, spoken: string): string | null {
   const exact = spec.options.find(
     (option) => normalise(option.label) === want || normalise(option.value) === want,
   );
-  if (exact) return exact.value;
+  if (exact) return exact;
 
-  // One option contains the spoken words, or the spoken words contain it — but only if
-  // exactly one does. Two candidates means we do not actually know.
+  // One option contains the spoken words, or the spoken words contain it — but only if exactly
+  // one does. Two candidates means we do not actually know which was meant.
   const partial = spec.options.filter((option) => {
     const label = normalise(option.label);
     return label.length > 0 && (label.includes(want) || want.includes(label));
   });
-  if (partial.length === 1) return partial[0]!.value;
+  if (partial.length === 1) return partial[0]!;
 
   return null;
 }
@@ -103,6 +116,28 @@ function readBack(el: HTMLElement): string {
   return (el.textContent ?? "").trim();
 }
 
+/**
+ * What the page is now *showing* for this control.
+ *
+ * Deliberately reads the surrounding block rather than the element, because a component paints
+ * its chosen value into a sibling `div`, not into the input it happens to own.
+ */
+function renderedText(el: HTMLElement): string {
+  // Walk up until something has text, rather than guessing at a container by class name.
+  //
+  // A class-based `closest()` looks tidier and gets this wrong. React-Select nests
+  // `select__input` inside `select__input-container` inside `select__value-container`, and only
+  // the outermost of those three holds the chosen label — so `closest("[class*='select']")`
+  // lands on the empty middle one and reports every successful selection as a failure.
+  let node: HTMLElement | null = el.parentElement;
+  for (let hops = 0; node && hops < 5; hops++) {
+    const text = (node.innerText ?? "").replace(/\s+/g, " ").trim();
+    if (text) return text;
+    node = node.parentElement;
+  }
+  return "";
+}
+
 /** Every radio sharing this one's name, wherever in the document they live. */
 function radioGroup(el: HTMLElement): HTMLInputElement[] {
   const name = el.getAttribute("name");
@@ -113,7 +148,59 @@ function radioGroup(el: HTMLElement): HTMLInputElement[] {
   );
 }
 
-function writeOne(spec: FieldSpec, el: HTMLElement, spoken: SpokenValue): WriteOutcome {
+/**
+ * Operate a dropdown that is not a `<select>`: open it, find the option, press it.
+ *
+ * The options are found by diffing against what was already on screen, because they usually
+ * arrive through a **React portal** — rendered at the end of `<body>`, structurally nowhere near
+ * the field they belong to. Looking inside the trigger's container finds nothing.
+ */
+async function pickFromWidget(
+  spec: FieldSpec,
+  el: HTMLElement,
+  want: { value: string; label: string },
+): Promise<WriteOutcome> {
+  const before = new Set(optionNodes());
+  const wasShowing = renderedText(el);
+
+  openWidget(el);
+  await sleep(WIDGET_OPEN_MS);
+
+  const revealed = optionNodes().filter((option) => !before.has(option));
+  const target = revealed.find(
+    (option) => normalise((option.innerText ?? "").trim()) === normalise(want.label),
+  );
+
+  if (!target) {
+    closeWidget(el);
+    return {
+      fieldId: spec.id,
+      status: "rejected-by-page",
+      wrote: want.label,
+      found: revealed.length === 0 ? "the dropdown did not open" : "that choice was not offered",
+    };
+  }
+
+  pressOption(target);
+  await sleep(200);
+
+  // Confirmed against what the page now shows — never against the value we set ourselves.
+  const showing = renderedText(el);
+  const took = normalise(showing).includes(normalise(want.label)) && showing !== wasShowing;
+
+  if (!took) {
+    closeWidget(el);
+    return { fieldId: spec.id, status: "rejected-by-page", wrote: want.label, found: showing };
+  }
+
+  return { fieldId: spec.id, status: "written", wrote: want.label };
+}
+
+async function writeOne(
+  spec: FieldSpec,
+  el: HTMLElement,
+  spoken: SpokenValue,
+): Promise<WriteOutcome> {
   const { id } = spec;
 
   if (spec.kind === "file") {
@@ -124,10 +211,34 @@ function writeOne(spec: FieldSpec, el: HTMLElement, spoken: SpokenValue): WriteO
     };
   }
 
-  // Checkbox and radio groups: choose among the page's own options, or do nothing.
+  // ── Dropdowns ────────────────────────────────────────────────────────────────────
+  if (spec.kind === "select") {
+    const wanted = String(Array.isArray(spoken.value) ? spoken.value[0] : spoken.value);
+    const want = matchOption(spec, wanted);
+    if (!want) {
+      return {
+        fieldId: id,
+        status: "refused",
+        reason: `"${wanted}" does not clearly match any option on the page. Asking instead of guessing.`,
+      };
+    }
+
+    if (spec.custom) return pickFromWidget(spec, el, want);
+
+    setNativeValue(el, want.value);
+    announce(el, ["input", "change"]);
+    const found = readBack(el);
+    return found === want.value
+      ? { fieldId: id, status: "written", wrote: want.label }
+      : { fieldId: id, status: "rejected-by-page", wrote: want.label, found };
+  }
+
+  // ── Choices: radio groups, and checkbox groups sharing a name ────────────────────
   if (spec.kind === "radio" || (spec.kind === "multiselect" && spec.options)) {
     const wanted = Array.isArray(spoken.value) ? spoken.value : [String(spoken.value)];
-    const chosen = wanted.map((one) => matchOption(spec, one)).filter((v): v is string => v !== null);
+    const chosen = wanted
+      .map((one) => matchOption(spec, one))
+      .filter((v): v is { value: string; label: string } => v !== null);
 
     if (chosen.length === 0) {
       return {
@@ -137,16 +248,19 @@ function writeOne(spec: FieldSpec, el: HTMLElement, spoken: SpokenValue): WriteO
       };
     }
 
+    // A group built out of divs is pressed, not assigned.
+    if (spec.custom) return pickFromWidget(spec, el, chosen[0]!);
+
     if (spec.kind === "radio") {
-      const target = radioGroup(el).find((radio) => radio.value === chosen[0]);
+      const target = radioGroup(el).find((radio) => radio.value === chosen[0]!.value);
       if (!target) {
         return { fieldId: id, status: "refused", reason: "That option is no longer on the page." };
       }
       target.checked = true;
       announce(target, ["input", "change"]);
       return target.checked
-        ? { fieldId: id, status: "written", wrote: target.value }
-        : { fieldId: id, status: "rejected-by-page", wrote: target.value, found: "" };
+        ? { fieldId: id, status: "written", wrote: chosen[0]!.label }
+        : { fieldId: id, status: "rejected-by-page", wrote: chosen[0]!.label, found: "" };
     }
 
     const name = el.getAttribute("name");
@@ -159,46 +273,50 @@ function writeOne(spec: FieldSpec, el: HTMLElement, spoken: SpokenValue): WriteO
         )
       : [el as HTMLInputElement];
 
+    const wantedValues = chosen.map((c) => c.value);
     for (const box of boxes) {
-      const shouldCheck = chosen.includes(box.value);
+      const shouldCheck = wantedValues.includes(box.value);
       if (box.checked !== shouldCheck) {
         box.checked = shouldCheck;
         announce(box, ["input", "change"]);
       }
     }
-    return { fieldId: id, status: "written", wrote: chosen.join(", ") };
+    return { fieldId: id, status: "written", wrote: chosen.map((c) => c.label).join(", ") };
   }
 
-  // A lone checkbox is a yes or no.
+  // ── A lone checkbox, or a div wearing role="checkbox" / role="switch" ────────────
   if (spec.kind === "checkbox") {
-    const box = el as HTMLInputElement;
     const yes =
-      typeof spoken.value === "boolean" ? spoken.value : /^(yes|true|agree|accept)/i.test(String(spoken.value));
+      typeof spoken.value === "boolean"
+        ? spoken.value
+        : /^(yes|true|agree|accept|haan|ha\b)/i.test(String(spoken.value));
+
+    if (spec.custom) {
+      const already = el.getAttribute("aria-checked") === "true";
+      if (already !== yes) {
+        openWidget(el); // the same press sequence; a switch answers pointerdown too
+        await sleep(120);
+      }
+      const now = el.getAttribute("aria-checked") === "true";
+      return now === yes
+        ? { fieldId: id, status: "written", wrote: yes ? "checked" : "unchecked" }
+        : {
+            fieldId: id,
+            status: "rejected-by-page",
+            wrote: yes ? "checked" : "unchecked",
+            found: `aria-checked=${el.getAttribute("aria-checked")}`,
+          };
+    }
+
+    const box = el as HTMLInputElement;
     box.checked = yes;
     announce(box, ["input", "change"]);
-    return { fieldId: id, status: "written", wrote: yes ? "checked" : "unchecked" };
+    return box.checked === yes
+      ? { fieldId: id, status: "written", wrote: yes ? "checked" : "unchecked" }
+      : { fieldId: id, status: "rejected-by-page", wrote: String(yes), found: String(box.checked) };
   }
 
-  // A <select> must land on one of its own options.
-  if (spec.kind === "select" || spec.kind === "multiselect") {
-    const wanted = String(Array.isArray(spoken.value) ? spoken.value[0] : spoken.value);
-    const value = matchOption(spec, wanted);
-    if (value === null) {
-      return {
-        fieldId: id,
-        status: "refused",
-        reason: `"${wanted}" does not clearly match any option on the page. Asking instead of guessing.`,
-      };
-    }
-    setNativeValue(el, value);
-    announce(el, ["input", "change"]);
-    const found = readBack(el);
-    return found === value
-      ? { fieldId: id, status: "written", wrote: value }
-      : { fieldId: id, status: "rejected-by-page", wrote: value, found };
-  }
-
-  // A div pretending to be a text box.
+  // ── A div pretending to be a text box ───────────────────────────────────────────
   if (el.isContentEditable) {
     const text = String(spoken.value);
     el.textContent = text;
@@ -209,7 +327,7 @@ function writeOne(spec: FieldSpec, el: HTMLElement, spoken: SpokenValue): WriteO
       : { fieldId: id, status: "rejected-by-page", wrote: text, found };
   }
 
-  // Everything else is text of some shape.
+  // ── Everything else is text of some shape ───────────────────────────────────────
   let text = String(spoken.value);
   if (spec.maxLength && text.length > spec.maxLength) {
     text = text.slice(0, spec.maxLength);
@@ -227,52 +345,62 @@ function writeOne(spec: FieldSpec, el: HTMLElement, spoken: SpokenValue): WriteO
 /**
  * Write the values that were actually spoken, and nothing else.
  *
- * Returns one outcome per value handed in — including the refusals, which are the interesting
- * ones: they are what the agent asks about out loud.
+ * Returns one outcome per value handed in — including the refusals and the rejections, which
+ * are the interesting ones: they are what the agent asks about out loud.
+ *
+ * Sequential on purpose. Two dropdowns opening at once would fight over the same portal, and
+ * the option-diffing that locates them would attribute one widget's choices to the other.
  */
-export function writeValues(
+export async function writeValues(
   specs: FieldSpec[],
   handles: FieldHandles,
   values: SpokenValue[],
-): WriteOutcome[] {
+): Promise<WriteOutcome[]> {
   const byId = new Map(specs.map((spec) => [spec.id, spec]));
+  const outcomes: WriteOutcome[] = [];
 
-  return values.map((spoken): WriteOutcome => {
+  for (const spoken of values) {
     const spec = byId.get(spoken.fieldId);
     if (!spec) {
-      return {
+      outcomes.push({
         fieldId: spoken.fieldId,
         status: "refused",
         reason: "No such field on this page. The page may have changed since it was read.",
-      };
+      });
+      continue;
     }
 
     // ── The rule. Do not soften it. ────────────────────────────────────────────────
     if (!spoken.evidence || spoken.evidence.trim() === "") {
-      return {
+      outcomes.push({
         fieldId: spoken.fieldId,
         status: "refused",
         reason: "Nothing was spoken about this field, so it stays empty.",
-      };
+      });
+      continue;
     }
 
     if (spec.suspectedHoneypot) {
-      return {
+      outcomes.push({
         fieldId: spoken.fieldId,
         status: "refused",
         reason: "This field looks like it is there to catch software, not to be answered.",
-      };
+      });
+      continue;
     }
 
     const el = handles.get(spoken.fieldId);
     if (!el || !el.isConnected) {
-      return {
+      outcomes.push({
         fieldId: spoken.fieldId,
         status: "refused",
         reason: "That field is no longer on the page.",
-      };
+      });
+      continue;
     }
 
-    return writeOne(spec, el, spoken);
-  });
+    outcomes.push(await writeOne(spec, el, spoken));
+  }
+
+  return outcomes;
 }

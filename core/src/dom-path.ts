@@ -193,3 +193,105 @@ export function isVisible(el: Element): boolean {
 
   return true;
 }
+
+/* ────────────────────────── custom widgets ──────────────────────────
+ *
+ * The modern web does not build dropdowns out of `<select>`. It builds them out of a trigger,
+ * a portal, and a list of `role="option"` divs that do not exist until the trigger is pressed.
+ * Setting `.value` on any of it does nothing at all: the component keeps its own state and
+ * ignores the DOM. These three helpers are how Longtake operates such a thing the way a person
+ * would — open it, look at what appeared, press one of them.
+ */
+
+/**
+ * Open a custom widget.
+ *
+ * `pointerdown` comes first and it is not optional. Radix — and therefore shadcn/ui, and
+ * therefore a large share of forms built in the last two years — registers `pointerdown` and
+ * never registers `click`. A synthetic click leaves those menus shut.
+ */
+export function openWidget(el: HTMLElement): void {
+  el.scrollIntoView({ block: "center" });
+  try {
+    el.focus({ preventScroll: true });
+  } catch {
+    el.focus();
+  }
+  for (const type of ["pointerdown", "mousedown", "mouseup", "click"]) {
+    el.dispatchEvent(
+      new MouseEvent(type, { bubbles: true, cancelable: true, composed: true, view: window }),
+    );
+  }
+}
+
+/** Put a widget away again without choosing anything. */
+export function closeWidget(el: HTMLElement): void {
+  el.dispatchEvent(
+    new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true, composed: true }),
+  );
+  el.blur();
+}
+
+/**
+ * Press one option inside an open widget.
+ *
+ * Options often live in a **React portal** — rendered as a child of `<body>`, nowhere near the
+ * field they belong to — so they are never found by looking inside the trigger's container.
+ * Everything here searches the whole document and works out ownership by what appeared.
+ */
+export function pressOption(option: HTMLElement): void {
+  option.scrollIntoView({ block: "nearest" });
+  for (const type of ["pointerover", "pointerdown", "mousedown", "pointerup", "mouseup", "click"]) {
+    option.dispatchEvent(
+      new MouseEvent(type, { bubbles: true, cancelable: true, composed: true, view: window }),
+    );
+  }
+}
+
+/** Every option-like node currently on screen, anywhere — portals and shadow roots included. */
+export function optionNodes(root: Document | ShadowRoot = document): HTMLElement[] {
+  return deepQueryAll(root, "[role='option'],[role='menuitem'],[role='menuitemradio']").filter(
+    (el) => isVisible(el),
+  ) as HTMLElement[];
+}
+
+/**
+ * Wait until the page stops changing, then read it.
+ *
+ * A React form is blank until its data arrives. Cairn's own note on this: *"This is what modern
+ * sites need most… a `look()` that happens too early sees an empty page."* A person who presses
+ * the hotkey the moment a tab opens would otherwise be handed an empty form and told there is
+ * nothing to fill.
+ *
+ * Resolves as soon as the DOM has been quiet for `quietMs`, or at `timeoutMs` regardless —
+ * a page that polls in the background never goes quiet at all, so this can never be a hang.
+ */
+export function whenSettled(
+  root: Document = document,
+  quietMs = 350,
+  timeoutMs = 5000,
+): Promise<void> {
+  return new Promise((resolve) => {
+    if (!root.body) {
+      resolve();
+      return;
+    }
+
+    let quiet: ReturnType<typeof setTimeout>;
+    const observer = new MutationObserver(() => {
+      clearTimeout(quiet);
+      quiet = setTimeout(finish, quietMs);
+    });
+
+    const finish = () => {
+      clearTimeout(quiet);
+      clearTimeout(hardStop);
+      observer.disconnect();
+      resolve();
+    };
+
+    const hardStop = setTimeout(finish, timeoutMs);
+    quiet = setTimeout(finish, quietMs);
+    observer.observe(root.body, { childList: true, subtree: true, attributes: true });
+  });
+}

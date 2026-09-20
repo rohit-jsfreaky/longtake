@@ -71,6 +71,15 @@ export type FieldSpec = {
    */
   longForm?: boolean;
   /**
+   * This control is a component, not a form element, so its value cannot be assigned.
+   *
+   * True for every dropdown that is not a real `<select>` — which, on a live Greenhouse page,
+   * is all of them. Such a widget keeps its selection in component state and ignores the DOM
+   * entirely: setting `.value` changes what the box *looks* like and submits nothing.
+   * `writer.ts` has to open it and press an option instead, the way a person does.
+   */
+  custom?: boolean;
+  /**
    * True when we believe the field exists to catch bots rather than to be answered.
    * AssemblyAI's own Greenhouse form carries one. Never write to these — not even when the
    * speaker appears to have answered it.

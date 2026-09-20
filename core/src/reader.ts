@@ -21,7 +21,14 @@
  *    gets written lives in `writer.ts`, in code, with no path around it.
  */
 
-import { deepQueryAll, isVisible, uniqueSelector } from "./dom-path";
+import {
+  closeWidget,
+  deepQueryAll,
+  isVisible,
+  openWidget,
+  optionNodes,
+  uniqueSelector,
+} from "./dom-path";
 import type {
   FieldHandles,
   FieldKind,
@@ -36,14 +43,26 @@ import type {
  * reason for each exclusion can be written down.
  */
 const CANDIDATE_SELECTOR = [
+  // Real form elements.
   "input",
   "textarea",
   "select",
+  // Something a person types into that is not an input.
   "[contenteditable='']",
   "[contenteditable='true']",
   "[role='textbox']",
-  "[role='combobox']",
+  "[role='searchbox']",
   "[role='spinbutton']",
+  // Dropdowns that are not `<select>`. `role="combobox"` covers Radix and React-Select;
+  // `aria-haspopup` covers Headless UI and every hand-rolled menu, whose trigger is usually a
+  // plain `role="button"` and would otherwise be completely invisible to this file.
+  "[role='combobox']",
+  "[aria-haspopup='listbox']",
+  "[aria-haspopup='menu']",
+  // Choices built out of divs. The group is the question; its children are the answers.
+  "[role='radiogroup']",
+  "[role='checkbox']",
+  "[role='switch']",
 ].join(",");
 
 /** Input types that are a control, not an answer. */
@@ -148,7 +167,10 @@ function kindOf(el: Element): FieldKind {
   // carrying `role="combobox"`; reading the tag first calls it a text box and the choices are
   // lost. The page under test had **no `<select>` elements at all** and twelve comboboxes.
   const role = el.getAttribute("role");
-  if (role === "combobox" || el.getAttribute("aria-haspopup") === "listbox") return "select";
+  const popup = el.getAttribute("aria-haspopup");
+  if (role === "combobox" || popup === "listbox" || popup === "menu") return "select";
+  if (role === "radiogroup") return "radio";
+  if (role === "checkbox" || role === "switch") return "checkbox";
   if (role === "spinbutton") return "number";
 
   if (tag === "textarea") return "textarea";
@@ -181,13 +203,43 @@ function kindOf(el: Element): FieldKind {
 }
 
 function optionsOf(el: Element): FieldOption[] | undefined {
-  if (el.tagName.toLowerCase() !== "select") return undefined;
+  const tag = el.tagName.toLowerCase();
 
-  const options = Array.from((el as HTMLSelectElement).options)
-    .filter((option) => option.value !== "" || textOf(option) !== "")
-    .map((option) => ({ value: option.value, label: textOf(option) || option.value }));
+  if (tag === "select") {
+    const options = Array.from((el as HTMLSelectElement).options)
+      .filter((option) => option.value !== "" || textOf(option) !== "")
+      .map((option) => ({ value: option.value, label: textOf(option) || option.value }));
+    return options.length > 0 ? options : undefined;
+  }
 
-  return options.length > 0 ? options : undefined;
+  // An ARIA radio group carries its answers inside it, already in the DOM.
+  if (el.getAttribute("role") === "radiogroup") {
+    const options = deepQueryAll(el, "[role='radio']")
+      .map((radio) => {
+        const label = cleanLabel(radio.getAttribute("aria-label") ?? textOf(radio));
+        return { value: radio.getAttribute("value") ?? label, label };
+      })
+      .filter((option) => option.label !== "");
+    return options.length > 0 ? options : undefined;
+  }
+
+  return undefined;
+}
+
+/**
+ * Is this a component rather than a form element?
+ *
+ * The distinction decides how it gets written, so it is worth being exact. A real `<select>`
+ * takes an assigned value. Everything else — including a real `<input>` that a component is
+ * merely using as its text box — keeps its selection somewhere JavaScript can see and the DOM
+ * cannot. Assigning to those changes the display and submits nothing.
+ */
+function isCustom(el: Element, kind: FieldKind): boolean {
+  const tag = el.tagName.toLowerCase();
+  if (tag === "select") return false;
+  if (tag !== "input" && tag !== "textarea") return true;
+  // A native input wearing a combobox role is React-Select, or something shaped like it.
+  return kind === "select" || kind === "multiselect";
 }
 
 /**
@@ -362,6 +414,7 @@ export function readForm(root: Document = document, url = root.location?.href ??
     if (placeholder) spec.placeholder = placeholder;
 
     if (isLongForm(el, kind, label)) spec.longForm = true;
+    if (isCustom(el, kind)) spec.custom = true;
     if (looksLikeTrap(el, visible)) spec.suspectedHoneypot = true;
 
     specs.push(spec);
@@ -394,27 +447,7 @@ export async function harvestOptions(read: FormRead, settleMs = 150): Promise<Fo
   if (!doc) return read;
 
   const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-  const allOptions = () => Array.from(deepQueryAll(doc, "[role='option']"));
-
-  /**
-   * Radix — and therefore shadcn/ui, and therefore a large share of forms built recently —
-   * opens on `pointerdown` and ignores a synthetic `click` completely. Sending the whole
-   * sequence covers both that and the ordinary case.
-   */
-  const poke = (el: HTMLElement) => {
-    el.scrollIntoView({ block: "center" });
-    el.focus();
-    for (const type of ["pointerdown", "mousedown", "mouseup", "click"]) {
-      el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
-    }
-  };
-
-  const close = (el: HTMLElement) => {
-    el.dispatchEvent(
-      new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true }),
-    );
-    el.blur();
-  };
+  const allOptions = () => optionNodes(doc);
 
   for (const spec of read.specs) {
     if (spec.kind !== "select" && spec.kind !== "multiselect") continue;
@@ -428,7 +461,7 @@ export async function harvestOptions(read: FormRead, settleMs = 150): Promise<Fo
     const before = new Set(allOptions());
 
     try {
-      poke(el);
+      openWidget(el);
       await sleep(settleMs);
 
       const revealed = allOptions().filter((option) => !before.has(option));
@@ -447,7 +480,7 @@ export async function harvestOptions(read: FormRead, settleMs = 150): Promise<Fo
       // A widget that refuses to open is not a crash. The field keeps no options, the binder
       // leaves it as free text, and the agent asks about it out loud instead.
     } finally {
-      close(el);
+      closeWidget(el);
       await sleep(40);
     }
   }
