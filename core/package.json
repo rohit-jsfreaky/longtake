@@ -1,0 +1,12 @@
+{
+  "name": "@longtake/core",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DOM in, field spec out, values back in. Shared by the web demo and the extension.",
+  "type": "module",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./*": "./src/*.ts"
+  }
+}

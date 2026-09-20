@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "Longtake — the whole form, in one take",
+  "version": "0.1.0",
+  "description": "Speak once, like telling a friend, and the whole form fills. It asks out loud only for what you did not cover.",
+  "permissions": ["activeTab", "scripting", "storage"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "commands": {
+    "toggle-longtake": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+L",
+        "mac": "Command+Shift+L"
+      },
+      "description": "Start or stop Longtake on this page"
+    }
+  }
+}

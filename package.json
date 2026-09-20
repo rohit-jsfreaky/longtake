@@ -1,0 +1,16 @@
+{
+  "name": "longtake",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A voice layer for other people's forms. One spoken paragraph fills twenty fields.",
+  "workspaces": [
+    "core",
+    "web"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace web",
+    "build": "npm run build --workspace web",
+    "lint": "npm run lint --workspace web",
+    "typecheck": "tsc --noEmit -p core && tsc --noEmit -p web"
+  }
+}

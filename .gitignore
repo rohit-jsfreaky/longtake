@@ -1,0 +1,51 @@
+# ───────────────────────── dependencies ─────────────────────────
+node_modules/
+.npm/
+
+# package-lock.json is NOT ignored on purpose — Vercel needs it to reproduce the build.
+
+# ───────────────────────── build output ─────────────────────────
+.next/
+out/
+build/
+.vercel/
+*.tsbuildinfo
+next-env.d.ts
+extension/dist/
+extension/*.zip
+
+# ───────────────────────── secrets ─────────────────────────
+# The AssemblyAI key lives in web/.env.local and never gets committed.
+# web/.env.example does ship, so a cloner knows which key to set.
+.env
+.env*.local
+
+# ───────────────────── internal working notes ─────────────────────
+# How the build is actually run day to day. They stay on disk, they just are not
+# published. Two of them carry competitive research and notes on named judges,
+# and one quotes a bot-trap another company put on their own hiring form. None of
+# that belongs in a public repo.
+CLAUDE.md
+AGENTS.md
+MASTER-PLAN.md
+PROGRESS.md
+RESEARCH.md
+hackathon.md
+.mcp.json
+
+# ─────────────────── vendored third-party docs ───────────────────
+# AssemblyAI's own documentation, copied verbatim so it can be searched offline.
+# Useful locally, not ours to republish.
+/docs/assemblyai/
+
+# ───────────────────────── tooling scratch ─────────────────────────
+.playwright-mcp/
+
+# ───────────────────────── editor / os ─────────────────────────
+.idea/
+.vscode/
+*.pem
+*.log
+npm-debug.log*
+Thumbs.db
+.DS_Store
