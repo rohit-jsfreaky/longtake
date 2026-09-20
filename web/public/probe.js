@@ -1,9 +1,26 @@
 (() => {
   // core/src/dom-path.ts
   var MAX_DEPTH = 15;
-  function uniqueSelector(el) {
+  var MIN_INTERACTIVE_PX = 10;
+  var SELF_DECLARED_ROLES = /* @__PURE__ */ new Set([
+    "combobox",
+    "textbox",
+    "searchbox",
+    "spinbutton",
+    "listbox",
+    "radiogroup",
+    "checkbox",
+    "switch"
+  ]);
+  function declaresItselfInteractive(el) {
+    const role = el.getAttribute("role");
+    if (role && SELF_DECLARED_ROLES.has(role)) return true;
+    return el.hasAttribute("aria-haspopup");
+  }
+  function uniqueSelector(el, within) {
     const doc = el.ownerDocument;
     if (!doc) return "";
+    if (within && doc !== within) return "";
     const matchesOne = (selector) => {
       try {
         return doc.querySelectorAll(selector).length === 1;
@@ -83,6 +100,15 @@
   function isVisible(el) {
     const html = el;
     if (!html.isConnected) return false;
+    const check = html.checkVisibility;
+    if (typeof check === "function") {
+      const visible = check.call(html, {
+        checkOpacity: true,
+        checkVisibilityCSS: true,
+        contentVisibilityAuto: true
+      });
+      if (!visible) return false;
+    }
     const style = el.ownerDocument?.defaultView?.getComputedStyle(el);
     if (!style) return false;
     if (style.display === "none" || style.visibility === "hidden" || style.visibility === "collapse") {
@@ -90,7 +116,18 @@
     }
     if (Number(style.opacity) === 0) return false;
     const rect = html.getBoundingClientRect();
-    if (rect.width < 2 || rect.height < 2) return false;
+    if (rect.width < MIN_INTERACTIVE_PX || rect.height < MIN_INTERACTIVE_PX) {
+      if (!declaresItselfInteractive(el)) return false;
+      let ancestor = html.parentElement;
+      for (let hops = 0; ancestor && hops < 3; hops++) {
+        const box = ancestor.getBoundingClientRect();
+        if (box.width > 0 || box.height > 0) {
+          return box.width >= MIN_INTERACTIVE_PX && box.height >= MIN_INTERACTIVE_PX;
+        }
+        ancestor = ancestor.parentElement;
+      }
+      return false;
+    }
     const view = el.ownerDocument.defaultView;
     const scrollX = view?.scrollX ?? 0;
     const scrollY = view?.scrollY ?? 0;
@@ -115,6 +152,14 @@
       new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true, composed: true })
     );
     el.blur();
+    const doc = el.ownerDocument;
+    if (doc?.body) {
+      for (const type of ["pointerdown", "mousedown"]) {
+        doc.body.dispatchEvent(
+          new MouseEvent(type, { bubbles: true, cancelable: true, composed: true })
+        );
+      }
+    }
   }
   function pressOption(option) {
     option.scrollIntoView({ block: "nearest" });
@@ -129,7 +174,7 @@
       (el) => isVisible(el)
     );
   }
-  function whenSettled(root = document, quietMs = 350, timeoutMs = 5e3) {
+  function whenSettled(root = document, quietMs = 350, timeoutMs = 5e3, until) {
     return new Promise((resolve) => {
       if (!root.body) {
         resolve();
@@ -138,8 +183,12 @@
       let quiet;
       const observer = new MutationObserver(() => {
         clearTimeout(quiet);
-        quiet = setTimeout(finish, quietMs);
+        quiet = setTimeout(maybeFinish, quietMs);
       });
+      const maybeFinish = () => {
+        if (until && !until()) return;
+        finish();
+      };
       const finish = () => {
         clearTimeout(quiet);
         clearTimeout(hardStop);
@@ -147,7 +196,7 @@
         resolve();
       };
       const hardStop = setTimeout(finish, timeoutMs);
-      quiet = setTimeout(finish, quietMs);
+      quiet = setTimeout(maybeFinish, quietMs);
       observer.observe(root.body, { childList: true, subtree: true, attributes: true });
     });
   }
@@ -177,7 +226,7 @@
   ].join(",");
   var NON_ANSWER_TYPES = /* @__PURE__ */ new Set(["submit", "button", "reset", "image", "hidden"]);
   var LONG_FORM_LABEL = /cover letter|why (do|are|would)|tell us|describe|excites|about your|in your own words|summar/i;
-  var TRAP_NAME = /honey ?pot|^hp_|_hp$|bot ?(field|check|trap)|leave ?(this )?blank|do ?not ?fill/i;
+  var TRAP_NAME = /honey ?pot|\bhp\b|bot ?(field|check|trap)|leave (this )?blank|do not fill/i;
   var LONG_FORM_MIN_MAXLENGTH = 1e3;
   function textOf(el) {
     if (!el) return "";
@@ -253,6 +302,8 @@
         case "month":
         case "week":
           return "date";
+        case "range":
+          return "number";
         default:
           return "text";
       }
@@ -282,7 +333,7 @@
   }
   function looksLikeTrap(el, visible) {
     if (!visible) return true;
-    const name = `${el.getAttribute("name") ?? ""} ${el.id ?? ""}`;
+    const name = `${el.getAttribute("name") ?? ""} ${el.id ?? ""}`.replace(/[_\-.]+/g, " ").replace(/([a-z])([A-Z])/g, "$1 $2");
     if (TRAP_NAME.test(name)) return true;
     if (el.getAttribute("tabindex") === "-1" && el.getAttribute("autocomplete") === "off") {
       return true;
@@ -357,15 +408,18 @@
             existing.options?.push(option);
             return;
           }
+          const groupLabel = cleanLabel(
+            textOf(el.closest("fieldset")?.querySelector("legend")) || el.closest("[role='radiogroup']")?.getAttribute("aria-label") || name
+          );
           const spec2 = {
-            id: takeId(name || label, index),
-            label: textOf(el.closest("fieldset")?.querySelector("legend")) || el.closest("[role='radiogroup']")?.getAttribute("aria-label") || name,
+            id: takeId(groupLabel || name, index),
+            label: groupLabel,
             kind: kind === "radio" ? "radio" : "multiselect",
             required: el.required,
             options: [option],
             ...visible ? {} : { suspectedHoneypot: true }
           };
-          const selector2 = uniqueSelector(el);
+          const selector2 = uniqueSelector(el, root);
           if (selector2) spec2.selector = selector2;
           groups.set(groupKey, spec2);
           specs.push(spec2);
@@ -373,14 +427,14 @@
           return;
         }
       }
-      const id = takeId(name || label || el.id, index);
+      const id = takeId(label || name || el.id, index);
       const spec = {
         id,
         label,
         kind,
         required: Boolean(el.required) || el.getAttribute("aria-required") === "true"
       };
-      const selector = uniqueSelector(el);
+      const selector = uniqueSelector(el, root);
       if (selector) spec.selector = selector;
       const options = optionsOf(el);
       if (options) spec.options = options;
@@ -430,12 +484,22 @@
     }
     return read;
   }
+  function waitForForm(root = document, timeoutMs = 5e3) {
+    return whenSettled(
+      root,
+      350,
+      timeoutMs,
+      () => deepQueryAll(root, CANDIDATE_SELECTOR).some((el) => isVisible(el))
+    );
+  }
 
   // core/src/writer.ts
   var WIDGET_OPEN_MS = 400;
   var sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   function setNativeValue(el, value) {
-    const prototype = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : el instanceof HTMLSelectElement ? HTMLSelectElement.prototype : HTMLInputElement.prototype;
+    const view = el.ownerDocument?.defaultView ?? window;
+    const tag = el.tagName.toLowerCase();
+    const prototype = tag === "textarea" ? view.HTMLTextAreaElement.prototype : tag === "select" ? view.HTMLSelectElement.prototype : view.HTMLInputElement.prototype;
     const setter = Object.getOwnPropertyDescriptor(prototype, "value")?.set;
     if (setter) {
       setter.call(el, value);
@@ -450,6 +514,14 @@
   }
   function normalise(text) {
     return text.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  }
+  var MEANS_NO = /\b(no|not|false|never|decline|disagree|refuse|nahi|nahin)\b/i;
+  var MEANS_YES = /\b(yes|true|agree|agreed|accept|confirm|ok|okay|sure|haan|han|ji|sahi)\b/i;
+  function readAsYesOrNo(value) {
+    if (typeof value === "boolean") return value;
+    const text = String(value);
+    if (MEANS_NO.test(text)) return false;
+    return MEANS_YES.test(text);
   }
   function matchOption(spec, spoken) {
     if (!spec.options || spec.options.length === 0) return null;
@@ -467,11 +539,15 @@
     return null;
   }
   function readBack(el) {
-    if (el instanceof HTMLInputElement) {
-      if (el.type === "checkbox" || el.type === "radio") return el.checked ? el.value || "on" : "";
-      return el.value;
+    const tag = el.tagName.toLowerCase();
+    if (tag === "input") {
+      const input = el;
+      if (input.type === "checkbox" || input.type === "radio") {
+        return input.checked ? input.value || "on" : "";
+      }
+      return input.value;
     }
-    if (el instanceof HTMLTextAreaElement || el instanceof HTMLSelectElement) return el.value;
+    if (tag === "textarea" || tag === "select") return el.value;
     return (el.textContent ?? "").trim();
   }
   function renderedText(el) {
@@ -486,7 +562,7 @@
   function radioGroup(el) {
     const name = el.getAttribute("name");
     const root = el.getRootNode();
-    if (!name) return el instanceof HTMLInputElement ? [el] : [];
+    if (!name) return el.tagName.toLowerCase() === "input" ? [el] : [];
     return Array.from(
       root.querySelectorAll(`input[type="radio"][name="${CSS.escape(name)}"]`)
     );
@@ -496,8 +572,9 @@
     const wasShowing = renderedText(el);
     openWidget(el);
     await sleep(WIDGET_OPEN_MS);
-    const revealed = optionNodes().filter((option) => !before.has(option));
-    const target = revealed.find(
+    let candidates = optionNodes().filter((option) => !before.has(option));
+    if (candidates.length === 0) candidates = optionNodes();
+    const target = candidates.find(
       (option) => normalise((option.innerText ?? "").trim()) === normalise(want.label)
     );
     if (!target) {
@@ -506,7 +583,7 @@
         fieldId: spec.id,
         status: "rejected-by-page",
         wrote: want.label,
-        found: revealed.length === 0 ? "the dropdown did not open" : "that choice was not offered"
+        found: candidates.length === 0 ? "the dropdown did not open" : "that choice was not offered"
       };
     }
     pressOption(target);
@@ -582,7 +659,7 @@
       return { fieldId: id, status: "written", wrote: chosen.map((c) => c.label).join(", ") };
     }
     if (spec.kind === "checkbox") {
-      const yes = typeof spoken.value === "boolean" ? spoken.value : /^(yes|true|agree|accept|haan|ha\b)/i.test(String(spoken.value));
+      const yes = readAsYesOrNo(spoken.value);
       if (spec.custom) {
         const already = el.getAttribute("aria-checked") === "true";
         if (already !== yes) {
@@ -677,7 +754,7 @@
       return { url: read.url, count: read.specs.length, specs: read.specs, skipped: read.skipped };
     },
     inspectDeep: async () => {
-      await whenSettled();
+      await waitForForm();
       const read = await harvestOptions(readForm());
       window.__longtake.last = read;
       return { url: read.url, count: read.specs.length, specs: read.specs, skipped: read.skipped };

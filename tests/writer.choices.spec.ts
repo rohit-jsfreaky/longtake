@@ -1,0 +1,327 @@
+import { expect, test } from "@playwright/test";
+import { load, read, readThenWrite, valueOf } from "./helpers";
+
+/**
+ * Choosing among the options a page actually offers.
+ *
+ * The rule underneath all of it: **never guess.** If the spoken words do not clearly pick one of
+ * the page's own choices, the field is left alone and the agent asks. Quietly taking the first
+ * option is how a form ends up claiming someone attended a university they have never seen, or
+ * worked somewhere they never worked — and they are about to put their name on it.
+ */
+
+const said = (fieldId: string, value: unknown) => [
+  { fieldId, value, evidence: "the person said so" },
+];
+
+const COUNTRY = `
+  <label for="f">Country</label>
+  <select id="f">
+    <option value="">Select…</option>
+    <option value="in">India</option>
+    <option value="us">United States</option>
+    <option value="gb">United Kingdom</option>
+  </select>`;
+
+test.describe("native select", () => {
+  test("matches an option by its visible label", async ({ page }) => {
+    await load(page, COUNTRY);
+    const [outcome] = await readThenWrite(page, said("country", "India"));
+    expect(outcome!.status).toBe("written");
+    expect(await valueOf(page, "#f")).toBe("in");
+  });
+
+  test("matches an option by its submitted value", async ({ page }) => {
+    await load(page, COUNTRY);
+    await readThenWrite(page, said("country", "gb"));
+    expect(await valueOf(page, "#f")).toBe("gb");
+  });
+
+  test("matching ignores case", async ({ page }) => {
+    await load(page, COUNTRY);
+    await readThenWrite(page, said("country", "INDIA"));
+    expect(await valueOf(page, "#f")).toBe("in");
+  });
+
+  test("matching ignores punctuation and spacing", async ({ page }) => {
+    await load(page, COUNTRY);
+    await readThenWrite(page, said("country", "united-states"));
+    expect(await valueOf(page, "#f")).toBe("us");
+  });
+
+  test("a unique partial match is accepted", async ({ page }) => {
+    await load(page, COUNTRY);
+    await readThenWrite(page, said("country", "United Kingdom of Great Britain"));
+    expect(await valueOf(page, "#f")).toBe("gb");
+  });
+
+  test("an AMBIGUOUS partial match is refused rather than guessed", async ({ page }) => {
+    // "United" is inside both United States and United Kingdom. Two candidates means we do not
+    // know, and the agent has to ask.
+    await load(page, COUNTRY);
+    const [outcome] = await readThenWrite(page, said("country", "United"));
+    expect(outcome!.status).toBe("refused");
+    expect(await valueOf(page, "#f")).toBe("");
+  });
+
+  test("a word the form does not offer is refused", async ({ page }) => {
+    await load(page, COUNTRY);
+    const [outcome] = await readThenWrite(page, said("country", "Atlantis"));
+    expect(outcome!.status).toBe("refused");
+    expect(outcome!.reason).toMatch(/does not clearly match/i);
+  });
+
+  test("a refusal leaves the select on its original value", async ({ page }) => {
+    await load(page, COUNTRY);
+    await readThenWrite(page, said("country", "Atlantis"));
+    expect(await valueOf(page, "#f")).toBe("");
+  });
+
+  test("a refusal NEVER falls back to the first option", async ({ page }) => {
+    // The specific failure this guards against: a school or employer dropdown quietly
+    // answering itself with whatever happened to be at the top of the list.
+    const SCHOOL = `
+      <label for="f">Where did you study?</label>
+      <select id="f">
+        <option value="">Select…</option>
+        <option value="mit">MIT</option>
+        <option value="ox">Oxford</option>
+      </select>`;
+    await load(page, SCHOOL);
+    const [outcome] = await readThenWrite(page, said("where_did_you_study", "a college in Kolkata"));
+    expect(outcome!.status).toBe("refused");
+    expect(await valueOf(page, "#f")).toBe("");
+  });
+
+  test("a select with no blank option is left exactly as the page had it", async ({ page }) => {
+    /**
+     * ⚠️ A `<select>` whose first option is a real answer already *has* that answer before
+     * anybody speaks — the browser selects it by default, and the form will submit it. So
+     * "Where did you study? → MIT" is what this page says about a person who has said nothing.
+     *
+     * That is the page's doing, not ours, and Longtake must not make it worse by writing over
+     * it with a guess. What it should do is notice and ask, which belongs to the ask-back in
+     * Phase 4. This test pins the half we control: we change nothing.
+     */
+    await load(
+      page,
+      `<label for="f">Where did you study?</label>
+       <select id="f"><option value="mit">MIT</option><option value="ox">Oxford</option></select>`,
+    );
+    const before = await valueOf(page, "#f");
+    const [outcome] = await readThenWrite(page, said("where_did_you_study", "a college in Kolkata"));
+    expect(outcome!.status).toBe("refused");
+    expect(await valueOf(page, "#f")).toBe(before);
+  });
+
+  test("an empty spoken value is refused rather than selecting the blank option", async ({ page }) => {
+    await load(page, COUNTRY);
+    const [outcome] = await readThenWrite(page, said("country", ""));
+    expect(outcome!.status).toBe("refused");
+  });
+
+  test("the outcome reports the label a person would recognise, not the value code", async ({ page }) => {
+    await load(page, COUNTRY);
+    const [outcome] = await readThenWrite(page, said("country", "in"));
+    expect(outcome!.wrote).toBe("India");
+  });
+
+  test("a change event is fired so the page reacts", async ({ page }) => {
+    await load(
+      page,
+      `${COUNTRY}<div id="heard">no</div>
+       <script>document.getElementById('f').addEventListener('change', () => {
+         document.getElementById('heard').textContent = 'yes';
+       });</script>`,
+    );
+    await readThenWrite(page, said("country", "India"));
+    expect(await page.textContent("#heard")).toBe("yes");
+  });
+});
+
+test.describe("radio groups", () => {
+  const AUTH = `
+    <fieldset><legend>Work authorization</legend>
+      <label><input type="radio" name="auth" value="yes"> Yes, I am authorized</label>
+      <label><input type="radio" name="auth" value="no"> No, I need sponsorship</label>
+      <label><input type="radio" name="auth" value="na"> Prefer not to say</label>
+    </fieldset>`;
+
+  test("a radio group is one field, not three", async ({ page }) => {
+    await load(page, AUTH);
+    expect((await read(page)).specs).toHaveLength(1);
+  });
+
+  test("the group carries every option", async ({ page }) => {
+    await load(page, AUTH);
+    expect((await read(page)).specs[0]!.options).toHaveLength(3);
+  });
+
+  test("selecting by label checks the right radio", async ({ page }) => {
+    await load(page, AUTH);
+    const [outcome] = await readThenWrite(page, said("work_authorization", "No, I need sponsorship"));
+    expect(outcome!.status).toBe("written");
+    expect(await valueOf(page, 'input[value="no"]')).toBe("checked");
+  });
+
+  test("selecting by value works too", async ({ page }) => {
+    await load(page, AUTH);
+    await readThenWrite(page, said("work_authorization", "yes"));
+    expect(await valueOf(page, 'input[value="yes"]')).toBe("checked");
+  });
+
+  test("the other radios stay unchecked", async ({ page }) => {
+    await load(page, AUTH);
+    await readThenWrite(page, said("work_authorization", "yes"));
+    expect(await valueOf(page, 'input[value="no"]')).toBe("unchecked");
+    expect(await valueOf(page, 'input[value="na"]')).toBe("unchecked");
+  });
+
+  test("an unmatched answer leaves the whole group untouched", async ({ page }) => {
+    await load(page, AUTH);
+    const [outcome] = await readThenWrite(page, said("work_authorization", "it is complicated"));
+    expect(outcome!.status).toBe("refused");
+    for (const value of ["yes", "no", "na"]) {
+      expect(await valueOf(page, `input[value="${value}"]`)).toBe("unchecked");
+    }
+  });
+
+  test("a change event fires on the chosen radio", async ({ page }) => {
+    await load(
+      page,
+      `${AUTH}<div id="heard">no</div>
+       <script>document.querySelector('input[value="yes"]').addEventListener('change', () => {
+         document.getElementById('heard').textContent = 'yes';
+       });</script>`,
+    );
+    await readThenWrite(page, said("work_authorization", "yes"));
+    expect(await page.textContent("#heard")).toBe("yes");
+  });
+
+  test("two separate radio groups stay separate", async ({ page }) => {
+    await load(
+      page,
+      `<fieldset><legend>Relocate</legend>
+         <label><input type="radio" name="reloc" value="y"> Yes</label>
+         <label><input type="radio" name="reloc" value="n"> No</label>
+       </fieldset>
+       <fieldset><legend>Remote</legend>
+         <label><input type="radio" name="remote" value="y"> Yes</label>
+         <label><input type="radio" name="remote" value="n"> No</label>
+       </fieldset>`,
+    );
+    const result = await read(page);
+    expect(result.specs).toHaveLength(2);
+    await readThenWrite(page, said("relocate", "Yes"));
+    expect(await valueOf(page, 'input[name="reloc"][value="y"]')).toBe("checked");
+    expect(await valueOf(page, 'input[name="remote"][value="y"]')).toBe("unchecked");
+  });
+});
+
+test.describe("checkboxes", () => {
+  const CONSENT = `<label><input type="checkbox" id="c" name="consent"> I agree to the privacy policy</label>`;
+
+  const yeses = ["yes", "Yes", "true", "agree", "I agree", "accept", "haan"];
+  for (const word of yeses) {
+    test(`"${word}" ticks the box`, async ({ page }) => {
+      await load(page, CONSENT);
+      await readThenWrite(page, said("i_agree_to_the_privacy_policy", word));
+      expect(await valueOf(page, "#c")).toBe("checked");
+    });
+  }
+
+  const noes = ["no", "No", "false", "nahi", "decline"];
+  for (const word of noes) {
+    test(`"${word}" leaves the box unticked`, async ({ page }) => {
+      await load(page, CONSENT);
+      await readThenWrite(page, said("i_agree_to_the_privacy_policy", word));
+      expect(await valueOf(page, "#c")).toBe("unchecked");
+    });
+  }
+
+  test("a real boolean true ticks the box", async ({ page }) => {
+    await load(page, CONSENT);
+    await readThenWrite(page, said("i_agree_to_the_privacy_policy", true));
+    expect(await valueOf(page, "#c")).toBe("checked");
+  });
+
+  test("a real boolean false unticks it", async ({ page }) => {
+    await load(page, `<label><input type="checkbox" id="c" name="consent" checked> I agree</label>`);
+    await readThenWrite(page, said("i_agree", false));
+    expect(await valueOf(page, "#c")).toBe("unchecked");
+  });
+
+  test("ticking an already-ticked box is safe to repeat", async ({ page }) => {
+    await load(page, `<label><input type="checkbox" id="c" name="consent" checked> I agree</label>`);
+    const [outcome] = await readThenWrite(page, said("i_agree", "yes"));
+    expect(outcome!.status).toBe("written");
+    expect(await valueOf(page, "#c")).toBe("checked");
+  });
+
+  test("a change event fires", async ({ page }) => {
+    await load(
+      page,
+      `${CONSENT}<div id="heard">no</div>
+       <script>document.getElementById('c').addEventListener('change', () => {
+         document.getElementById('heard').textContent = 'yes';
+       });</script>`,
+    );
+    await readThenWrite(page, said("i_agree_to_the_privacy_policy", "yes"));
+    expect(await page.textContent("#heard")).toBe("yes");
+  });
+});
+
+test.describe("checkbox groups sharing a name", () => {
+  const TOOLS = `
+    <fieldset><legend>Which tools have you used?</legend>
+      <label><input type="checkbox" name="tools" value="claude"> Claude</label>
+      <label><input type="checkbox" name="tools" value="cursor"> Cursor</label>
+      <label><input type="checkbox" name="tools" value="copilot"> Copilot</label>
+    </fieldset>`;
+
+  test("a checkbox group is one field", async ({ page }) => {
+    await load(page, TOOLS);
+    expect((await read(page)).specs).toHaveLength(1);
+  });
+
+  test("it is a multiselect", async ({ page }) => {
+    await load(page, TOOLS);
+    expect((await read(page)).specs[0]!.kind).toBe("multiselect");
+  });
+
+  test("several answers tick several boxes", async ({ page }) => {
+    await load(page, TOOLS);
+    await readThenWrite(page, said("which_tools_have_you_used", ["Claude", "Cursor"]));
+    expect(await valueOf(page, '[value="claude"]')).toBe("checked");
+    expect(await valueOf(page, '[value="cursor"]')).toBe("checked");
+  });
+
+  test("boxes not spoken to stay unticked", async ({ page }) => {
+    await load(page, TOOLS);
+    await readThenWrite(page, said("which_tools_have_you_used", ["Claude"]));
+    expect(await valueOf(page, '[value="copilot"]')).toBe("unchecked");
+  });
+
+  test("one unmatched name among several does not sink the rest", async ({ page }) => {
+    await load(page, TOOLS);
+    const [outcome] = await readThenWrite(
+      page,
+      said("which_tools_have_you_used", ["Claude", "Emacs"]),
+    );
+    expect(outcome!.status).toBe("written");
+    expect(await valueOf(page, '[value="claude"]')).toBe("checked");
+  });
+
+  test("no matches at all is refused", async ({ page }) => {
+    await load(page, TOOLS);
+    const [outcome] = await readThenWrite(page, said("which_tools_have_you_used", ["Emacs", "Vim"]));
+    expect(outcome!.status).toBe("refused");
+    expect(await valueOf(page, '[value="claude"]')).toBe("unchecked");
+  });
+
+  test("a single string is accepted as well as an array", async ({ page }) => {
+    await load(page, TOOLS);
+    await readThenWrite(page, said("which_tools_have_you_used", "Copilot"));
+    expect(await valueOf(page, '[value="copilot"]')).toBe("checked");
+  });
+});

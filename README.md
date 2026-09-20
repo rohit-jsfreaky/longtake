@@ -37,8 +37,9 @@ described as working before it works.
 | `web/public/pcm-processor.js` | AudioWorklet, resamples mic audio to 24 kHz | ✅ working |
 | `web/src/app/hello/` | workbench page — talk, watch every frame in both directions | ✅ working |
 | `core/src/types.ts` | the shared vocabulary: `FieldSpec`, `FieldHandles`, `SpokenValue` | ✅ written |
-| `core/src/reader.ts` | somebody else's DOM → `FieldSpec[]` | ⬜ next |
-| `core/src/writer.ts` | values → live inputs, without the page noticing anything odd | ⬜ next |
+| `core/src/dom-path.ts` | unique selectors, shadow/frame walking, visibility, widget operation | ✅ working |
+| `core/src/reader.ts` | somebody else's DOM → `FieldSpec[]` | ✅ working, 193 tests |
+| `core/src/writer.ts` | values → live inputs, without the page noticing anything odd | ✅ working, 118 tests |
 | `core/src/binder.ts` | `FieldSpec[]` → a JSON-Schema tool built at runtime | ⬜ planned |
 | `core/src/dictation.ts` | per-field shaping, verbatim kept beside the clean text | ⬜ planned |
 | `extension/` | Chrome MV3, runs `core/` against any live page | 🟡 skeleton + hotkey only |
@@ -75,9 +76,16 @@ The key never reaches the browser. The server mints a short-lived, single-use to
 token goes to the client.
 
 ```bash
+npm test            # 334 tests against the real core/, in real Chrome
 npm run build       # production build
 npm run typecheck   # both packages
 ```
+
+### The tests
+
+`core/` is the part that has to survive somebody else's markup, so it is the part with a suite: **334 tests** covering label resolution, every control type, visibility and honeypots, shadow roots, iframes, React portals, late-rendering forms, selector uniqueness, and every refusal rule.
+
+They run in **real Chrome**, not jsdom, and that is not a preference. `getBoundingClientRect` returns zeroes under jsdom, so every visibility decision — the thing that separates a real field from a bot trap — would be untestable. Shadow roots, portals and component state need a real engine too. The suite uses the Chrome already on your machine rather than downloading its own.
 
 ## Layout
 

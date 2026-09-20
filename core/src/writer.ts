@@ -55,12 +55,21 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
  * This works for text. It does **not** work for a component's selection — see the file note.
  */
 function setNativeValue(el: HTMLElement, value: string): void {
+  // ⚠️ The prototype must come from the element's OWN window, not ours.
+  //
+  // An input inside an iframe is an instance of *that frame's* `HTMLInputElement`, a different
+  // class in a different realm. `el instanceof HTMLInputElement` is false for it, and a setter
+  // borrowed from the parent's prototype does not apply. The symptom is not an exception, it is
+  // a field that silently stays empty — and ATS forms are embedded in iframes all the time.
+  const view = (el.ownerDocument?.defaultView ?? window) as Window & typeof globalThis;
+  const tag = el.tagName.toLowerCase();
+
   const prototype =
-    el instanceof HTMLTextAreaElement
-      ? HTMLTextAreaElement.prototype
-      : el instanceof HTMLSelectElement
-        ? HTMLSelectElement.prototype
-        : HTMLInputElement.prototype;
+    tag === "textarea"
+      ? view.HTMLTextAreaElement.prototype
+      : tag === "select"
+        ? view.HTMLSelectElement.prototype
+        : view.HTMLInputElement.prototype;
 
   const setter = Object.getOwnPropertyDescriptor(prototype, "value")?.set;
   if (setter) {
@@ -78,6 +87,26 @@ function announce(el: HTMLElement, kinds: string[]): void {
 
 function normalise(text: string): string {
   return text.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+/** Words that mean no, in either of the two languages Longtake is built to hear. */
+const MEANS_NO = /\b(no|not|false|never|decline|disagree|refuse|nahi|nahin)\b/i;
+/** Words that mean yes. Only consulted once the negatives have had their say. */
+const MEANS_YES = /\b(yes|true|agree|agreed|accept|confirm|ok|okay|sure|haan|han|ji|sahi)\b/i;
+
+/**
+ * Did the speaker mean yes?
+ *
+ * The negative is tested first and that ordering is the whole point: "I do not agree" contains
+ * the word "agree", and a tick-box for a privacy policy is not the place to get that backwards.
+ * Anchoring on the first word instead — which is the obvious implementation — fails on "I agree",
+ * which is how most people actually say it.
+ */
+function readAsYesOrNo(value: unknown): boolean {
+  if (typeof value === "boolean") return value;
+  const text = String(value);
+  if (MEANS_NO.test(text)) return false;
+  return MEANS_YES.test(text);
 }
 
 /**
@@ -108,11 +137,20 @@ function matchOption(spec: FieldSpec, spoken: string): { value: string; label: s
 }
 
 function readBack(el: HTMLElement): string {
-  if (el instanceof HTMLInputElement) {
-    if (el.type === "checkbox" || el.type === "radio") return el.checked ? el.value || "on" : "";
-    return el.value;
+  // Tag name rather than `instanceof`, for the same cross-realm reason as `setNativeValue`:
+  // an element from an iframe fails every `instanceof` check made against our own window, and
+  // would fall through to reading `textContent` — which is always empty on an input, so a
+  // perfectly good write reports itself as rejected.
+  const tag = el.tagName.toLowerCase();
+
+  if (tag === "input") {
+    const input = el as HTMLInputElement;
+    if (input.type === "checkbox" || input.type === "radio") {
+      return input.checked ? input.value || "on" : "";
+    }
+    return input.value;
   }
-  if (el instanceof HTMLTextAreaElement || el instanceof HTMLSelectElement) return el.value;
+  if (tag === "textarea" || tag === "select") return (el as HTMLTextAreaElement).value;
   return (el.textContent ?? "").trim();
 }
 
@@ -142,7 +180,8 @@ function renderedText(el: HTMLElement): string {
 function radioGroup(el: HTMLElement): HTMLInputElement[] {
   const name = el.getAttribute("name");
   const root = el.getRootNode() as Document | ShadowRoot;
-  if (!name) return el instanceof HTMLInputElement ? [el] : [];
+  // Tag name, not `instanceof` — see `readBack` for why an iframe breaks the latter.
+  if (!name) return el.tagName.toLowerCase() === "input" ? [el as HTMLInputElement] : [];
   return Array.from(
     root.querySelectorAll<HTMLInputElement>(`input[type="radio"][name="${CSS.escape(name)}"]`),
   );
@@ -166,8 +205,16 @@ async function pickFromWidget(
   openWidget(el);
   await sleep(WIDGET_OPEN_MS);
 
-  const revealed = optionNodes().filter((option) => !before.has(option));
-  const target = revealed.find(
+  // What appeared because we opened it — the reliable signal, since options usually arrive
+  // through a portal and cannot be found by looking inside the trigger.
+  let candidates = optionNodes().filter((option) => !before.has(option));
+
+  // …but nothing appearing does not always mean nothing opened. A widget that was ALREADY open —
+  // left that way by the option-harvesting pass, because not every menu closes on Escape —
+  // reveals nothing new, and treating that as a failure refuses a field we could have filled.
+  if (candidates.length === 0) candidates = optionNodes();
+
+  const target = candidates.find(
     (option) => normalise((option.innerText ?? "").trim()) === normalise(want.label),
   );
 
@@ -177,7 +224,7 @@ async function pickFromWidget(
       fieldId: spec.id,
       status: "rejected-by-page",
       wrote: want.label,
-      found: revealed.length === 0 ? "the dropdown did not open" : "that choice was not offered",
+      found: candidates.length === 0 ? "the dropdown did not open" : "that choice was not offered",
     };
   }
 
@@ -286,10 +333,7 @@ async function writeOne(
 
   // ── A lone checkbox, or a div wearing role="checkbox" / role="switch" ────────────
   if (spec.kind === "checkbox") {
-    const yes =
-      typeof spoken.value === "boolean"
-        ? spoken.value
-        : /^(yes|true|agree|accept|haan|ha\b)/i.test(String(spoken.value));
+    const yes = readAsYesOrNo(spoken.value);
 
     if (spec.custom) {
       const already = el.getAttribute("aria-checked") === "true";

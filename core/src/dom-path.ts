@@ -24,6 +24,37 @@
 /** Cairn learned this the hard way on a real dashboard. Five levels was not enough. */
 const MAX_DEPTH = 15;
 
+/**
+ * The smallest a control can be and still be something a person fills in.
+ *
+ * See the note in `isVisible` for where the number comes from. It is measured, not chosen.
+ */
+const MIN_INTERACTIVE_PX = 10;
+
+/**
+ * Roles an author only writes when the thing really is a control a person operates.
+ *
+ * Used to decide whether a very small element deserves the benefit of the doubt. The reasoning
+ * is in `isVisible`: a honeypot never declares one of these, because being announced to a
+ * screen reader defeats the point of it.
+ */
+const SELF_DECLARED_ROLES = new Set([
+  "combobox",
+  "textbox",
+  "searchbox",
+  "spinbutton",
+  "listbox",
+  "radiogroup",
+  "checkbox",
+  "switch",
+]);
+
+function declaresItselfInteractive(el: Element): boolean {
+  const role = el.getAttribute("role");
+  if (role && SELF_DECLARED_ROLES.has(role)) return true;
+  return el.hasAttribute("aria-haspopup");
+}
+
 /** Attributes that identify an element more durably than its position ever will. */
 const TEST_ID_ATTRIBUTES = [
   "data-testid",
@@ -45,9 +76,19 @@ export function testIdOf(el: Element): string | null {
  * The shortest CSS selector that matches this element and nothing else, or `""` if there
  * isn't one. An empty string is a real answer: callers must treat it as "cannot be re-found".
  */
-export function uniqueSelector(el: Element): string {
+export function uniqueSelector(el: Element, within?: Document): string {
   const doc = el.ownerDocument;
   if (!doc) return "";
+
+  // A selector for an element in another document is worse than no selector at all.
+  //
+  // An `<input id="a">` inside an iframe yields `#a`, which is perfectly unique *in that frame*
+  // and means something entirely different when run against the parent — it either finds
+  // nothing, or finds a different field and writes someone's answer into it. Cairn hit the same
+  // thing and drew the same conclusion: a locator that does not name its frame cannot be
+  // resolved later. In the extension this never arises, because `all_frames: true` runs a copy
+  // of the reader inside each frame, where `document` is that frame's own.
+  if (within && doc !== within) return "";
 
   const matchesOne = (selector: string): boolean => {
     try {
@@ -170,6 +211,20 @@ export function isVisible(el: Element): boolean {
   const html = el as HTMLElement;
   if (!html.isConnected) return false;
 
+  // The browser's own answer first. It covers cases that a hand-rolled style check misses
+  // entirely: `content-visibility`, and a collapsed `<details>`, whose contents report a
+  // perfectly ordinary 170×21 bounding box while being genuinely unrenderable.
+  const check = (html as unknown as { checkVisibility?: (o: object) => boolean }).checkVisibility;
+  if (typeof check === "function") {
+    const visible = check.call(html, {
+      checkOpacity: true,
+      checkVisibilityCSS: true,
+      contentVisibilityAuto: true,
+    });
+    if (!visible) return false;
+  }
+
+  // Kept as well as, not instead of — older Safari and Firefox have no `checkVisibility`.
   const style = el.ownerDocument?.defaultView?.getComputedStyle(el);
   if (!style) return false;
   if (style.display === "none" || style.visibility === "hidden" || style.visibility === "collapse") {
@@ -178,7 +233,42 @@ export function isVisible(el: Element): boolean {
   if (Number(style.opacity) === 0) return false;
 
   const rect = html.getBoundingClientRect();
-  if (rect.width < 2 || rect.height < 2) return false;
+
+  // Measured in Chrome rather than guessed. An `<input style="width:0">` still reports **7.2px**
+  // because of its default border and padding, and `height:0` reports **5.2px** — so a threshold
+  // of one or two pixels catches none of the shrunk-to-nothing honeypots. A real checkbox is
+  // **13×13**, which sets the ceiling. Ten is the only number that separates them.
+  if (rect.width < MIN_INTERACTIVE_PX || rect.height < MIN_INTERACTIVE_PX) {
+    // …except that some real controls genuinely are that small.
+    //
+    // React-Select's combobox is an autosize `<input>` measuring **3.5 × 20** when empty; the
+    // 220-pixel box a person sees is its parent. A flat size rule removed every dropdown from a
+    // live Greenhouse form — twenty fields became nine.
+    //
+    // What separates it from a honeypot is not its size but its declaration: it announces
+    // `role="combobox"` to assistive technology. A honeypot never does, because being announced
+    // to a screen reader is exactly what it is trying to avoid. So a tiny control is given the
+    // benefit of the doubt only when it has said out loud what it is, and only if something it
+    // sits inside is a real size.
+    if (!declaresItselfInteractive(el)) return false;
+
+    // The FIRST ancestor that has a real box decides, and its verdict is final either way.
+    //
+    // Walking on past a small ancestor in the hope of finding a large one always succeeds, since
+    // `<body>` is large on every page — which would make this check meaningless. A control
+    // sitting in a four-pixel box is in a four-pixel box, however big the document is.
+    let ancestor = html.parentElement;
+    for (let hops = 0; ancestor && hops < 3; hops++) {
+      const box = ancestor.getBoundingClientRect();
+      // Skip layout-less wrappers (`display: contents`, or an unstyled span) — they describe
+      // nothing about whether the control is really on screen.
+      if (box.width > 0 || box.height > 0) {
+        return box.width >= MIN_INTERACTIVE_PX && box.height >= MIN_INTERACTIVE_PX;
+      }
+      ancestor = ancestor.parentElement;
+    }
+    return false;
+  }
 
   // Parked off-canvas with `left: -9999px` — a classic way to hide a honeypot in plain HTML.
   //
@@ -224,12 +314,28 @@ export function openWidget(el: HTMLElement): void {
   }
 }
 
-/** Put a widget away again without choosing anything. */
+/**
+ * Put a widget away again without choosing anything.
+ *
+ * Escape alone is not enough. Plenty of menus never listen for it, and one left hanging open is
+ * not a cosmetic problem: the next widget to be opened diffs against what is on screen, sees the
+ * stale menu, and concludes that nothing opened. So an outside `pointerdown` is sent as well,
+ * which is what most libraries actually use to dismiss.
+ */
 export function closeWidget(el: HTMLElement): void {
   el.dispatchEvent(
     new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true, composed: true }),
   );
   el.blur();
+
+  const doc = el.ownerDocument;
+  if (doc?.body) {
+    for (const type of ["pointerdown", "mousedown"]) {
+      doc.body.dispatchEvent(
+        new MouseEvent(type, { bubbles: true, cancelable: true, composed: true }),
+      );
+    }
+  }
 }
 
 /**
@@ -270,6 +376,15 @@ export function whenSettled(
   root: Document = document,
   quietMs = 350,
   timeoutMs = 5000,
+  /**
+   * An extra condition that must also hold before quiet counts as settled.
+   *
+   * ⚠️ Without this, waiting for quiet is worse than useless on the exact pages it exists for.
+   * A React app that has not started rendering is perfectly quiet, so the wait returns
+   * immediately and the form is read as empty — the failure it was written to prevent.
+   * `waitForForm` in `reader.ts` passes "at least one field exists" here.
+   */
+  until?: () => boolean,
 ): Promise<void> {
   return new Promise((resolve) => {
     if (!root.body) {
@@ -280,8 +395,14 @@ export function whenSettled(
     let quiet: ReturnType<typeof setTimeout>;
     const observer = new MutationObserver(() => {
       clearTimeout(quiet);
-      quiet = setTimeout(finish, quietMs);
+      quiet = setTimeout(maybeFinish, quietMs);
     });
+
+    const maybeFinish = () => {
+      // Quiet, but nothing has arrived yet. Keep watching until the hard stop.
+      if (until && !until()) return;
+      finish();
+    };
 
     const finish = () => {
       clearTimeout(quiet);
@@ -291,7 +412,7 @@ export function whenSettled(
     };
 
     const hardStop = setTimeout(finish, timeoutMs);
-    quiet = setTimeout(finish, quietMs);
+    quiet = setTimeout(maybeFinish, quietMs);
     observer.observe(root.body, { childList: true, subtree: true, attributes: true });
   });
 }

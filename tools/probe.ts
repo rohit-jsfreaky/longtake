@@ -10,6 +10,7 @@ import {
   writeValues,
   harvestOptions,
   whenSettled,
+  waitForForm,
   CORE_VERSION,
 } from "@longtake/core";
 
@@ -21,6 +22,7 @@ declare global {
       writeValues: typeof writeValues;
       harvestOptions: typeof harvestOptions;
       whenSettled: typeof whenSettled;
+      waitForForm: typeof waitForForm;
       /** Read, then open every dropdown to learn its real choices. */
       inspectDeep: () => Promise<unknown>;
       /** The live read, kept so a fill can reuse the same element handles. */
@@ -44,7 +46,7 @@ window.__longtake = {
   },
   inspectDeep: async () => {
     // Wait for a React form to finish drawing before reading it, then learn every dropdown.
-    await whenSettled();
+    await waitForForm();
     const read = await harvestOptions(readForm());
     window.__longtake.last = read;
     return { url: read.url, count: read.specs.length, specs: read.specs, skipped: read.skipped };

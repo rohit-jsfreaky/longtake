@@ -28,6 +28,7 @@ import {
   openWidget,
   optionNodes,
   uniqueSelector,
+  whenSettled,
 } from "./dom-path";
 import type {
   FieldHandles,
@@ -71,8 +72,14 @@ const NON_ANSWER_TYPES = new Set(["submit", "button", "reset", "image", "hidden"
 /** Labels that mean a long spoken answer, and so earn a Dictation pass of their own. */
 const LONG_FORM_LABEL = /cover letter|why (do|are|would)|tell us|describe|excites|about your|in your own words|summar/i;
 
-/** Field names that are traps by convention rather than by looking hidden. */
-const TRAP_NAME = /honey ?pot|^hp_|_hp$|bot ?(field|check|trap)|leave ?(this )?blank|do ?not ?fill/i;
+/**
+ * Field names that are traps by convention rather than by looking hidden.
+ *
+ * Matched against the name with separators flattened to spaces, so `bot_trap`, `bot-trap` and
+ * `botTrap` are all the same thing. Writing the underscores into the pattern instead is how
+ * `leave_this_blank` slipped past on the first attempt.
+ */
+const TRAP_NAME = /honey ?pot|\bhp\b|bot ?(field|check|trap)|leave (this )?blank|do not fill/i;
 
 /**
  * A long answer is one the speaker talks through, not one they spell out.
@@ -193,6 +200,8 @@ function kindOf(el: Element): FieldKind {
       case "month":
       case "week":
         return "date";
+      case "range":
+        return "number";
       default:
         return "text";
     }
@@ -251,7 +260,9 @@ function isCustom(el: Element, kind: FieldKind): boolean {
 function looksLikeTrap(el: Element, visible: boolean): boolean {
   if (!visible) return true; // present, fillable, and invisible to the person filling it in
 
-  const name = `${el.getAttribute("name") ?? ""} ${el.id ?? ""}`;
+  const name = `${el.getAttribute("name") ?? ""} ${el.id ?? ""}`
+    .replace(/[_\-.]+/g, " ")
+    .replace(/([a-z])([A-Z])/g, "$1 $2");
   if (TRAP_NAME.test(name)) return true;
 
   // `tabindex="-1"` plus `autocomplete="off"` on a text box is the standard plain-HTML trap.
@@ -369,18 +380,27 @@ export function readForm(root: Document = document, url = root.location?.href ??
           return;
         }
 
-        const spec: FieldSpec = {
-          id: takeId(name || label, index),
-          label:
-            textOf(el.closest("fieldset")?.querySelector("legend")) ||
+        // The group's own name — the legend, not the first radio's label.
+        //
+        // `label` at this point belongs to the individual control ("Yes, I am authorized"), and
+        // using it for the group's id produced `yes_i_am_authorized` as the name of a question
+        // actually called "Work authorization". The id and the label have to come from the same
+        // place or the model is answering a question it cannot see.
+        const groupLabel = cleanLabel(
+          textOf(el.closest("fieldset")?.querySelector("legend")) ||
             el.closest("[role='radiogroup']")?.getAttribute("aria-label") ||
             name,
+        );
+
+        const spec: FieldSpec = {
+          id: takeId(groupLabel || name, index),
+          label: groupLabel,
           kind: kind === "radio" ? "radio" : "multiselect",
           required: (el as HTMLInputElement).required,
           options: [option],
           ...(visible ? {} : { suspectedHoneypot: true }),
         };
-        const selector = uniqueSelector(el);
+        const selector = uniqueSelector(el, root);
         if (selector) spec.selector = selector;
 
         groups.set(groupKey, spec);
@@ -390,7 +410,11 @@ export function readForm(root: Document = document, url = root.location?.href ??
       }
     }
 
-    const id = takeId(name || label || el.id, index);
+    // The label first, not the name. This becomes a JSON-Schema property name that a language
+    // model reads while deciding where each spoken phrase belongs, so `desired_salary` is worth
+    // far more than `question_69292246` — and meaningless `name` attributes are the norm on
+    // real ATS forms. The name is the fallback, and the element id the fallback's fallback.
+    const id = takeId(label || name || el.id, index);
     const spec: FieldSpec = {
       id,
       label,
@@ -398,7 +422,7 @@ export function readForm(root: Document = document, url = root.location?.href ??
       required: Boolean((el as HTMLInputElement).required) || el.getAttribute("aria-required") === "true",
     };
 
-    const selector = uniqueSelector(el);
+    const selector = uniqueSelector(el, root);
     if (selector) spec.selector = selector;
 
     const options = optionsOf(el);
@@ -486,4 +510,22 @@ export async function harvestOptions(read: FormRead, settleMs = 150): Promise<Fo
   }
 
   return read;
+}
+
+/**
+ * Wait until this page actually has a form on it, then stop waiting.
+ *
+ * The plain "wait for the DOM to go quiet" version is not enough on its own, and fails in the
+ * exact case it exists for: a React app that has not begun rendering is perfectly quiet, so the
+ * wait returns at once and the form reads as empty. This waits for quiet **and** for at least
+ * one candidate control to exist, giving up at `timeoutMs` either way so a page that polls in
+ * the background can never hang the hotkey.
+ */
+export function waitForForm(root: Document = document, timeoutMs = 5000): Promise<void> {
+  return whenSettled(
+    root,
+    350,
+    timeoutMs,
+    () => deepQueryAll(root, CANDIDATE_SELECTOR).some((el) => isVisible(el)),
+  );
 }
