@@ -1,26 +1,412 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
+/* ═══════════════════════════════════════════════════════════════════════════
+   Longtake.
+
+   The palette and surface rules are Outwait's, because they work: monochrome,
+   flat, every edge a hairline, no brand colour and no gradients anywhere. The
+   confidence comes from restraint rather than from a hue.
+
+   What is Longtake's own:
+     · one status colour, mint, meaning FILLED. Outwait's two statuses were
+       about waiting; ours is about a field that now has your answer in it.
+       It never appears as decoration, so when you see it, it means something.
+     · squircles — Apple's continuous corner — on every panel and control.
+     · a waveform, drawn from real amplitude, as the recurring motif.
+
+   Motion follows Emil Kowalski's rules: custom ease-out curves because the CSS
+   built-ins are too weak, everything under 300ms, scale(0.97) on press, and
+   only transform and opacity so it stays off the main thread.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+@theme {
+  /* Measured off linear.app on 2026-09-21 rather than guessed. The important
+     part is that their borders are WHITE AT LOW ALPHA, not a flat grey hex — a
+     hex border reads as a drawn line, an alpha border reads as an edge catching
+     light, and that single difference is most of why theirs look expensive. */
+  --color-ink: #08090a;
+  --color-ink-700: #161718;
+  --color-ink-500: #1d1e20;
+  --color-hair: rgba(255, 255, 255, 0.08);
+  --color-hair-lit: rgba(255, 255, 255, 0.14);
+
+  --color-paper: #fafafa;
+  --color-paper-dim: #f2f2f3;
+  --color-dim: #9a9aa2;
+  --color-faint: #6e6e77;
+
+  /* Status only. Never decoration. */
+  --color-mint: #43c39b;
+  --color-mint-deep: #14795a;
+  --color-mint-soft: #0f2a22;
+
+  --font-display: var(--font-schibsted), system-ui, sans-serif;
+  --font-sans: var(--font-geist), system-ui, sans-serif;
+  --font-mono: var(--font-jetbrains), ui-monospace, monospace;
+
+  --radius-panel: 20px;
+  --radius-control: 12px;
+
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+html {
+  background: var(--color-ink);
+  color-scheme: dark;
+  -webkit-font-smoothing: antialiased;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--color-ink);
+  color: var(--color-paper);
+  font-family: var(--font-sans);
+}
+
+.display {
+  font-family: var(--font-display);
+  font-weight: 500;
+  line-height: 0.96;
+  letter-spacing: -0.045em;
+}
+
+/**
+ * A vertical gradient painted through the letterforms — bright at the top,
+ * falling away toward the baseline. Measured off resend.com's closing, where a
+ * single huge statement carries an entire section with no panel behind it.
+ *
+ * `background-clip: text` needs a transparent fill colour to show through, and
+ * the unprefixed property still needs the -webkit- one alongside it.
+ */
+.fade-text {
+  background-image: linear-gradient(
+    180deg,
+    #ffffff 22%,
+    rgba(255, 255, 255, 0.48) 96%
+  );
+  background-clip: text;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+}
+
+/* Every small label, counter and figure caption. */
+.tag {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.2;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+}
+
+::selection {
+  background: var(--color-paper);
+  color: var(--color-ink);
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-mint);
+  outline-offset: 2px;
+  border-radius: 8px;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Squircle — Apple's continuous corner.
+
+   `corner-shape` sets the CURVE, `border-radius` still sets the SIZE, and
+   `corner-shape` does nothing without a non-zero radius. `squircle` is
+   shorthand for `superellipse(2)` — x⁴ + y⁴ = 1 — which is the iOS shape.
+   Chromium 139+ only, so it is a progressive enhancement and everyone else
+   quietly gets an ordinary rounded corner.
+
+   Deliberately not @squircle-js/react: that renders the shape as an SVG
+   clip-path, and a clip-path clips the border and shadow with it.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.sq {
+  border-radius: var(--radius-panel);
+}
+
+.sq-sm {
+  border-radius: var(--radius-control);
+}
+
+@supports (corner-shape: squircle) {
+  .sq,
+  .sq-sm {
+    corner-shape: squircle;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Surfaces — flat, hairline-edged, never elevated
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/**
+ * A panel, built the way Linear builds one.
+ *
+ * Two stacked layers rather than one flat fill: a 3/255 white wash over the
+ * panel colour. It is almost invisible on its own and it is what stops a dark
+ * card looking like a hole cut in the page.
+ */
+.panel {
+  position: relative;
+  background:
+    linear-gradient(0deg, #ffffff05, #ffffff05),
+    var(--color-ink-700);
+  border: 0.8px solid var(--color-hair);
+  border-radius: 12px;
+  box-shadow: rgb(0 0 0 / 0.25) 0 2px 32px 0;
+  transition: border-color 260ms var(--ease-out);
+}
+
+.panel-hover:hover {
+  border-color: var(--color-hair-lit);
+}
+
+/**
+ * The shine — a border that lights up under the cursor.
+ *
+ * Lifted from Linear's `_shine` class. The trick is that this overlay is
+ * nothing BUT a border, and it is masked to a soft blob positioned at
+ * `--mask-x` / `--mask-y`. Move those with the pointer and the edge appears to
+ * catch the light only where your hand is.
+ *
+ * The variables default to the middle so the card still looks right before the
+ * pointer has ever touched it, and on touch devices where it never will.
+ */
+.shine {
+  --shine-beam-length: 220px;
+  --mask-x: 50%;
+  --mask-y: 50%;
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border-radius: inherit;
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  opacity: 0;
+  transition: opacity 320ms var(--ease-out);
+  mask-image: radial-gradient(
+    ellipse var(--shine-beam-length) var(--shine-beam-length) at var(--mask-x) var(--mask-y),
+    #000 0%,
+    #0009 30%,
+    #0003 50%,
+    #0000 70%
+  );
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .shine-host:hover .shine {
+    opacity: 1;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Pressables — the cheapest way to make an interface feel like it heard you
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.press {
+  cursor: pointer;
+  transition:
+    transform 160ms var(--ease-out),
+    background-color 160ms var(--ease-out),
+    border-color 160ms var(--ease-out),
+    color 160ms var(--ease-out),
+    opacity 160ms var(--ease-out);
+}
+
+.press:active {
+  transform: scale(0.97);
+}
+
+.btn-solid {
+  background: var(--color-paper);
+  color: var(--color-ink);
+}
+
+.btn-solid:hover {
+  background: #ffffff;
+}
+
+.btn-ghost {
+  color: #fafafab3;
+  box-shadow: inset 0 0 0 1px var(--color-hair);
+}
+
+.btn-ghost:hover {
+  color: var(--color-paper);
+  background: #fafafa0d;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Scene animations.
+
+   Seven cells, seven different mechanisms — reverse-engineered from the
+   keyframe tables of sites that do this well, rather than reusing one trick
+   seven times:
+
+     draw        stroke-dashoffset → 0            attio  custom-agents-border-draw
+     flip-in     blur + scale crossfade           dub    logo-flip-in
+     bar-fill    scaleX(0) → scaleX(1)            dub    dot-progress
+     badge-pop   hidden until 85%, then rises     attio  completed
+     sweep       rotate(360deg)                   attio  reporting-radar-arm
+     ring        expand and fade                  attio  radar-ring-pulse
+     orbit       offset-distance → 100%           dub    offset-move
+
+   Blur in `flip-in` is doing real work: without it you see two distinct states
+   overlapping during a crossfade. Blur bridges them so the eye reads one
+   transformation instead of two objects swapping.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+@keyframes draw {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes flip-in {
+  0% {
+    filter: blur(2px);
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    filter: blur(0);
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/**
+ * One member of a crossfading set: blur in, hold for a third of the cycle,
+ * blur out. Siblings get delays of cycle/3.
+ *
+ * Driven entirely from CSS. Mixing this with a SMIL <animate> on the same
+ * opacity meant both ran and `fill: both` held the CSS value, so all three
+ * layouts stayed visible on top of each other.
+ */
+@keyframes cycle-in {
+  0%,
+  2% {
+    opacity: 0;
+    filter: blur(3px);
+    transform: scale(0.975);
+  }
+  6%,
+  28% {
+    opacity: 1;
+    filter: blur(0);
+    transform: scale(1);
+  }
+  33%,
+  100% {
+    opacity: 0;
+    filter: blur(3px);
+    transform: scale(0.975);
+  }
+}
+
+@keyframes bar-fill {
+  0%,
+  10% {
+    transform: scaleX(0);
+  }
+  45%,
+  88% {
+    transform: scaleX(1);
+  }
+  to {
+    transform: scaleX(0);
+  }
+}
+
+@keyframes badge-pop {
+  0%,
+  78% {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  90%,
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes sweep {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes ring {
+  0% {
+    transform: scale(0.4);
+    opacity: 0.55;
+  }
+  to {
+    transform: scale(1);
+    opacity: 0;
+  }
+}
+
+@keyframes orbit {
+  to {
+    offset-distance: 100%;
+  }
+}
+
+@keyframes caret {
+  0%,
+  49% {
+    opacity: 1;
+  }
+  50%,
+  to {
+    opacity: 0;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Layout
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.wrap {
+  width: 100%;
+  max-width: 1180px;
+  margin-inline: auto;
+  padding-inline: clamp(20px, 4vw, 40px);
+}
+
+.section {
+  padding-block: clamp(72px, 9vw, 128px);
+}
+
+/* A vertical marquee. The track is duplicated in the markup, so translating it
+   by exactly half its height loops with no visible seam. */
+@keyframes marquee-y {
+  from {
+    transform: translateY(0);
+  }
+  to {
+    transform: translateY(-50%);
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Reduced motion — gentler, not absent
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+
+  .press:active {
+    transform: none;
+  }
 }
