@@ -18,6 +18,13 @@ import type {
   shapeResult,
   readHesitation,
   describeMarks,
+  canonicalKey,
+  remember,
+  recall,
+  asSpokenValues,
+  listMemory,
+  forget,
+  forgetAll,
 } from "@longtake/core";
 
 declare global {
@@ -42,6 +49,13 @@ declare global {
       shapeResult: typeof shapeResult;
       readHesitation: typeof readHesitation;
       describeMarks: typeof describeMarks;
+      canonicalKey: typeof canonicalKey;
+      remember: typeof remember;
+      recall: typeof recall;
+      asSpokenValues: typeof asSpokenValues;
+      listMemory: typeof listMemory;
+      forget: typeof forget;
+      forgetAll: typeof forgetAll;
       inspect: () => unknown;
       inspectDeep: () => Promise<unknown>;
       last?: ReturnType<typeof readForm>;

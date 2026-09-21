@@ -1194,8 +1194,148 @@
     });
   }
 
+  // core/src/memory.ts
+  var KEYS = [
+    // ── identity ──────────────────────────────────────────────────────────────
+    {
+      key: "first_name",
+      match: /^(first|given|fore)[ ]?name$|^first$/,
+      // "Preferred first name" is a different question with a different answer.
+      never: /preferred|maiden|previous|former|parent|guardian|emergency|referrer|referee/
+    },
+    {
+      key: "last_name",
+      match: /^(last|sur|family)[ ]?name$|^surname$/,
+      never: /preferred|maiden|previous|former|parent|guardian|emergency|referrer|referee/
+    },
+    {
+      key: "full_name",
+      match: /^(full|legal|your)?[ ]?name$/,
+      never: /first|last|sur|family|preferred|maiden|previous|former|user|company|employer|school|parent|guardian|emergency|referee/
+    },
+    {
+      key: "preferred_name",
+      match: /preferred[ ]?(first)?[ ]?name|nickname|what should we call you/
+    },
+    // ── contact ───────────────────────────────────────────────────────────────
+    {
+      key: "email",
+      match: /e[ -]?mail/,
+      // A referrer's email is not yours.
+      never: /confirm|repeat|verify|parent|guardian|emergency|referrer|referee|manager|alternate|secondary/
+    },
+    {
+      key: "phone",
+      match: /phone|mobile|telephone|contact number|cell/,
+      never: /confirm|parent|guardian|emergency|referrer|referee|alternate|secondary|work phone/
+    },
+    // ── where you are ─────────────────────────────────────────────────────────
+    {
+      key: "city",
+      match: /^(current )?(city|town)$|city of residence|location \(city\)|^location$|where are you based/,
+      never: /birth|company|office|preferred work|desired|willing/
+    },
+    { key: "country", match: /^country$|country of residence/, never: /birth|citizenship|company/ },
+    { key: "postal_code", match: /post(al)? ?code|zip ?code|pin ?code/ },
+    // ── links ─────────────────────────────────────────────────────────────────
+    { key: "linkedin", match: /linked ?in/ },
+    { key: "github", match: /git ?hub/ },
+    { key: "portfolio", match: /portfolio|personal (web)?site|^website$/, never: /company|employer/ },
+    // ── work ──────────────────────────────────────────────────────────────────
+    {
+      key: "current_employer",
+      match: /current (employer|company)|present employer|who do you work for|name of your current/,
+      // "Previous employer" is a different job and a different answer.
+      never: /previous|former|last employer|first employer|desired|target/
+    },
+    { key: "current_title", match: /current (job )?title|current role|present title/, never: /desired|target/ },
+    {
+      key: "years_experience",
+      match: /years? of (relevant )?experience|how (many|much) (years|experience)|total experience/
+    },
+    { key: "notice_period", match: /notice period|when can you (start|join)|availability to start/ },
+    { key: "expected_salary", match: /(expected|desired|target) (salary|compensation|ctc)|salary expectation/ },
+    { key: "current_salary", match: /current (salary|compensation|ctc)/, never: /expected|desired|target/ },
+    // ── the yes/no ones every job form asks ───────────────────────────────────
+    { key: "willing_to_relocate", match: /relocat/ },
+    { key: "work_authorization", match: /authoriz(ed|ation) to work|legally (authorized|able) to work|right to work/ },
+    { key: "needs_sponsorship", match: /sponsorship|require.*visa|visa.*require/ },
+    // ── the long ones ─────────────────────────────────────────────────────────
+    { key: "about_you", match: /tell us about your ?self|about you|introduce yourself|summary|bio/ }
+  ];
+  function normalise4(label) {
+    return label.toLowerCase().replace(/\*/g, " ").replace(/[\p{P}\p{S}]/gu, " ").replace(/\s+/g, " ").trim();
+  }
+  function canonicalKey(spec) {
+    const label = normalise4(spec.label || spec.id.replace(/_/g, " "));
+    if (!label) return null;
+    const hits = KEYS.filter((entry) => {
+      if (entry.never?.test(label)) return false;
+      return entry.match.test(label);
+    });
+    return hits.length === 1 ? hits[0].key : null;
+  }
+  function remember(memory, specs, values, sourceUrl = "", now = Date.now()) {
+    const byId = new Map(specs.map((spec) => [spec.id, spec]));
+    const next = { ...memory };
+    for (const spoken of values) {
+      const spec = byId.get(spoken.fieldId);
+      if (!spec) continue;
+      if (!spoken.evidence || spoken.evidence.trim() === "") continue;
+      if (spec.suspectedHoneypot) continue;
+      const key = canonicalKey(spec);
+      if (!key) continue;
+      next[key] = {
+        key,
+        value: spoken.value,
+        evidence: spoken.evidence,
+        askedAs: spec.label || spec.id,
+        savedAt: now,
+        sourceUrl
+      };
+    }
+    return next;
+  }
+  function recall(memory, specs) {
+    const found = [];
+    for (const spec of specs) {
+      if (spec.suspectedHoneypot) continue;
+      if (spec.kind === "file") continue;
+      const key = canonicalKey(spec);
+      if (!key) continue;
+      const known = memory[key];
+      if (!known) continue;
+      found.push({
+        fieldId: spec.id,
+        key,
+        value: known.value,
+        evidence: known.evidence,
+        previouslyAskedAs: known.askedAs
+      });
+    }
+    return found;
+  }
+  function asSpokenValues(recalled) {
+    return recalled.map((item) => ({
+      fieldId: item.fieldId,
+      value: item.value,
+      evidence: item.evidence
+    }));
+  }
+  function listMemory(memory) {
+    return Object.values(memory).sort((a, b) => b.savedAt - a.savedAt);
+  }
+  function forget(memory, key) {
+    const next = { ...memory };
+    delete next[key];
+    return next;
+  }
+  function forgetAll() {
+    return {};
+  }
+
   // core/src/index.ts
-  var CORE_VERSION = "0.6.0";
+  var CORE_VERSION = "0.7.0";
 
   // tools/probe.ts
   window.__longtake = {
@@ -1218,6 +1358,13 @@
     shapeResult,
     readHesitation,
     describeMarks,
+    canonicalKey,
+    remember,
+    recall,
+    asSpokenValues,
+    listMemory,
+    forget,
+    forgetAll,
     inspect: () => {
       const read = readForm();
       window.__longtake.last = read;

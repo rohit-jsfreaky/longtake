@@ -45,6 +45,7 @@ described as working before it works.
 | `core/src/evidence.ts` | checks every quote against what the person actually said | ✅ working, 43 tests |
 | `core/src/dictation.ts` | per-field shaping, verbatim kept beside the clean text | ✅ working, 48 tests |
 | `core/src/hesitation.ts` | the gap between the two, and the one sentence it may say | ✅ working, 40 tests |
+| `core/src/memory.ts` | answers keyed by meaning, so the next form arrives filled | ✅ working, 63 tests |
 | `extension/` | Chrome MV3, runs `core/` against any live page | 🟡 skeleton + hotkey only |
 
 ## How AssemblyAI is used
@@ -79,14 +80,14 @@ The key never reaches the browser. The server mints a short-lived, single-use to
 token goes to the client.
 
 ```bash
-npm test            # 531 tests against the real core/, in real Chrome
+npm test            # 594 tests against the real core/, in real Chrome
 npm run build       # production build
 npm run typecheck   # both packages
 ```
 
 ### The tests
 
-`core/` is the part that has to survive somebody else's markup, so it is the part with a suite: **531 tests** covering label resolution, every control type, visibility and honeypots, shadow roots, iframes, React portals, late-rendering forms, selector uniqueness, and every refusal rule.
+`core/` is the part that has to survive somebody else's markup, so it is the part with a suite: **594 tests** covering label resolution, every control type, visibility and honeypots, shadow roots, iframes, React portals, late-rendering forms, selector uniqueness, and every refusal rule.
 
 They run in **real Chrome**, not jsdom, and that is not a preference. `getBoundingClientRect` returns zeroes under jsdom, so every visibility decision — the thing that separates a real field from a bot trap — would be untestable. Shadow roots, portals and component state need a real engine too. The suite uses the Chrome already on your machine rather than downloading its own.
 
@@ -133,6 +134,10 @@ Two of these are hard constraints, not preferences.
   tests assert that the vocabulary of certainty and truth never appears anywhere in its output.
 - **It never submits anything, and never says it did.** Longtake types into the form; you read it
   and send it yourself.
+- **What it remembers stays in your browser.** Answers you have already given are keyed by what
+  they mean, so a second form arrives filled in — and every one carries the words you originally
+  used, so nothing is ever a guess. No account, no sync, nothing uploaded, and one click empties
+  it.
 - **The verbatim is kept.** What you actually said stays next to the cleaned-up version, per
   field, so you can always hear yourself say it.
 

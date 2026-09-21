@@ -22,8 +22,14 @@ import {
   configForField,
   fieldsWorthShaping,
   keepOnlyWhatWasSaid,
+  asSpokenValues,
   describeMarks,
+  forget,
+  forgetAll,
+  listMemory,
   readHesitation,
+  recall,
+  remember,
   shapeResult,
   stillMissing,
   validateTool,
@@ -33,6 +39,8 @@ import {
   type FormRead,
   type DictationResult,
   type Hesitation,
+  type Memory,
+  type RememberedAnswer,
   type ShapedAnswer,
   type SpokenValue,
   type WriteOutcome,
@@ -43,6 +51,7 @@ import {
   type VoiceSession,
 } from "@/lib/voice-session";
 import { playTurn, turnSeconds } from "@/lib/playback";
+import { clearMemory, loadMemory, saveMemory } from "@/lib/memory-store";
 import { DemoForm } from "./DemoForm";
 
 type LogLine = { at: string; kind: "in" | "out" | "app"; text: string };
@@ -120,6 +129,10 @@ export default function FillPage() {
   const [hesitations, setHesitations] = useState<Record<string, Hesitation>>({});
   /** Which field is currently playing back, so the UI can say so. */
   const [nowPlaying, setNowPlaying] = useState<string | null>(null);
+  /** Answers from earlier tellings. This browser only — see `memory-store.ts`. */
+  const [known, setKnown] = useState<RememberedAnswer[]>([]);
+  /** Fields on THIS form that arrived pre-filled, so the page can say which and why. */
+  const [fromMemory, setFromMemory] = useState<{ fieldId: string; askedAs: string }[]>([]);
 
   const sessionRef = useRef<VoiceSession | null>(null);
   const readRef = useRef<FormRead | null>(null);
@@ -140,6 +153,7 @@ export default function FillPage() {
   const speechStartedAtRef = useRef<number | null>(null);
   const askedAtRef = useRef<number | null>(null);
   const pauseBeforeAnswerRef = useRef<number | undefined>(undefined);
+  const memoryRef = useRef<Memory>({});
   const logEndRef = useRef<HTMLDivElement | null>(null);
 
   const push = useCallback((kind: LogLine["kind"], text: string) => {
@@ -149,6 +163,57 @@ export default function FillPage() {
   useEffect(() => {
     logEndRef.current?.scrollIntoView({ block: "end" });
   }, [log]);
+
+  /**
+   * Open the page and the form is already filled in.
+   *
+   * This runs before anybody presses anything, because that is the feature: you told Longtake
+   * once, and the next form knows. Every value carries the words you originally used, so
+   * `writer.ts` applies the same rules it always does — including refusing a dropdown answer
+   * this form does not offer. Memory gets no special permission.
+   */
+  useEffect(() => {
+    let cancelled = false;
+
+    void (async () => {
+      const memory = loadMemory();
+      memoryRef.current = memory;
+      setKnown(listMemory(memory));
+      if (Object.keys(memory).length === 0) return;
+
+      await waitForForm();
+      if (cancelled) return;
+
+      const read = await harvestOptions(readForm(document, location.href, IGNORE));
+      if (cancelled) return;
+      readRef.current = read;
+      setFieldCount(read.specs.length);
+
+      const recalled = recall(memory, read.specs);
+      if (recalled.length === 0) return;
+
+      const results = await writeValues(read.specs, read.handles, asSpokenValues(recalled));
+      if (cancelled) return;
+
+      const landed = new Set(
+        results.filter((r) => r.status === "written").map((r) => r.fieldId),
+      );
+      for (const id of landed) filledRef.current.add(id);
+
+      setOutcomes((previous) => [...previous, ...results]);
+      setFromMemory(
+        recalled
+          .filter((r) => landed.has(r.fieldId))
+          .map((r) => ({ fieldId: r.fieldId, askedAs: r.previouslyAskedAs })),
+      );
+      setMissing(stillMissing(read.specs, filledRef.current).map((s) => s.label || s.id));
+      push("app", `brought ${landed.size} answer(s) from an earlier form`);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [push]);
 
   /** Play back the recording an answer came out of. */
   const hearIt = useCallback(
@@ -353,6 +418,22 @@ export default function FillPage() {
         switchedModeRef.current = true;
         sessionRef.current?.setTurnDetection(CONVERSATION_TURN_DETECTION);
         push("app", "switched to conversation timing");
+      }
+
+      // ── Phase 7: keep what was said, for the next form ─────────────────────────────
+      //
+      // Only answers that were written, and only ones whose meaning is recognisable across
+      // sites. A company's own question — "what excites you about us" — is never stored,
+      // because it will never be asked again in that wording and a stale answer to it would
+      // be worse than an empty box.
+      const written = spoken.filter((value) =>
+        results.some((r) => r.fieldId === value.fieldId && r.status === "written"),
+      );
+      if (written.length > 0) {
+        const updated = remember(memoryRef.current, read.specs, written, read.url);
+        memoryRef.current = updated;
+        saveMemory(updated);
+        setKnown(listMemory(updated));
       }
 
       // ── Phase 3: the long answers get a pass of their own ──────────────────────────
@@ -575,6 +656,88 @@ ${text}`.trim();
                 • {label}
               </p>
             ))}
+          </div>
+        </section>
+
+        {/*
+          What an earlier telling already answered on this form. Shown rather than silent,
+          because a pre-filled form gets skimmed, and somebody should be able to see at a glance
+          which answers they gave just now and which arrived from last time.
+        */}
+        {fromMemory.length > 0 && (
+          <section>
+            <h2 className="text-xs font-medium uppercase tracking-wide text-neutral-500">
+              Brought from last time ({fromMemory.length})
+            </h2>
+            <div className="mt-1 rounded-md border border-sky-300 bg-sky-50 p-2 text-xs dark:border-sky-900 dark:bg-sky-950">
+              {fromMemory.map((item) => (
+                <p key={item.fieldId} className="truncate text-sky-800 dark:text-sky-300">
+                  {item.fieldId}{" "}
+                  <span className="text-sky-600 dark:text-sky-500">
+                    — you answered “{item.askedAs}” before
+                  </span>
+                </p>
+              ))}
+            </div>
+          </section>
+        )}
+
+        {/*
+          Everything Longtake knows about the person, listed plainly, with a way to delete it.
+          A product that keeps somebody's name, salary and immigration status should be able to
+          show them the whole list on one screen and let them empty it in one click.
+        */}
+        <section>
+          <h2 className="text-xs font-medium uppercase tracking-wide text-neutral-500">
+            Remembered about you ({known.length})
+          </h2>
+          <div className="mt-1 rounded-md border border-neutral-200 p-2 text-xs dark:border-neutral-800">
+            {known.length === 0 && (
+              <p className="text-neutral-400">
+                Nothing yet. Answer once and the next form arrives filled in.
+              </p>
+            )}
+            {known.map((answer) => (
+              <div key={answer.key} className="mb-1 flex items-start gap-2">
+                <button
+                  onClick={() => {
+                    const updated = forget(memoryRef.current, answer.key);
+                    memoryRef.current = updated;
+                    saveMemory(updated);
+                    setKnown(listMemory(updated));
+                  }}
+                  title="Forget this"
+                  className="mt-0.5 shrink-0 rounded border border-neutral-300 px-1 text-[10px] leading-4 hover:bg-neutral-100 dark:border-neutral-700 dark:hover:bg-neutral-800"
+                >
+                  ✕
+                </button>
+                <span className="min-w-0">
+                  <span className="font-medium">{answer.key}</span>{" "}
+                  <span className="text-neutral-600 dark:text-neutral-400">
+                    {String(answer.value)}
+                  </span>
+                </span>
+              </div>
+            ))}
+
+            <div className="mt-2 flex items-center justify-between gap-2 border-t border-neutral-200 pt-2 dark:border-neutral-800">
+              <p className="text-[10px] text-neutral-400">
+                Stored in this browser only. Never uploaded.
+              </p>
+              {known.length > 0 && (
+                <button
+                  onClick={() => {
+                    clearMemory();
+                    memoryRef.current = forgetAll();
+                    setKnown([]);
+                    setFromMemory([]);
+                  }}
+                  className="shrink-0 rounded border border-neutral-300 px-1.5 py-0.5 text-[10px] hover:bg-neutral-100 dark:border-neutral-700 dark:hover:bg-neutral-800"
+                >
+                  Forget everything
+                </button>
+              )}
+            </div>
           </div>
         </section>
 
