@@ -19,9 +19,12 @@ export default defineConfig({
   /**
    * Half the cores locally. The suite is five hundred browser tests and letting it take every
    * core makes the machine unusable while it runs — which is how it stops being run.
-   * CI has the box to itself.
+   *
+   * On CI, two. Playwright defaults to a single worker there for stability, which put the first
+   * green run at five minutes; the tests are independent (each builds its own page with
+   * `setContent`) so a second worker is safe, and `retries: 2` below covers the rest.
    */
-  workers: process.env.CI ? undefined : "50%",
+  workers: process.env.CI ? 2 : "50%",
 
   /** A browser test that fails once under load has not necessarily found a bug. */
   retries: process.env.CI ? 2 : 0,

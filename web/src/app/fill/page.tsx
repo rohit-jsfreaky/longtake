@@ -360,8 +360,18 @@ ${text}`.trim();
   useEffect(() => () => void sessionRef.current?.stop(), []);
 
   const live = status !== "idle" && status !== "error";
-  const written = outcomes.filter((o) => o.status === "written");
-  const refused = outcomes.filter((o) => o.status !== "written");
+  /**
+   * One row per field, showing where it actually landed.
+   *
+   * A field can be written twice: the agent's value goes in first, and then the Dictation pass
+   * replaces it with a better-shaped one. Listing both left the panel showing two different
+   * answers for the same question, with the superseded one on top — which reads like a bug even
+   * though the form is correct. The last write wins, because the last write is what is in the box.
+   */
+  const latest = new Map<string, WriteOutcome>();
+  for (const outcome of outcomes) latest.set(outcome.fieldId, outcome);
+  const written = [...latest.values()].filter((o) => o.status === "written");
+  const refused = [...latest.values()].filter((o) => o.status !== "written");
 
   return (
     <main className="mx-auto grid max-w-6xl gap-8 p-6 lg:grid-cols-[1fr_380px]">
