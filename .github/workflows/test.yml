@@ -33,11 +33,16 @@ jobs:
       - name: Install Chrome
         run: npx playwright install --with-deps chrome
 
-      - name: Typecheck
-        run: npm run typecheck
-
+      # Build first. Next generates types into `.next/types` that the app's own tsconfig
+      # includes, so on a clean checkout anything depending on them does not exist yet — which
+      # is how CI's first run failed while the same command passed locally against a stale
+      # `.next`. Nothing in `src/` relies on those types any more, and this ordering keeps it
+      # that way for whatever gets written next.
       - name: Build
         run: npm run build
+
+      - name: Typecheck
+        run: npm run typecheck
 
       # `npm test` builds the probe bundle first, so the suite always runs the real `core/`
       # rather than a stale copy of it.

@@ -18,7 +18,16 @@ export const metadata: Metadata = {
     "Speak once, for about a minute, like telling a friend. Twenty fields fill at once on a form you do not own. It asks out loud only for what you did not cover.",
 };
 
-export default function RootLayout({ children }: LayoutProps<"/">) {
+/**
+ * Typed by hand rather than with Next's generated `LayoutProps<"/">`.
+ *
+ * That type lives in `.next/types`, which only exists after a build — so on a clean checkout
+ * `npm run typecheck` failed with *"Cannot find name 'LayoutProps'"*, which is exactly what CI
+ * found on its first run. It worked locally only because a stale `.next` was lying around.
+ * A root layout takes nothing but its children, so naming the type outright costs nothing and
+ * the repo now type-checks the moment it is cloned.
+ */
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html
       lang="en"
