@@ -44,6 +44,7 @@ described as working before it works.
 | `core/src/binder.ts` | `FieldSpec[]` → a JSON-Schema tool built at runtime | ✅ working, 66 tests |
 | `core/src/evidence.ts` | checks every quote against what the person actually said | ✅ working, 43 tests |
 | `core/src/dictation.ts` | per-field shaping, verbatim kept beside the clean text | ✅ working, 48 tests |
+| `core/src/hesitation.ts` | the gap between the two, and the one sentence it may say | ✅ working, 40 tests |
 | `extension/` | Chrome MV3, runs `core/` against any live page | 🟡 skeleton + hotkey only |
 
 ## How AssemblyAI is used
@@ -78,14 +79,14 @@ The key never reaches the browser. The server mints a short-lived, single-use to
 token goes to the client.
 
 ```bash
-npm test            # 491 tests against the real core/, in real Chrome
+npm test            # 531 tests against the real core/, in real Chrome
 npm run build       # production build
 npm run typecheck   # both packages
 ```
 
 ### The tests
 
-`core/` is the part that has to survive somebody else's markup, so it is the part with a suite: **491 tests** covering label resolution, every control type, visibility and honeypots, shadow roots, iframes, React portals, late-rendering forms, selector uniqueness, and every refusal rule.
+`core/` is the part that has to survive somebody else's markup, so it is the part with a suite: **531 tests** covering label resolution, every control type, visibility and honeypots, shadow roots, iframes, React portals, late-rendering forms, selector uniqueness, and every refusal rule.
 
 They run in **real Chrome**, not jsdom, and that is not a preference. `getBoundingClientRect` returns zeroes under jsdom, so every visibility decision — the thing that separates a real field from a bot trap — would be untestable. Shadow roots, portals and component state need a real engine too. The suite uses the Chrome already on your machine rather than downloading its own.
 
@@ -126,8 +127,10 @@ Two of these are hard constraints, not preferences.
   asked to fill a form with no input at all, one confidently produced a whole applicant, quotes
   included. Some sites also plant fields to catch software that fills everything; more
   importantly, a form filled with things you never said is worse than an empty one.
-- **Never claim to know whether you told the truth.** Longtake can see where speech got hesitant.
-  It only ever uses that to ask *"want another look at this one?"* — never to judge.
+- **Never claim to know whether you told the truth.** Longtake can see where speech got hesitant,
+  and the only thing it is allowed to conclude is *"Want another look at this one?"*. That is not
+  a promise in a comment — `hesitation.ts` exports exactly one user-facing sentence, and the
+  tests assert that the vocabulary of certainty and truth never appears anywhere in its output.
 - **It never submits anything, and never says it did.** Longtake types into the form; you read it
   and send it yourself.
 - **The verbatim is kept.** What you actually said stays next to the cleaned-up version, per

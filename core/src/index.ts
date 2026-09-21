@@ -12,6 +12,7 @@ export * from "./writer";
 export * from "./binder";
 export * from "./evidence";
 export * from "./dictation";
+export * from "./hesitation";
 
 /** Bumped when the shape of a `FieldSpec` changes, so stored answers can be migrated. */
-export const CORE_VERSION = "0.5.0";
+export const CORE_VERSION = "0.6.0";

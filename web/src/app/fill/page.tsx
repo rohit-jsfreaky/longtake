@@ -22,6 +22,8 @@ import {
   configForField,
   fieldsWorthShaping,
   keepOnlyWhatWasSaid,
+  describeMarks,
+  readHesitation,
   shapeResult,
   stillMissing,
   validateTool,
@@ -30,6 +32,7 @@ import {
   type FieldSpec,
   type FormRead,
   type DictationResult,
+  type Hesitation,
   type ShapedAnswer,
   type SpokenValue,
   type WriteOutcome,
@@ -39,6 +42,7 @@ import {
   startVoiceSession,
   type VoiceSession,
 } from "@/lib/voice-session";
+import { playTurn, turnSeconds } from "@/lib/playback";
 import { DemoForm } from "./DemoForm";
 
 type LogLine = { at: string; kind: "in" | "out" | "app"; text: string };
@@ -112,6 +116,10 @@ export default function FillPage() {
   const [log, setLog] = useState<LogLine[]>([]);
   /** The long answers that went through Dictation, in both of their forms. */
   const [shaped, setShaped] = useState<Record<string, ShapedAnswer>>({});
+  /** Fields the recording suggests are worth a second look. Never a judgement, ever. */
+  const [hesitations, setHesitations] = useState<Record<string, Hesitation>>({});
+  /** Which field is currently playing back, so the UI can say so. */
+  const [nowPlaying, setNowPlaying] = useState<string | null>(null);
 
   const sessionRef = useRef<VoiceSession | null>(null);
   const readRef = useRef<FormRead | null>(null);
@@ -121,6 +129,17 @@ export default function FillPage() {
   const transcriptRef = useRef("");
   /** The audio of the turn just finished — what Dictation re-reads, and Phase 5 plays back. */
   const lastAudioRef = useRef<Int16Array | null>(null);
+  /**
+   * The receipt: which recording each answer came out of.
+   *
+   * Keyed by field but sharing the underlying turns, because one breath usually answers
+   * several questions and storing the audio per field would hold the same minute ten times.
+   */
+  const receiptsRef = useRef<Map<string, Int16Array>>(new Map());
+  /** When the person started speaking, to measure the pause before they answered. */
+  const speechStartedAtRef = useRef<number | null>(null);
+  const askedAtRef = useRef<number | null>(null);
+  const pauseBeforeAnswerRef = useRef<number | undefined>(undefined);
   const logEndRef = useRef<HTMLDivElement | null>(null);
 
   const push = useCallback((kind: LogLine["kind"], text: string) => {
@@ -130,6 +149,74 @@ export default function FillPage() {
   useEffect(() => {
     logEndRef.current?.scrollIntoView({ block: "end" });
   }, [log]);
+
+  /** Play back the recording an answer came out of. */
+  const hearIt = useCallback(
+    async (fieldId: string) => {
+      const audio = receiptsRef.current.get(fieldId);
+      if (!audio) return;
+      setNowPlaying(fieldId);
+      try {
+        await playTurn(audio);
+      } finally {
+        setNowPlaying((current) => (current === fieldId ? null : current));
+      }
+    },
+    [],
+  );
+
+  /**
+   * Clicking a filled field plays back the words it came from.
+   *
+   * One delegated listener rather than one per field, so nothing has to be re-attached when the
+   * form re-renders — and the page we are sitting on is somebody else's, so the lightest touch
+   * that works is the right one. Listening does not interfere with editing: the click still
+   * focuses the box, and a person who wants to type just types.
+   */
+  useEffect(() => {
+    const onClick = (event: MouseEvent) => {
+      const read = readRef.current;
+      if (!read || receiptsRef.current.size === 0) return;
+
+      const target = event.target as HTMLElement | null;
+      if (!target) return;
+
+      for (const [fieldId, element] of read.handles) {
+        if (element === target || element.contains(target)) {
+          if (receiptsRef.current.has(fieldId)) void hearIt(fieldId);
+          return;
+        }
+      }
+    };
+
+    document.addEventListener("click", onClick, true);
+    return () => document.removeEventListener("click", onClick, true);
+  }, [hearIt]);
+
+  /**
+   * Mark the fields worth a second look, softly.
+   *
+   * A thin amber ring and nothing else. It is somebody else's form and the mark is an offer, not
+   * a verdict — anything louder would read as an accusation, which is exactly what this feature
+   * must never be.
+   */
+  useEffect(() => {
+    const read = readRef.current;
+    if (!read) return;
+
+    const touched: HTMLElement[] = [];
+    for (const fieldId of Object.keys(hesitations)) {
+      const element = read.handles.get(fieldId);
+      if (!element) continue;
+      element.style.boxShadow = "0 0 0 2px rgba(217, 119, 6, 0.45)";
+      element.style.borderRadius = element.style.borderRadius || "6px";
+      touched.push(element);
+    }
+
+    return () => {
+      for (const element of touched) element.style.boxShadow = "";
+    };
+  }, [hesitations]);
 
   /**
    * Send a long answer's own audio back through Dictation, with that field's own prompts.
@@ -175,6 +262,18 @@ export default function FillPage() {
 
           const shaped = shapeResult(spec.id, payload as DictationResult);
           setShaped((previous) => ({ ...previous, [spec.id]: shaped }));
+
+          // Both halves exist now, so the gap between them can be read. This is the only
+          // place it happens, and the only thing it can conclude is "want another look?".
+          const hesitation = readHesitation(
+            spec.id,
+            shaped.verbatim,
+            shaped.clean,
+            pauseBeforeAnswerRef.current,
+          );
+          if (hesitation.worthAnotherLook) {
+            setHesitations((previous) => ({ ...previous, [spec.id]: hesitation }));
+          }
 
           // The tidy version replaces what the agent wrote — same evidence, better shaping.
           const element = read.handles.get(spec.id);
@@ -241,7 +340,11 @@ export default function FillPage() {
       }
 
       for (const result of results) {
-        if (result.status === "written") filledRef.current.add(result.fieldId);
+        if (result.status !== "written") continue;
+        filledRef.current.add(result.fieldId);
+        // The turn this answer came out of IS the receipt. Same buffer for every field that
+        // came from the same breath — a reference, not a copy.
+        if (lastAudioRef.current) receiptsRef.current.set(result.fieldId, lastAudioRef.current);
       }
 
       // The long take is over the moment the first answers land. Switch to conversational
@@ -295,7 +398,12 @@ export default function FillPage() {
     switchedModeRef.current = false;
     transcriptRef.current = "";
     lastAudioRef.current = null;
+    receiptsRef.current = new Map();
+    speechStartedAtRef.current = null;
+    askedAtRef.current = null;
+    pauseBeforeAnswerRef.current = undefined;
     setShaped({});
+    setHesitations({});
 
     try {
       // 1 — Read the page, and open every dropdown so the schema carries real options.
@@ -337,7 +445,16 @@ export default function FillPage() {
 ${text}`.trim();
           setTurns((t) => [...t, { who: "you", text }]);
         },
-        onAgentTranscript: (text) => setTurns((t) => [...t, { who: "agent", text }]),
+        onAgentTranscript: (text) => {
+          askedAtRef.current = Date.now();
+          setTurns((t) => [...t, { who: "agent", text }]);
+        },
+        onSpeechStart: () => {
+          speechStartedAtRef.current = Date.now();
+          pauseBeforeAnswerRef.current = askedAtRef.current
+            ? (speechStartedAtRef.current - askedAtRef.current) / 1000
+            : undefined;
+        },
         onError: (message) => {
           setError(message);
           setStatus("error");
@@ -460,6 +577,76 @@ ${text}`.trim();
             ))}
           </div>
         </section>
+
+        {/*
+          The receipt. Every answer on the form was spoken, and the audio is still here — so
+          checking is always one click away, on the field itself or on this list.
+        */}
+        <section>
+          <h2 className="text-xs font-medium uppercase tracking-wide text-neutral-500">
+            Hear it back ({receiptsRef.current.size})
+          </h2>
+          <div className="mt-1 rounded-md border border-neutral-200 p-2 text-xs dark:border-neutral-800">
+            {written.length === 0 && (
+              <p className="text-neutral-400">Nothing recorded yet.</p>
+            )}
+            {written.map((outcome) => {
+              const audio = receiptsRef.current.get(outcome.fieldId);
+              if (!audio) return null;
+              const marked = hesitations[outcome.fieldId];
+              return (
+                <div key={outcome.fieldId} className="mb-1 flex items-center gap-2">
+                  <button
+                    onClick={() => void hearIt(outcome.fieldId)}
+                    className="rounded border border-neutral-300 px-1.5 py-0.5 text-[10px] hover:bg-neutral-100 dark:border-neutral-700 dark:hover:bg-neutral-800"
+                  >
+                    {nowPlaying === outcome.fieldId ? "playing…" : `▶ ${turnSeconds(audio)}s`}
+                  </button>
+                  <span className="truncate">{outcome.fieldId}</span>
+                  {marked && (
+                    <span
+                      className="shrink-0 text-amber-700 dark:text-amber-500"
+                      title={marked.prompt}
+                    >
+                      ●
+                    </span>
+                  )}
+                </div>
+              );
+            })}
+            <p className="mt-1 text-[10px] text-neutral-400">
+              Clicking a field on the form plays it too.
+            </p>
+          </div>
+        </section>
+
+        {/*
+          The nudge, and the only sentence this feature is allowed to say. It is an offer to
+          re-read a box — never a claim about the person who filled it in.
+        */}
+        {Object.keys(hesitations).length > 0 && (
+          <section>
+            <h2 className="text-xs font-medium uppercase tracking-wide text-neutral-500">
+              Want another look? ({Object.keys(hesitations).length})
+            </h2>
+            <div className="mt-1 rounded-md border border-amber-300 bg-amber-50 p-2 text-xs dark:border-amber-900 dark:bg-amber-950">
+              {Object.values(hesitations).map((mark) => (
+                <div key={mark.fieldId} className="mb-1">
+                  <button
+                    onClick={() => void hearIt(mark.fieldId)}
+                    className="font-medium text-amber-800 underline decoration-dotted dark:text-amber-400"
+                  >
+                    {mark.fieldId}
+                  </button>
+                  <span className="text-amber-700 dark:text-amber-500">
+                    {" "}
+                    — {describeMarks(mark).join(", ")}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
 
         <section>
           <h2 className="text-xs font-medium uppercase tracking-wide text-neutral-500">

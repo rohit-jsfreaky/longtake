@@ -93,6 +93,8 @@ export type VoiceSessionOptions = {
    */
   onUserTranscript?: (text: string, audio: Int16Array | null) => void;
   onAgentTranscript?: (text: string) => void;
+  /** Fired the moment the person starts speaking a turn. */
+  onSpeechStart?: () => void;
   onError?: (message: string) => void;
   onClosed?: () => void;
 };
@@ -135,6 +137,7 @@ export async function startVoiceSession(options: VoiceSessionOptions): Promise<V
     onUserPartial,
     onUserTranscript,
     onAgentTranscript,
+    onSpeechStart,
     onError,
     onClosed,
     tools,
@@ -441,6 +444,9 @@ export async function startVoiceSession(options: VoiceSessionOptions): Promise<V
         break;
       case "input.speech.started":
         lastEvent = "input.speech.started";
+        // The moment somebody starts answering. How long they waited before this is one of the
+        // signals the hesitation map reads, and it is the only one not recoverable from text.
+        onSpeechStart?.();
         // Flushing here rather than waiting for `reply.done` makes barge-in ~300 ms snappier.
         flushPlayback();
         break;

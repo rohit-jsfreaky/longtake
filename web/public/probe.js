@@ -1093,8 +1093,109 @@
     };
   }
 
+  // core/src/hesitation.ts
+  var ANOTHER_LOOK = "Want another look at this one?";
+  var FILLERS = [
+    "um",
+    "uh",
+    "erm",
+    "er",
+    "ah",
+    "hmm",
+    "mm",
+    "like",
+    "you know",
+    "i mean",
+    "sort of",
+    "kind of",
+    "basically",
+    "actually",
+    "matlab",
+    "yaani",
+    "arre",
+    "haan to",
+    "\u092E\u0924\u0932\u092C",
+    "\u092F\u093E\u0928\u0940",
+    "\u0905\u0930\u0947"
+  ];
+  var HEAVILY_EDITED_RATIO = 0.25;
+  var SLOW_START_SECONDS = 2.5;
+  var FILLER_THRESHOLD = 2;
+  function normalise3(text) {
+    return text.toLowerCase().replace(/[\p{P}\p{S}]/gu, " ").replace(/\s+/g, " ").trim();
+  }
+  function countFillers(verbatim) {
+    const text = ` ${normalise3(verbatim)} `;
+    const found = [];
+    let count = 0;
+    for (const filler of FILLERS) {
+      const matches = text.split(` ${filler} `).length - 1;
+      if (matches > 0) {
+        count += matches;
+        found.push(filler);
+      }
+    }
+    return { count, words: found };
+  }
+  function countRestarts(verbatim) {
+    const words2 = normalise3(verbatim).split(" ").filter(Boolean);
+    const examples = [];
+    let count = 0;
+    for (let i = 1; i < words2.length; i++) {
+      if (words2[i] && words2[i] === words2[i - 1] && words2[i].length > 1) {
+        count++;
+        if (examples.length < 3) examples.push(words2[i]);
+      }
+    }
+    return { count, examples };
+  }
+  function readHesitation(fieldId, verbatim, clean, secondsBeforeSpeaking) {
+    const marks = [];
+    const fillers = countFillers(verbatim);
+    if (fillers.count >= FILLER_THRESHOLD) {
+      marks.push({ kind: "filler", count: fillers.count, words: fillers.words });
+    }
+    const restarts = countRestarts(verbatim);
+    if (restarts.count > 0) {
+      marks.push({ kind: "restart", count: restarts.count, examples: restarts.examples });
+    }
+    const spoken = normalise3(verbatim).length;
+    const written = normalise3(clean).length;
+    if (spoken > 0 && written < spoken) {
+      const removedRatio = (spoken - written) / spoken;
+      if (removedRatio >= HEAVILY_EDITED_RATIO) {
+        marks.push({ kind: "heavily-edited", removedRatio: Number(removedRatio.toFixed(2)) });
+      }
+    }
+    if (secondsBeforeSpeaking !== void 0 && secondsBeforeSpeaking >= SLOW_START_SECONDS) {
+      marks.push({ kind: "slow-start", seconds: Number(secondsBeforeSpeaking.toFixed(1)) });
+    }
+    const worthAnotherLook = marks.length > 0;
+    return {
+      fieldId,
+      marks,
+      worthAnotherLook,
+      // The only sentence, and only when there is a reason for it.
+      ...worthAnotherLook ? { prompt: ANOTHER_LOOK } : {}
+    };
+  }
+  function describeMarks(hesitation) {
+    return hesitation.marks.map((mark) => {
+      switch (mark.kind) {
+        case "filler":
+          return `${mark.count} filler ${mark.count === 1 ? "word" : "words"} in the recording`;
+        case "restart":
+          return `${mark.count} ${mark.count === 1 ? "restart" : "restarts"} while speaking`;
+        case "heavily-edited":
+          return `${Math.round(mark.removedRatio * 100)}% shorter once tidied`;
+        case "slow-start":
+          return `${mark.seconds}s before the answer started`;
+      }
+    });
+  }
+
   // core/src/index.ts
-  var CORE_VERSION = "0.5.0";
+  var CORE_VERSION = "0.6.0";
 
   // tools/probe.ts
   window.__longtake = {
@@ -1115,6 +1216,8 @@
     keytermsFrom,
     fieldsWorthShaping,
     shapeResult,
+    readHesitation,
+    describeMarks,
     inspect: () => {
       const read = readForm();
       window.__longtake.last = read;

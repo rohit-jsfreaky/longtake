@@ -16,6 +16,8 @@ import type {
   keytermsFrom,
   fieldsWorthShaping,
   shapeResult,
+  readHesitation,
+  describeMarks,
 } from "@longtake/core";
 
 declare global {
@@ -38,6 +40,8 @@ declare global {
       keytermsFrom: typeof keytermsFrom;
       fieldsWorthShaping: typeof fieldsWorthShaping;
       shapeResult: typeof shapeResult;
+      readHesitation: typeof readHesitation;
+      describeMarks: typeof describeMarks;
       inspect: () => unknown;
       inspectDeep: () => Promise<unknown>;
       last?: ReturnType<typeof readForm>;

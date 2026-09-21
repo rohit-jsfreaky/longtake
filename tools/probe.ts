@@ -22,6 +22,8 @@ import {
   keytermsFrom,
   fieldsWorthShaping,
   shapeResult,
+  readHesitation,
+  describeMarks,
   CORE_VERSION,
 } from "@longtake/core";
 
@@ -45,6 +47,8 @@ declare global {
       keytermsFrom: typeof keytermsFrom;
       fieldsWorthShaping: typeof fieldsWorthShaping;
       shapeResult: typeof shapeResult;
+      readHesitation: typeof readHesitation;
+      describeMarks: typeof describeMarks;
       /** Read, then open every dropdown to learn its real choices. */
       inspectDeep: () => Promise<unknown>;
       /** The live read, kept so a fill can reuse the same element handles. */
@@ -73,6 +77,8 @@ window.__longtake = {
   keytermsFrom,
   fieldsWorthShaping,
   shapeResult,
+  readHesitation,
+  describeMarks,
   inspect: () => {
     const read = readForm();
     window.__longtake.last = read;
