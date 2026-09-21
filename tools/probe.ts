@@ -11,6 +11,12 @@ import {
   harvestOptions,
   whenSettled,
   waitForForm,
+  buildFillTool,
+  validateTool,
+  describeForm,
+  stillMissing,
+  checkEvidence,
+  keepOnlyWhatWasSaid,
   CORE_VERSION,
 } from "@longtake/core";
 
@@ -23,6 +29,12 @@ declare global {
       harvestOptions: typeof harvestOptions;
       whenSettled: typeof whenSettled;
       waitForForm: typeof waitForForm;
+      buildFillTool: typeof buildFillTool;
+      validateTool: typeof validateTool;
+      describeForm: typeof describeForm;
+      stillMissing: typeof stillMissing;
+      checkEvidence: typeof checkEvidence;
+      keepOnlyWhatWasSaid: typeof keepOnlyWhatWasSaid;
       /** Read, then open every dropdown to learn its real choices. */
       inspectDeep: () => Promise<unknown>;
       /** The live read, kept so a fill can reuse the same element handles. */
@@ -39,6 +51,13 @@ window.__longtake = {
   writeValues,
   harvestOptions,
   whenSettled,
+  waitForForm,
+  buildFillTool,
+  validateTool,
+  describeForm,
+  stillMissing,
+  checkEvidence,
+  keepOnlyWhatWasSaid,
   inspect: () => {
     const read = readForm();
     window.__longtake.last = read;

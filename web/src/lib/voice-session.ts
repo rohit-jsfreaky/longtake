@@ -37,7 +37,7 @@ export type TurnDetection = {
  * for the ask-back afterwards. `input.turn_detection` is mutable, so `session.update` can flip
  * between them mid-call. That lands in Phase 2/4.
  */
-export const DICTATION_TURN_DETECTION: TurnDetection = {
+export const LONG_TAKE_TURN_DETECTION: TurnDetection = {
   vad_threshold: 0.5,
   min_silence: 3500,
   max_silence: 6000,
@@ -69,6 +69,17 @@ export type VoiceSessionOptions = {
   turnDetection?: TurnDetection;
   /** Languages to steer transcription toward. Omit for automatic detection across all 18. */
   languageCodes?: string[];
+  /** Tools the agent may call, built at runtime by `binder.ts` from the form on screen. */
+  tools?: unknown[];
+  /**
+   * Runs a tool the agent asked for, and returns whatever should go back to it.
+   *
+   * Returning an object is enough — it is stringified before it is sent, as the API requires.
+   * Throwing is also fine: the message becomes an `error` the agent reads verbatim, so make it
+   * specific. The docs are blunt that a vague error causes guessing loops, while one naming the
+   * field that failed gets a clean recovery.
+   */
+  onToolCall?: (name: string, args: Record<string, unknown>) => Promise<unknown>;
   /** Every frame in both directions, for the on-screen log. */
   onEvent?: (direction: "in" | "out", message: AgentMessage) => void;
   onReady?: (sessionId: string) => void;
@@ -83,6 +94,17 @@ export type VoiceSessionOptions = {
 export type VoiceSession = {
   /** Sends `session.end` first so we don't pay for the 30-second resume grace window. */
   stop: () => Promise<void>;
+  /**
+   * Switch turn detection mid-call.
+   *
+   * Longtake has two modes and one number cannot serve both. While the person is giving their
+   * one long take, a three-second pause is them thinking; during the ask-back afterwards, the
+   * same pause is them waiting for the agent. `input.turn_detection` is mutable, so the mode
+   * changes rather than the value being compromised.
+   */
+  setTurnDetection: (turnDetection: TurnDetection) => void;
+  /** Replace the tool list — `session.tools` replaces, it does not merge. */
+  setTools: (tools: unknown[]) => void;
 };
 
 function toBase64(samples: Int16Array): string {
@@ -100,7 +122,7 @@ export async function startVoiceSession(options: VoiceSessionOptions): Promise<V
     systemPrompt,
     greeting,
     voice = "alba",
-    turnDetection = DICTATION_TURN_DETECTION,
+    turnDetection = LONG_TAKE_TURN_DETECTION,
     languageCodes = HINGLISH_LANGUAGES,
     onEvent,
     onReady,
@@ -109,6 +131,8 @@ export async function startVoiceSession(options: VoiceSessionOptions): Promise<V
     onAgentTranscript,
     onError,
     onClosed,
+    tools,
+    onToolCall,
   } = options;
 
   // 1 — Audio and token, started together rather than one after the other.
@@ -292,9 +316,58 @@ export async function startVoiceSession(options: VoiceSessionOptions): Promise<V
           format: { encoding: "audio/pcm" },
           volume: 100,
         },
+        ...(tools && tools.length > 0 ? { tools } : {}),
       },
     });
   });
+
+  /**
+   * Tool results are held until the agent has finished its current reply.
+   *
+   * ⚠️ The two places this is documented disagree, and the specific one wins. AssemblyAI's
+   * general coding-agent prompt says to send `tool.result` "the moment your tool returns… no
+   * special timing dance". The Client-side tools page — which carries the working code — says
+   * the opposite and is precise about it: *"Send `tool.result` when `reply.done` is the latest
+   * event you've received. Not earlier (agent is still mid-transition-phrase), not later (a new
+   * turn has started)."* We follow the page with the mechanism on it.
+   *
+   * A result that arrives while a turn is in flight is queued; an interrupted reply throws the
+   * queue away, because the agent has already moved on and a stale answer would be confusing.
+   */
+  let lastEvent: string | null = null;
+  const pendingResults: { call_id: string; result: unknown }[] = [];
+
+  const flushIfIdle = () => {
+    if (lastEvent !== "reply.done" || pendingResults.length === 0) return;
+    for (const pending of pendingResults.splice(0)) {
+      send({
+        type: "tool.result",
+        call_id: pending.call_id,
+        // The API wants a JSON string here, not an object.
+        result: JSON.stringify(pending.result),
+      });
+    }
+  };
+
+  const runTool = async (message: AgentMessage) => {
+    const callId = String(message.call_id ?? "");
+    const name = String(message.name ?? "");
+    const args = (message.arguments ?? {}) as Record<string, unknown>;
+
+    let result: unknown;
+    try {
+      result = onToolCall
+        ? await onToolCall(name, args)
+        : { error: `No handler for "${name}" in this client.` };
+    } catch (cause) {
+      // Read verbatim by the model, so it should name what failed and what to ask for next.
+      result = { error: cause instanceof Error ? cause.message : String(cause) };
+    }
+
+    pendingResults.push({ call_id: callId, result });
+    // The tool may well have finished after `reply.done` already fired, so try immediately.
+    flushIfIdle();
+  };
 
   ws.addEventListener("message", (event) => {
     const message: AgentMessage = JSON.parse(event.data);
@@ -316,12 +389,26 @@ export async function startVoiceSession(options: VoiceSessionOptions): Promise<V
       case "reply.audio":
         playReplyAudio(String(message.data));
         break;
+      case "tool.call":
+        void runTool(message);
+        break;
+      case "reply.started":
+        lastEvent = "reply.started"; // a turn is in flight; hold any results that arrive now
+        break;
       case "input.speech.started":
+        lastEvent = "input.speech.started";
         // Flushing here rather than waiting for `reply.done` makes barge-in ~300 ms snappier.
         flushPlayback();
         break;
       case "reply.done":
-        if (message.status === "interrupted") flushPlayback();
+        lastEvent = "reply.done";
+        if (message.status === "interrupted") {
+          flushPlayback();
+          // The agent has moved on. Answers to the turn it abandoned are no longer wanted.
+          pendingResults.length = 0;
+        } else {
+          flushIfIdle();
+        }
         break;
       case "transcript.user.delta":
         // ⚠️ The docs example shows this event carrying an incremental `delta`. On the wire it
@@ -369,6 +456,12 @@ export async function startVoiceSession(options: VoiceSessionOptions): Promise<V
   };
 
   return {
+    setTurnDetection: (next: TurnDetection) => {
+      send({ type: "session.update", session: { input: { turn_detection: next } } });
+    },
+    setTools: (next: unknown[]) => {
+      send({ type: "session.update", session: { tools: next } });
+    },
     stop: async () => {
       closing = true;
       if (ws.readyState === WebSocket.OPEN) {
@@ -389,3 +482,16 @@ export async function startVoiceSession(options: VoiceSessionOptions): Promise<V
     },
   };
 }
+
+/**
+ * The other mode: an ordinary back-and-forth, for the questions after the long take.
+ *
+ * AssemblyAI's own recommended baseline. Once the agent is asking one short question at a time,
+ * a three-and-a-half-second wait stops reading as thinking room and starts reading as a hang.
+ */
+export const CONVERSATION_TURN_DETECTION: TurnDetection = {
+  vad_threshold: 0.5,
+  min_silence: 1400,
+  max_silence: 4000,
+  interrupt_response: true,
+};

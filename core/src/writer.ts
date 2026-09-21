@@ -110,6 +110,31 @@ function readAsYesOrNo(value: unknown): boolean {
 }
 
 /**
+ * The matching rule itself, over any list of candidate wordings.
+ *
+ * Shared so that a dropdown whose options were read in advance and one whose options only exist
+ * once it is open are judged by exactly the same standard. Returns the index of the single
+ * candidate the speaker meant, or `null`.
+ */
+function matchAmong(candidates: string[], spoken: string): number | null {
+  const want = normalise(spoken);
+  if (!want) return null;
+
+  const exact = candidates.findIndex((candidate) => normalise(candidate) === want);
+  if (exact >= 0) return exact;
+
+  // One candidate contains the spoken words, or the spoken words contain it — but only if
+  // exactly one does. Two means we do not actually know which was meant, and a coin flip on
+  // "United States" versus "United Kingdom" is not a thing to do to somebody's application.
+  const partial: number[] = [];
+  candidates.forEach((candidate, index) => {
+    const text = normalise(candidate);
+    if (text.length > 0 && (text.includes(want) || want.includes(text))) partial.push(index);
+  });
+  return partial.length === 1 ? partial[0]! : null;
+}
+
+/**
  * Which of the page's own options did the speaker mean?
  *
  * Returns `null` rather than a best guess. Every caller treats `null` as "leave it and ask".
@@ -117,23 +142,14 @@ function readAsYesOrNo(value: unknown): boolean {
 function matchOption(spec: FieldSpec, spoken: string): { value: string; label: string } | null {
   if (!spec.options || spec.options.length === 0) return null;
 
-  const want = normalise(spoken);
-  if (!want) return null;
+  // Labels and values are both offered, because a person says "India" and a form stores "in".
+  const labels = spec.options.map((option) => option.label);
+  const byLabel = matchAmong(labels, spoken);
+  if (byLabel !== null) return spec.options[byLabel]!;
 
-  const exact = spec.options.find(
-    (option) => normalise(option.label) === want || normalise(option.value) === want,
-  );
-  if (exact) return exact;
-
-  // One option contains the spoken words, or the spoken words contain it — but only if exactly
-  // one does. Two candidates means we do not actually know which was meant.
-  const partial = spec.options.filter((option) => {
-    const label = normalise(option.label);
-    return label.length > 0 && (label.includes(want) || want.includes(label));
-  });
-  if (partial.length === 1) return partial[0]!;
-
-  return null;
+  const values = spec.options.map((option) => option.value);
+  const byValue = matchAmong(values, spoken);
+  return byValue !== null ? spec.options[byValue]! : null;
 }
 
 function readBack(el: HTMLElement): string {
@@ -197,7 +213,14 @@ function radioGroup(el: HTMLElement): HTMLInputElement[] {
 async function pickFromWidget(
   spec: FieldSpec,
   el: HTMLElement,
-  want: { value: string; label: string },
+  /**
+   * The option we already know we want, when the choices were read in advance — or `null`, when
+   * they were not, in which case the spoken words are matched against whatever the widget shows
+   * once it opens. The second case covers dropdowns that load their choices on demand, and it is
+   * the difference between such a field being fillable and being permanently unanswerable.
+   */
+  want: { value: string; label: string } | null,
+  spoken: string,
 ): Promise<WriteOutcome> {
   const before = new Set(optionNodes());
   const wasShowing = renderedText(el);
@@ -214,17 +237,27 @@ async function pickFromWidget(
   // reveals nothing new, and treating that as a failure refuses a field we could have filled.
   if (candidates.length === 0) candidates = optionNodes();
 
-  const target = candidates.find(
-    (option) => normalise((option.innerText ?? "").trim()) === normalise(want.label),
-  );
+  const labels = candidates.map((option) => (option.innerText ?? "").trim());
+  const index = want ? matchAmong(labels, want.label) : matchAmong(labels, spoken);
+  const target = index !== null ? candidates[index] : undefined;
+  const chosen = index !== null ? labels[index]! : (want?.label ?? spoken);
 
   if (!target) {
     closeWidget(el);
+    if (candidates.length === 0) {
+      return {
+        fieldId: spec.id,
+        status: "rejected-by-page",
+        wrote: chosen,
+        found: "the dropdown did not open",
+      };
+    }
+    // The widget opened and simply does not offer this. That is a question for the person, not
+    // a page failure, so it is a refusal — the agent will ask rather than apologise.
     return {
       fieldId: spec.id,
-      status: "rejected-by-page",
-      wrote: want.label,
-      found: candidates.length === 0 ? "the dropdown did not open" : "that choice was not offered",
+      status: "refused",
+      reason: `"${spoken}" does not clearly match any of the choices this dropdown offers. Asking instead of guessing.`,
     };
   }
 
@@ -233,14 +266,14 @@ async function pickFromWidget(
 
   // Confirmed against what the page now shows — never against the value we set ourselves.
   const showing = renderedText(el);
-  const took = normalise(showing).includes(normalise(want.label)) && showing !== wasShowing;
+  const took = normalise(showing).includes(normalise(chosen)) && showing !== wasShowing;
 
   if (!took) {
     closeWidget(el);
-    return { fieldId: spec.id, status: "rejected-by-page", wrote: want.label, found: showing };
+    return { fieldId: spec.id, status: "rejected-by-page", wrote: chosen, found: showing };
   }
 
-  return { fieldId: spec.id, status: "written", wrote: want.label };
+  return { fieldId: spec.id, status: "written", wrote: chosen };
 }
 
 async function writeOne(
@@ -262,6 +295,13 @@ async function writeOne(
   if (spec.kind === "select") {
     const wanted = String(Array.isArray(spoken.value) ? spoken.value[0] : spoken.value);
     const want = matchOption(spec, wanted);
+
+    // A component dropdown is worth opening even when we have no options for it. Some load
+    // their choices only when asked, so the alternative is a field nobody can ever answer.
+    if (!want && spec.custom && !spec.options?.length) {
+      return pickFromWidget(spec, el, null, wanted);
+    }
+
     if (!want) {
       return {
         fieldId: id,
@@ -270,7 +310,7 @@ async function writeOne(
       };
     }
 
-    if (spec.custom) return pickFromWidget(spec, el, want);
+    if (spec.custom) return pickFromWidget(spec, el, want, wanted);
 
     setNativeValue(el, want.value);
     announce(el, ["input", "change"]);
@@ -296,7 +336,7 @@ async function writeOne(
     }
 
     // A group built out of divs is pressed, not assigned.
-    if (spec.custom) return pickFromWidget(spec, el, chosen[0]!);
+    if (spec.custom) return pickFromWidget(spec, el, chosen[0]!, wanted.join(", "));
 
     if (spec.kind === "radio") {
       const target = radioGroup(el).find((radio) => radio.value === chosen[0]!.value);

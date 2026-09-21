@@ -124,3 +124,96 @@ test.describe("labels across boundaries", () => {
     expect(only(await read(page)).label).toBe("Frame label");
   });
 });
+
+test.describe("a wrapping label must not swallow the answer", () => {
+  /**
+   * `<label>Country <select>…</select></label>` is one of the most common shapes on the web, and
+   * reading the label whole gives "Country Select… India United States Germany" — every option
+   * absorbed into the question. It reached a running page before it was noticed, because the
+   * field still worked; it was just called something absurd.
+   */
+  test("a wrapped select is labelled with the question, not its options", async ({ page }) => {
+    await load(
+      page,
+      `<label>Country
+         <select name="c"><option value="">Select…</option><option>India</option>
+           <option>United States</option></select>
+       </label>`,
+    );
+    expect(only(await read(page)).label).toBe("Country");
+  });
+
+  test("the options are still read as options", async ({ page }) => {
+    await load(
+      page,
+      `<label>Country <select name="c"><option>India</option><option>Nepal</option></select></label>`,
+    );
+    expect(only(await read(page)).options?.map((o) => o.label)).toEqual(["India", "Nepal"]);
+  });
+
+  test("a wrapped checkbox is not labelled with its own value", async ({ page }) => {
+    await load(page, `<label><input type="checkbox" name="c" value="yes"> I agree</label>`);
+    expect(only(await read(page)).label).toBe("I agree");
+  });
+
+  test("a wrapped text input keeps its question", async ({ page }) => {
+    await load(page, `<label>Home city <input name="city" value="Kolkata"></label>`);
+    expect(only(await read(page)).label).toBe("Home city");
+  });
+
+  test("a wrapped textarea with content keeps its question", async ({ page }) => {
+    await load(page, `<label>Notes <textarea name="n">already typed</textarea></label>`);
+    expect(only(await read(page)).label).toBe("Notes");
+  });
+
+  test("a label holding two controls still reads cleanly", async ({ page }) => {
+    await load(page, `<label>Full name <input name="a"> <input name="b"></label>`);
+    const result = await read(page);
+    for (const spec of result.specs) expect(spec.label).toBe("Full name");
+  });
+
+  test("markup inside the label is kept, controls are not", async ({ page }) => {
+    await load(page, `<label><strong>Desired</strong> salary <input name="s"></label>`);
+    expect(only(await read(page)).label).toBe("Desired salary");
+  });
+});
+
+test.describe("furniture that is not part of the person's form", () => {
+  test("anything marked data-longtake-ignore is skipped by default", async ({ page }) => {
+    await load(
+      page,
+      `<label for="a">Email</label><input id="a">
+       <div data-longtake-ignore><label for="b">Our own widget</label><input id="b"></div>`,
+    );
+    expect((await read(page)).specs).toHaveLength(1);
+  });
+
+  test("the ignore applies through a shadow root, where closest() gives up", async ({ page }) => {
+    await load(page, `<label for="a">Email</label><input id="a"><div id="tool" data-longtake-ignore></div>`);
+    await page.evaluate(() => {
+      document.getElementById("tool")!.attachShadow({ mode: "open" }).innerHTML =
+        `<label for="x">Inside our widget</label><input id="x">`;
+    });
+    expect((await read(page)).specs).toHaveLength(1);
+  });
+
+  test("a caller can widen the ignore to another tool's overlay", async ({ page }) => {
+    await load(
+      page,
+      `<label for="a">Email</label><input id="a">
+       <dev-overlay><label for="b">Open Dev Tools</label><input id="b"></dev-overlay>`,
+    );
+    const count = await page.evaluate(
+      () => window.__longtake.readForm(document, "", "[data-longtake-ignore], dev-overlay").specs.length,
+    );
+    expect(count).toBe(1);
+  });
+
+  test("an empty ignore selector disables the filter rather than throwing", async ({ page }) => {
+    await load(page, `<div data-longtake-ignore><label for="b">Widget</label><input id="b"></div>`);
+    const count = await page.evaluate(
+      () => window.__longtake.readForm(document, "", "").specs.length,
+    );
+    expect(count).toBe(1);
+  });
+});

@@ -14,7 +14,8 @@
     "typecheck": "tsc --noEmit -p core && tsc --noEmit -p web",
     "build:probe": "esbuild tools/probe.ts --bundle --format=iife --target=es2020 --outfile=web/public/probe.js",
     "test": "npm run build:probe && playwright test",
-    "test:ui": "npm run build:probe && playwright test --ui"
+    "test:ui": "npm run build:probe && playwright test --ui",
+    "probe:agent": "esbuild tools/agent-probe.ts --bundle --format=esm --platform=node --outfile=.probe/agent-probe.mjs && node .probe/agent-probe.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.63.0"

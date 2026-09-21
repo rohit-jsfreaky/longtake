@@ -232,6 +232,28 @@
     if (!el) return "";
     return (el.innerText ?? el.textContent ?? "").replace(/\s+/g, " ").trim();
   }
+  function labelTextWithoutControls(label) {
+    const clone = label.cloneNode(true);
+    clone.querySelectorAll("input, textarea, select, option, [role='combobox'], [contenteditable]").forEach((node) => node.remove());
+    return (clone.textContent ?? "").replace(/\s+/g, " ").trim();
+  }
+  function isInside(el, selector) {
+    let node = el;
+    while (node) {
+      try {
+        if (node.matches(selector)) return true;
+      } catch {
+        return false;
+      }
+      if (node.parentElement) {
+        node = node.parentElement;
+        continue;
+      }
+      const root = node.getRootNode();
+      node = root instanceof ShadowRoot ? root.host : null;
+    }
+    return false;
+  }
   function labelOf(el) {
     const doc = el.ownerDocument;
     const root = el.getRootNode();
@@ -249,7 +271,7 @@
     }
     const wrapping = el.closest("label");
     if (wrapping) {
-      const text = textOf(wrapping);
+      const text = labelTextWithoutControls(wrapping);
       if (text) return text;
     }
     const legend = el.closest("fieldset")?.querySelector("legend");
@@ -350,8 +372,10 @@
   function slugify(raw) {
     return raw.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 48);
   }
-  function readForm(root = document, url = root.location?.href ?? "") {
-    const candidates = deepQueryAll(root, CANDIDATE_SELECTOR);
+  function readForm(root = document, url = root.location?.href ?? "", ignore = "[data-longtake-ignore]") {
+    const candidates = deepQueryAll(root, CANDIDATE_SELECTOR).filter(
+      (el) => !ignore || !isInside(el, ignore)
+    );
     const specs = [];
     const skipped = [];
     const handles = /* @__PURE__ */ new Map();
@@ -523,20 +547,26 @@
     if (MEANS_NO.test(text)) return false;
     return MEANS_YES.test(text);
   }
-  function matchOption(spec, spoken) {
-    if (!spec.options || spec.options.length === 0) return null;
+  function matchAmong(candidates, spoken) {
     const want = normalise(spoken);
     if (!want) return null;
-    const exact = spec.options.find(
-      (option) => normalise(option.label) === want || normalise(option.value) === want
-    );
-    if (exact) return exact;
-    const partial = spec.options.filter((option) => {
-      const label = normalise(option.label);
-      return label.length > 0 && (label.includes(want) || want.includes(label));
+    const exact = candidates.findIndex((candidate) => normalise(candidate) === want);
+    if (exact >= 0) return exact;
+    const partial = [];
+    candidates.forEach((candidate, index) => {
+      const text = normalise(candidate);
+      if (text.length > 0 && (text.includes(want) || want.includes(text))) partial.push(index);
     });
-    if (partial.length === 1) return partial[0];
-    return null;
+    return partial.length === 1 ? partial[0] : null;
+  }
+  function matchOption(spec, spoken) {
+    if (!spec.options || spec.options.length === 0) return null;
+    const labels = spec.options.map((option) => option.label);
+    const byLabel = matchAmong(labels, spoken);
+    if (byLabel !== null) return spec.options[byLabel];
+    const values = spec.options.map((option) => option.value);
+    const byValue = matchAmong(values, spoken);
+    return byValue !== null ? spec.options[byValue] : null;
   }
   function readBack(el) {
     const tag = el.tagName.toLowerCase();
@@ -567,34 +597,42 @@
       root.querySelectorAll(`input[type="radio"][name="${CSS.escape(name)}"]`)
     );
   }
-  async function pickFromWidget(spec, el, want) {
+  async function pickFromWidget(spec, el, want, spoken) {
     const before = new Set(optionNodes());
     const wasShowing = renderedText(el);
     openWidget(el);
     await sleep(WIDGET_OPEN_MS);
     let candidates = optionNodes().filter((option) => !before.has(option));
     if (candidates.length === 0) candidates = optionNodes();
-    const target = candidates.find(
-      (option) => normalise((option.innerText ?? "").trim()) === normalise(want.label)
-    );
+    const labels = candidates.map((option) => (option.innerText ?? "").trim());
+    const index = want ? matchAmong(labels, want.label) : matchAmong(labels, spoken);
+    const target = index !== null ? candidates[index] : void 0;
+    const chosen = index !== null ? labels[index] : want?.label ?? spoken;
     if (!target) {
       closeWidget(el);
+      if (candidates.length === 0) {
+        return {
+          fieldId: spec.id,
+          status: "rejected-by-page",
+          wrote: chosen,
+          found: "the dropdown did not open"
+        };
+      }
       return {
         fieldId: spec.id,
-        status: "rejected-by-page",
-        wrote: want.label,
-        found: candidates.length === 0 ? "the dropdown did not open" : "that choice was not offered"
+        status: "refused",
+        reason: `"${spoken}" does not clearly match any of the choices this dropdown offers. Asking instead of guessing.`
       };
     }
     pressOption(target);
     await sleep(200);
     const showing = renderedText(el);
-    const took = normalise(showing).includes(normalise(want.label)) && showing !== wasShowing;
+    const took = normalise(showing).includes(normalise(chosen)) && showing !== wasShowing;
     if (!took) {
       closeWidget(el);
-      return { fieldId: spec.id, status: "rejected-by-page", wrote: want.label, found: showing };
+      return { fieldId: spec.id, status: "rejected-by-page", wrote: chosen, found: showing };
     }
-    return { fieldId: spec.id, status: "written", wrote: want.label };
+    return { fieldId: spec.id, status: "written", wrote: chosen };
   }
   async function writeOne(spec, el, spoken) {
     const { id } = spec;
@@ -608,6 +646,9 @@
     if (spec.kind === "select") {
       const wanted = String(Array.isArray(spoken.value) ? spoken.value[0] : spoken.value);
       const want = matchOption(spec, wanted);
+      if (!want && spec.custom && !spec.options?.length) {
+        return pickFromWidget(spec, el, null, wanted);
+      }
       if (!want) {
         return {
           fieldId: id,
@@ -615,7 +656,7 @@
           reason: `"${wanted}" does not clearly match any option on the page. Asking instead of guessing.`
         };
       }
-      if (spec.custom) return pickFromWidget(spec, el, want);
+      if (spec.custom) return pickFromWidget(spec, el, want, wanted);
       setNativeValue(el, want.value);
       announce(el, ["input", "change"]);
       const found2 = readBack(el);
@@ -631,7 +672,7 @@
           reason: `"${wanted.join(", ")}" does not clearly match any option on the page. Asking instead of guessing.`
         };
       }
-      if (spec.custom) return pickFromWidget(spec, el, chosen[0]);
+      if (spec.custom) return pickFromWidget(spec, el, chosen[0], wanted.join(", "));
       if (spec.kind === "radio") {
         const target = radioGroup(el).find((radio) => radio.value === chosen[0].value);
         if (!target) {
@@ -738,8 +779,232 @@
     return outcomes;
   }
 
+  // core/src/binder.ts
+  var FILL_TOOL_NAME = "fill_fields";
+  var EXECUTION_MODE = "interactive";
+  var TIMEOUT_SECONDS = 60;
+  var TOOL_DESCRIPTION = [
+    "Write answers into the form the person is looking at.",
+    "Call this as soon as you have heard even one answer, and call it again each time you hear more \u2014",
+    "you do not need to wait until the person has finished.",
+    "Include ONLY fields the person actually spoke about.",
+    "Leaving a field out is always correct and costs nothing; the form will ask about it later.",
+    "Filling one they did not mention is never acceptable, even if the answer seems obvious from",
+    "something else they said, and even if the field is required.",
+    "Every answer carries the person's own words in `evidence`, quoted as they said them."
+  ].join(" ");
+  var FORMAT_HINTS = {
+    email: { format: "email", hint: "A full email address, lowercase.", examples: ["rohit@example.com"] },
+    tel: {
+      hint: "A phone number in the format the person said it, digits and an optional country code. No brackets or dashes.",
+      examples: ["+91 98765 43210"]
+    },
+    url: { format: "uri", hint: "A full URL including https://", examples: ["https://example.com/in/name"] },
+    date: { format: "date", hint: "ISO-8601 date, YYYY-MM-DD.", examples: ["2026-10-01"] },
+    number: { hint: "A plain number, no units, no commas." }
+  };
+  function valueSchema(spec) {
+    const options = spec.options?.map((option) => option.label).filter(Boolean) ?? [];
+    switch (spec.kind) {
+      case "checkbox":
+        return { type: "boolean", description: "true if the person agreed, false if they declined." };
+      case "select":
+      case "radio": {
+        if (options.length > 0) {
+          return {
+            type: "string",
+            enum: options,
+            description: "Pick the closest of these. If none of them is what the person said, leave this field out."
+          };
+        }
+        return {
+          type: "string",
+          description: "This dropdown's choices could not be read in advance. Put what the person said; it will be matched against the real options, and left blank if it does not match one."
+        };
+      }
+      case "multiselect":
+        return {
+          type: "array",
+          items: options.length > 0 ? { type: "string", enum: options } : { type: "string" },
+          description: "One entry per thing the person named. Leave out anything they did not say."
+        };
+      case "number":
+        return { type: "number", description: FORMAT_HINTS.number.hint };
+      default: {
+        const hint = FORMAT_HINTS[spec.kind];
+        const schema = {
+          type: "string",
+          description: hint?.hint ?? "What the person said, tidied into the form's own language."
+        };
+        if (hint?.format) schema.format = hint.format;
+        if (hint?.examples) schema.examples = hint.examples;
+        if (spec.maxLength) schema.maxLength = spec.maxLength;
+        if (spec.pattern) schema.pattern = spec.pattern;
+        return schema;
+      }
+    }
+  }
+  function fieldSchema(spec) {
+    const parts = [spec.label || spec.id];
+    if (spec.required) parts.push("(the form marks this required)");
+    if (spec.longForm) parts.push("(a long answer \u2014 several sentences are welcome)");
+    return {
+      type: "object",
+      description: parts.join(" "),
+      properties: {
+        value: valueSchema(spec),
+        evidence: {
+          type: "string",
+          description: "The person's own words that this answer came from, quoted. Not a paraphrase. If you cannot quote them, you did not hear this answer and the field must be left out."
+        }
+      },
+      // Both, always. This is what makes an unsupported answer unrepresentable rather than merely
+      // discouraged — there is no shape of this object that carries a value without its source.
+      required: ["value", "evidence"],
+      additionalProperties: false
+    };
+  }
+  function buildFillTool(specs) {
+    const properties = {};
+    for (const spec of specs) {
+      if (spec.suspectedHoneypot) continue;
+      if (spec.kind === "file") continue;
+      properties[spec.id] = fieldSchema(spec);
+    }
+    return {
+      type: "function",
+      name: FILL_TOOL_NAME,
+      description: TOOL_DESCRIPTION,
+      parameters: {
+        type: "object",
+        properties,
+        // Deliberately empty. Marking the form's required fields as required *here* would make the
+        // agent interrogate the person for them before it could call the tool at all — which is
+        // precisely the form-shaped questioning Longtake exists to remove. What is still missing
+        // is reported back in the tool's result, and asked about afterwards, one at a time.
+        required: [],
+        additionalProperties: false
+      },
+      execution_mode: EXECUTION_MODE,
+      timeout_seconds: TIMEOUT_SECONDS
+    };
+  }
+  function validateTool(tool) {
+    const problems = [];
+    if (tool.type !== "function") problems.push('type must be "function"');
+    if (!/^[a-z][a-z0-9_]*$/.test(tool.name)) problems.push(`name "${tool.name}" must be snake_case`);
+    if (!tool.description.trim()) problems.push("description is empty, so the agent has no reason to call it");
+    if (tool.timeout_seconds < 1 || tool.timeout_seconds > 300) {
+      problems.push("timeout_seconds must be between 1 and 300");
+    }
+    const walk = (schema, path) => {
+      if (!schema.type) {
+        problems.push(`${path}: missing "type"`);
+        return;
+      }
+      if (schema.enum) {
+        if (schema.enum.length === 0) problems.push(`${path}: enum is empty, so nothing can satisfy it`);
+        if (new Set(schema.enum).size !== schema.enum.length) {
+          problems.push(`${path}: enum has duplicate entries`);
+        }
+        if (schema.enum.some((value) => typeof value !== "string" || value === "")) {
+          problems.push(`${path}: enum contains a blank entry`);
+        }
+      }
+      if (schema.type === "object") {
+        for (const name of schema.required ?? []) {
+          if (!schema.properties || !(name in schema.properties)) {
+            problems.push(`${path}: "${name}" is required but not defined`);
+          }
+        }
+        for (const [name, child] of Object.entries(schema.properties ?? {})) {
+          if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+            problems.push(`${path}.${name}: property name is not a plain identifier`);
+          }
+          walk(child, `${path}.${name}`);
+        }
+      }
+      if (schema.type === "array" && schema.items) walk(schema.items, `${path}[]`);
+    };
+    if (tool.parameters.type !== "object") {
+      problems.push('parameters must be an object schema \u2014 a missing type: "object" silently breaks tool calling');
+    }
+    walk(tool.parameters, "parameters");
+    return problems;
+  }
+  function describeForm(specs, url = "") {
+    const usable = specs.filter((spec) => !spec.suspectedHoneypot && spec.kind !== "file");
+    if (usable.length === 0) return "There is no form on this page yet.";
+    const lines = usable.map((spec) => {
+      const bits = [`- ${spec.label || spec.id}`];
+      if (spec.required) bits.push("(required)");
+      if (spec.options?.length) {
+        const shown = spec.options.slice(0, 6).map((o) => o.label).join(", ");
+        bits.push(`\u2014 choose from: ${shown}${spec.options.length > 6 ? ", \u2026" : ""}`);
+      }
+      return bits.join(" ");
+    });
+    const where = url ? ` at ${url}` : "";
+    return [
+      `The form in front of the person${where} has ${usable.length} fields:`,
+      ...lines
+    ].join("\n");
+  }
+  function stillMissing(specs, filledIds) {
+    const filled = new Set(filledIds);
+    return specs.filter(
+      (spec) => spec.required && !filled.has(spec.id) && !spec.suspectedHoneypot && spec.kind !== "file"
+    );
+  }
+
+  // core/src/evidence.ts
+  var MIN_WORD_OVERLAP = 0.7;
+  var MIN_QUOTE_CHARS = 2;
+  function normalise2(text) {
+    return text.toLowerCase().replace(/[\p{P}\p{S}]/gu, " ").replace(/\s+/g, " ").trim();
+  }
+  function words(text) {
+    return normalise2(text).split(" ").filter(Boolean);
+  }
+  function checkEvidence(transcript, evidence) {
+    const quote = (evidence ?? "").trim();
+    if (quote.length < MIN_QUOTE_CHARS) {
+      return { ok: false, reason: "Nothing was spoken about this field, so it stays empty." };
+    }
+    const heard = normalise2(transcript);
+    if (!heard) {
+      return { ok: false, reason: "Nothing has been said yet, so there is nothing to go on." };
+    }
+    const normalisedQuote = normalise2(quote);
+    if (normalisedQuote.length < MIN_QUOTE_CHARS) {
+      return { ok: false, reason: "Nothing was spoken about this field, so it stays empty." };
+    }
+    if (heard.includes(normalisedQuote)) return { ok: true };
+    const quoteWords = words(quote);
+    if (quoteWords.length === 0) {
+      return { ok: false, reason: "Nothing was spoken about this field, so it stays empty." };
+    }
+    const heardWords = new Set(words(transcript));
+    const found = quoteWords.filter((word) => heardWords.has(word)).length;
+    if (found / quoteWords.length >= MIN_WORD_OVERLAP) return { ok: true };
+    return {
+      ok: false,
+      reason: `Those words were not in what was said, so this field stays empty. Quote the person exactly, or leave the field out.`
+    };
+  }
+  function keepOnlyWhatWasSaid(transcript, values) {
+    const spoken = [];
+    const unsupported = [];
+    for (const value of values) {
+      const check = checkEvidence(transcript, value.evidence);
+      if (check.ok) spoken.push(value);
+      else unsupported.push({ fieldId: value.fieldId, reason: check.reason });
+    }
+    return { spoken, unsupported };
+  }
+
   // core/src/index.ts
-  var CORE_VERSION = "0.2.0";
+  var CORE_VERSION = "0.4.0";
 
   // tools/probe.ts
   window.__longtake = {
@@ -748,6 +1013,13 @@
     writeValues,
     harvestOptions,
     whenSettled,
+    waitForForm,
+    buildFillTool,
+    validateTool,
+    describeForm,
+    stillMissing,
+    checkEvidence,
+    keepOnlyWhatWasSaid,
     inspect: () => {
       const read = readForm();
       window.__longtake.last = read;

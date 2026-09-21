@@ -9,6 +9,8 @@ export * from "./types";
 export * from "./dom-path";
 export * from "./reader";
 export * from "./writer";
+export * from "./binder";
+export * from "./evidence";
 
 /** Bumped when the shape of a `FieldSpec` changes, so stored answers can be migrated. */
-export const CORE_VERSION = "0.2.0";
+export const CORE_VERSION = "0.4.0";

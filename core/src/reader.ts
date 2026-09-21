@@ -97,6 +97,44 @@ function textOf(el: Element | null | undefined): string {
 }
 
 /**
+ * The words in a `<label>` that belong to the question rather than to the answer.
+ *
+ * Works on a detached clone so the live page is never touched, and reads `textContent` rather
+ * than `innerText` because a clone is not rendered and has no `innerText` worth having.
+ */
+function labelTextWithoutControls(label: Element): string {
+  const clone = label.cloneNode(true) as Element;
+  clone
+    .querySelectorAll("input, textarea, select, option, [role='combobox'], [contenteditable]")
+    .forEach((node) => node.remove());
+  return (clone.textContent ?? "").replace(/\s+/g, " ").trim();
+}
+
+/**
+ * Is this element inside something we have been told to leave alone?
+ *
+ * Walks up through shadow hosts as well as parents, because `closest` stops dead at a shadow
+ * boundary — and dev tooling, browser UI and Longtake's own widget all live in shadow roots.
+ */
+function isInside(el: Element, selector: string): boolean {
+  let node: Element | null = el;
+  while (node) {
+    try {
+      if (node.matches(selector)) return true;
+    } catch {
+      return false; // a selector the browser will not parse
+    }
+    if (node.parentElement) {
+      node = node.parentElement;
+      continue;
+    }
+    const root = node.getRootNode();
+    node = root instanceof ShadowRoot ? root.host : null;
+  }
+  return false;
+}
+
+/**
  * The name a person would call this field, resolved roughly the way a screen reader would.
  *
  * Order matters: what the page author declared beats what we can infer from the layout.
@@ -127,11 +165,16 @@ function labelOf(el: Element): string {
     if (text) return text;
   }
 
-  // 4. A <label> wrapped around the control. Strip the control's own text back out, or a
-  //    checkbox ends up labelled with its own value.
+  // 4. A <label> wrapped around the control, with the control's own text taken back out.
+  //
+  //    ⚠️ This subtraction is the entire point and skipping it is not subtle. `<label>Country
+  //    <select>…</select></label>` is one of the most common shapes on the web, and reading the
+  //    label whole gives "Country Select… India United States United Kingdom Germany" — every
+  //    option swallowed into the question. A wrapped checkbox likewise ends up labelled with its
+  //    own value.
   const wrapping = el.closest("label");
   if (wrapping) {
-    const text = textOf(wrapping);
+    const text = labelTextWithoutControls(wrapping);
     if (text) return text;
   }
 
@@ -298,8 +341,22 @@ function slugify(raw: string): string {
  * `root` defaults to the live document. Pass one explicitly to read a detached document — which
  * is how the tests run a saved copy of a real page.
  */
-export function readForm(root: Document = document, url = root.location?.href ?? ""): FormRead {
-  const candidates = deepQueryAll(root, CANDIDATE_SELECTOR);
+export function readForm(
+  root: Document = document,
+  url = root.location?.href ?? "",
+  /**
+   * Anything inside these is not part of the person's form.
+   *
+   * Longtake's own widget carries `data-longtake-ignore`, which is why it is the default. Pass a
+   * wider selector to exclude other software's furniture: the Next.js dev overlay showed up as a
+   * question called "Open Next.js Dev Tools", complete with a three-option enum, purely because
+   * its button declares `aria-haspopup="menu"` like any other dropdown.
+   */
+  ignore = "[data-longtake-ignore]",
+): FormRead {
+  const candidates = deepQueryAll(root, CANDIDATE_SELECTOR).filter(
+    (el) => !ignore || !isInside(el, ignore),
+  );
 
   const specs: FieldSpec[] = [];
   const skipped: SkippedField[] = [];
