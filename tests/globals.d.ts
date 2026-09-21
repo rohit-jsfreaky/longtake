@@ -11,6 +11,11 @@ import type {
   stillMissing,
   checkEvidence,
   keepOnlyWhatWasSaid,
+  configForField,
+  instructionForField,
+  keytermsFrom,
+  fieldsWorthShaping,
+  shapeResult,
 } from "@longtake/core";
 
 declare global {
@@ -28,6 +33,11 @@ declare global {
       stillMissing: typeof stillMissing;
       checkEvidence: typeof checkEvidence;
       keepOnlyWhatWasSaid: typeof keepOnlyWhatWasSaid;
+      configForField: typeof configForField;
+      instructionForField: typeof instructionForField;
+      keytermsFrom: typeof keytermsFrom;
+      fieldsWorthShaping: typeof fieldsWorthShaping;
+      shapeResult: typeof shapeResult;
       inspect: () => unknown;
       inspectDeep: () => Promise<unknown>;
       last?: ReturnType<typeof readForm>;

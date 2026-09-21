@@ -1,0 +1,55 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # The browsers are installed explicitly a step further down, so the postinstall does not
+      # download a second copy of them here.
+      - name: Install dependencies
+        run: npm ci
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
+
+      # Real Google Chrome, not bundled Chromium, because several tests turn on measured pixel
+      # values — an `<input style="width:0">` reports 7.2px and a checkbox 13px, and the rule
+      # that separates a real control from a honeypot sits between those two numbers. Running
+      # the same engine as a developer's machine keeps that honest.
+      - name: Install Chrome
+        run: npx playwright install --with-deps chrome
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+      # `npm test` builds the probe bundle first, so the suite always runs the real `core/`
+      # rather than a stale copy of it.
+      - name: Test
+        run: npm test
+
+      - name: Upload the report when something fails
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 7

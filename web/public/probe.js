@@ -1003,8 +1003,98 @@
     return { spoken, unsupported };
   }
 
+  // core/src/dictation.ts
+  var MAX_STT_PROMPT = 6e3;
+  var MAX_INSTRUCTION = 2048;
+  var MAX_KEYTERMS = 100;
+  var MAX_KEYTERMS_CHARS = 8e3;
+  var MAX_CALLS_PER_UTTERANCE = 3;
+  function clip(text, max) {
+    return text.length <= max ? text : text.slice(0, max);
+  }
+  function keytermsFrom(specs, known) {
+    const terms = [];
+    const seen = /* @__PURE__ */ new Set();
+    const add = (raw) => {
+      const term = (raw ?? "").trim();
+      if (!term || term.length < 2 || term.length > 60) return;
+      const key = term.toLowerCase();
+      if (seen.has(key)) return;
+      seen.add(key);
+      terms.push(term);
+    };
+    for (const value of Object.values(known)) {
+      add(value);
+      for (const word of value.split(/\s+/)) {
+        if (/^[A-Z]/.test(word)) add(word);
+      }
+    }
+    for (const spec of specs) {
+      for (const option of spec.options ?? []) add(option.label);
+    }
+    const capped = [];
+    let chars = 0;
+    for (const term of terms) {
+      if (capped.length >= MAX_KEYTERMS) break;
+      if (chars + term.length > MAX_KEYTERMS_CHARS) break;
+      capped.push(term);
+      chars += term.length;
+    }
+    return capped;
+  }
+  function configForField(spec, options = {}) {
+    const { specs = [], known = {}, languageCodes = ["en", "hi"], sampleRate = 24e3 } = options;
+    const question = spec.label || spec.id;
+    const config = {
+      sample_rate: sampleRate,
+      channels: 1,
+      language_codes: languageCodes,
+      stt_prompt: clip(
+        `Someone is filling in a form and speaking their answer to the question "${question}" out loud, in their own words, the way they would tell a friend. They may pause, restart, or switch between English and Hindi mid-sentence.`,
+        MAX_STT_PROMPT
+      ),
+      llm_instruction: clip(instructionForField(spec), MAX_INSTRUCTION)
+    };
+    const keyterms = keytermsFrom(specs, known);
+    if (keyterms.length > 0) config.keyterms_prompt = keyterms;
+    return config;
+  }
+  function instructionForField(spec) {
+    const question = spec.label || spec.id;
+    const parts = [
+      `This is somebody's spoken answer to "${question}" on a form.`,
+      "Write it as the person would have typed it: remove filler words and false starts, resolve self-corrections to what they landed on, and punctuate it properly.",
+      "Keep their own words, their own phrasing and their own tone.",
+      "Keep hedges like I think or probably \u2014 those change the meaning and are not filler.",
+      "Do not add anything they did not say. Do not answer the question for them. Do not make them sound more certain, more formal or more impressive than they were.",
+      "Return only the answer itself, with no preamble and no quotation marks."
+    ];
+    if (spec.maxLength) {
+      parts.push(`It must fit in ${spec.maxLength} characters.`);
+    }
+    return parts.join(" ");
+  }
+  function fieldsWorthShaping(specs, filledIds, limit = MAX_CALLS_PER_UTTERANCE) {
+    const filled = new Set(filledIds);
+    return specs.filter((spec) => spec.longForm && filled.has(spec.id) && !spec.suspectedHoneypot).slice(0, limit);
+  }
+  function shapeResult(fieldId, result) {
+    const verbatim = (result.text ?? "").trim();
+    const rewrite = (result.llm_response ?? "").trim();
+    if (rewrite) {
+      return { fieldId, verbatim, clean: rewrite, rewritten: true };
+    }
+    return {
+      fieldId,
+      verbatim,
+      clean: verbatim,
+      rewritten: false,
+      note: result.llm_error ? `The tidy-up did not finish (${result.llm_error}), so this is exactly what you said.` : "The tidy-up did not run, so this is exactly what you said."
+    };
+  }
+
   // core/src/index.ts
-  var CORE_VERSION = "0.4.0";
+  var CORE_VERSION = "0.5.0";
 
   // tools/probe.ts
   window.__longtake = {
@@ -1020,6 +1110,11 @@
     stillMissing,
     checkEvidence,
     keepOnlyWhatWasSaid,
+    configForField,
+    instructionForField,
+    keytermsFrom,
+    fieldsWorthShaping,
+    shapeResult,
     inspect: () => {
       const read = readForm();
       window.__longtake.last = read;

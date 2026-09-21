@@ -50,3 +50,7 @@ npm-debug.log*
 Thumbs.db
 .DS_Store
 .probe/
+
+# playwright output
+playwright-report/
+test-results/

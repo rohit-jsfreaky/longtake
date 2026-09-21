@@ -19,13 +19,18 @@ import {
   FILL_TOOL_NAME,
   harvestOptions,
   readForm,
+  configForField,
+  fieldsWorthShaping,
   keepOnlyWhatWasSaid,
+  shapeResult,
   stillMissing,
   validateTool,
   waitForForm,
   writeValues,
   type FieldSpec,
   type FormRead,
+  type DictationResult,
+  type ShapedAnswer,
   type SpokenValue,
   type WriteOutcome,
 } from "@longtake/core";
@@ -69,6 +74,22 @@ function buildSystemPrompt(specs: FieldSpec[], url: string): string {
   ].join("\n");
 }
 
+/**
+ * PCM16 as base64, for the JSON body the dictate route takes.
+ *
+ * Chunked because `String.fromCharCode(...bytes)` on a whole utterance is tens of thousands of
+ * arguments at once, which overflows the call stack on exactly the long answers this is for.
+ */
+function pcmToBase64(samples: Int16Array): string {
+  const bytes = new Uint8Array(samples.buffer, samples.byteOffset, samples.byteLength);
+  let binary = "";
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(binary);
+}
+
 const GREETING = "Go ahead, tell me about yourself and I will fill this in.";
 
 /**
@@ -89,6 +110,8 @@ export default function FillPage() {
   const [turns, setTurns] = useState<{ who: "you" | "agent"; text: string }[]>([]);
   const [partial, setPartial] = useState("");
   const [log, setLog] = useState<LogLine[]>([]);
+  /** The long answers that went through Dictation, in both of their forms. */
+  const [shaped, setShaped] = useState<Record<string, ShapedAnswer>>({});
 
   const sessionRef = useRef<VoiceSession | null>(null);
   const readRef = useRef<FormRead | null>(null);
@@ -96,6 +119,8 @@ export default function FillPage() {
   const switchedModeRef = useRef(false);
   /** Everything the person has actually said, which is what every quote gets checked against. */
   const transcriptRef = useRef("");
+  /** The audio of the turn just finished — what Dictation re-reads, and Phase 5 plays back. */
+  const lastAudioRef = useRef<Int16Array | null>(null);
   const logEndRef = useRef<HTMLDivElement | null>(null);
 
   const push = useCallback((kind: LogLine["kind"], text: string) => {
@@ -105,6 +130,73 @@ export default function FillPage() {
   useEffect(() => {
     logEndRef.current?.scrollIntoView({ block: "end" });
   }, [log]);
+
+  /**
+   * Send a long answer's own audio back through Dictation, with that field's own prompts.
+   *
+   * This is the step nothing else does. The agent already produced a perfectly good tidy value,
+   * but it tidied the quote as well, so the "um" and the restart were gone from everything we
+   * held. One call here returns **both** halves — `text` is exactly what was said, and
+   * `llm_response` is the version that goes in the box — so the answer keeps its own voice.
+   */
+  const shapeLongAnswers = useCallback(
+    async (read: FormRead, results: WriteOutcome[]) => {
+      const justFilled = results.filter((r) => r.status === "written").map((r) => r.fieldId);
+      const worth = fieldsWorthShaping(read.specs, justFilled);
+      if (worth.length === 0) return;
+
+      const audio = lastAudioRef.current;
+      if (!audio || audio.length === 0) return;
+
+      // The values already on the form are the best keyterms available: a person's name, city
+      // and employer are precisely the strings speech-to-text mangles, and they are right there.
+      const known: Record<string, string> = {};
+      for (const [id, element] of read.handles) {
+        const value = (element as HTMLInputElement).value;
+        if (value && value.length < 60) known[id] = value;
+      }
+
+      for (const spec of worth) {
+        try {
+          const response = await fetch("/api/dictate", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              config: configForField(spec, { specs: read.specs, known }),
+              audio: pcmToBase64(audio),
+            }),
+          });
+
+          const payload = await response.json();
+          if (!response.ok) {
+            push("app", `dictation for ${spec.id} failed: ${payload.error ?? response.status}`);
+            continue;
+          }
+
+          const shaped = shapeResult(spec.id, payload as DictationResult);
+          setShaped((previous) => ({ ...previous, [spec.id]: shaped }));
+
+          // The tidy version replaces what the agent wrote — same evidence, better shaping.
+          const element = read.handles.get(spec.id);
+          if (element && shaped.clean) {
+            await writeValues(read.specs, read.handles, [
+              { fieldId: spec.id, value: shaped.clean, evidence: shaped.verbatim },
+            ]);
+          }
+
+          push(
+            "app",
+            shaped.rewritten
+              ? `dictation shaped ${spec.id}, verbatim kept (${shaped.verbatim.length} chars)`
+              : `dictation returned verbatim only for ${spec.id} — ${shaped.note}`,
+          );
+        } catch (cause) {
+          push("app", `dictation for ${spec.id} errored: ${String(cause)}`);
+        }
+      }
+    },
+    [push],
+  );
 
   /**
    * The tool handler. Everything the agent decides arrives here, and everything this returns is
@@ -160,6 +252,13 @@ export default function FillPage() {
         push("app", "switched to conversation timing");
       }
 
+      // ── Phase 3: the long answers get a pass of their own ──────────────────────────
+      //
+      // Only the long ones, and never more than a handful — this API has a 429 and one call per
+      // field is how you find it. Runs after the write, so the box is never empty while it
+      // works, and a failure leaves the agent's version in place rather than clearing it.
+      void shapeLongAnswers(read, results);
+
       const left = stillMissing(read.specs, filledRef.current);
       setMissing(left.map((spec) => spec.label || spec.id));
 
@@ -195,6 +294,8 @@ export default function FillPage() {
     filledRef.current = new Set();
     switchedModeRef.current = false;
     transcriptRef.current = "";
+    lastAudioRef.current = null;
+    setShaped({});
 
     try {
       // 1 — Read the page, and open every dropdown so the schema carries real options.
@@ -228,7 +329,8 @@ export default function FillPage() {
           push("app", "session.ready — speak now");
         },
         onUserPartial: setPartial,
-        onUserTranscript: (text) => {
+        onUserTranscript: (text, audio) => {
+          lastAudioRef.current = audio;
           setPartial("");
           // Accumulated, not replaced: a quote may span two turns of one long take.
           transcriptRef.current = `${transcriptRef.current}
@@ -345,6 +447,29 @@ ${text}`.trim();
               <p key={label} className="truncate text-neutral-600 dark:text-neutral-400">
                 • {label}
               </p>
+            ))}
+          </div>
+        </section>
+
+        <section>
+          <h2 className="text-xs font-medium uppercase tracking-wide text-neutral-500">
+            Kept verbatim ({Object.keys(shaped).length})
+          </h2>
+          <div className="mt-1 rounded-md border border-neutral-200 p-2 text-xs dark:border-neutral-800">
+            {Object.keys(shaped).length === 0 && (
+              <p className="text-neutral-400">No long answers yet.</p>
+            )}
+            {Object.values(shaped).map((answer) => (
+              <div key={answer.fieldId} className="mb-2">
+                <p className="font-medium">{answer.fieldId}</p>
+                <p className="text-neutral-600 dark:text-neutral-400">clean: {answer.clean}</p>
+                <p className="text-amber-700 dark:text-amber-500">
+                  said: {answer.verbatim}
+                </p>
+                {!answer.rewritten && (
+                  <p className="text-neutral-500">{answer.note}</p>
+                )}
+              </div>
             ))}
           </div>
         </section>

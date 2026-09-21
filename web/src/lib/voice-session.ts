@@ -85,7 +85,13 @@ export type VoiceSessionOptions = {
   onReady?: (sessionId: string) => void;
   /** The full running text of the turn so far, not an increment. Replace, do not append. */
   onUserPartial?: (runningText: string) => void;
-  onUserTranscript?: (text: string) => void;
+  /**
+   * A finished turn: the words, and the audio they were spoken in.
+   *
+   * The audio is PCM16 at 24 kHz mono — exactly what the Dictation API wants — or null when the
+   * turn produced none. Keeping it is what makes the verbatim recoverable afterwards.
+   */
+  onUserTranscript?: (text: string, audio: Int16Array | null) => void;
   onAgentTranscript?: (text: string) => void;
   onError?: (message: string) => void;
   onClosed?: () => void;
@@ -285,8 +291,46 @@ export async function startVoiceSession(options: VoiceSessionOptions): Promise<V
     return heldSamples;
   }
 
+  /**
+   * The audio of each turn, kept as well as sent.
+   *
+   * We are already capturing this PCM to stream it; holding on to it costs almost nothing and
+   * buys two things nothing else can. Phase 3 re-runs a long answer through the Dictation API
+   * with that field's own prompts, which is the only way to get the verbatim and the tidy
+   * version from one call. Phase 5 plays it back so somebody can hear themselves say it.
+   *
+   * Capped, because a 120-second ceiling applies at the other end and memory is not free.
+   */
+  const MAX_TURN_SAMPLES = TARGET_SAMPLE_RATE * 110; // just inside the API's 120 s limit
+  let turnAudio: Int16Array[] = [];
+  let turnSamples = 0;
+
+  const resetTurnAudio = () => {
+    turnAudio = [];
+    turnSamples = 0;
+  };
+
+  /** The current turn's audio as one block, or null when there is nothing worth sending. */
+  const takeTurnAudio = (): Int16Array | null => {
+    if (turnSamples === 0) return null;
+    const joined = new Int16Array(turnSamples);
+    let at = 0;
+    for (const block of turnAudio) {
+      joined.set(block, at);
+      at += block.length;
+    }
+    return joined;
+  };
+
   worklet.port.onmessage = (event: MessageEvent<ArrayBuffer>) => {
     const incoming = new Int16Array(event.data);
+
+    // Kept from the moment the mic opens, so the words spoken before `session.ready` are in the
+    // recording too — the same reason those frames are buffered rather than dropped.
+    if (turnSamples < MAX_TURN_SAMPLES) {
+      turnAudio.push(incoming);
+      turnSamples += incoming.length;
+    }
 
     if (!ready) {
       prebuffer.push(incoming);
@@ -417,9 +461,14 @@ export async function startVoiceSession(options: VoiceSessionOptions): Promise<V
         // user ones differ. Reading `delta` here silently produced empty partials.
         onUserPartial?.(String(message.text ?? message.delta ?? ""));
         break;
-      case "transcript.user":
-        onUserTranscript?.(String(message.text ?? ""));
+      case "transcript.user": {
+        // The turn is over, so its audio is complete. Handed over with the words that go with
+        // it, then cleared — the next turn starts its own recording.
+        const audio = takeTurnAudio();
+        resetTurnAudio();
+        onUserTranscript?.(String(message.text ?? ""), audio);
         break;
+      }
       case "transcript.agent":
         onAgentTranscript?.(String(message.text ?? ""));
         break;

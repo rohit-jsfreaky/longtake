@@ -7,16 +7,37 @@ import { defineConfig } from "@playwright/test";
  * decision — the thing that separates a real field from a honeypot — would be untestable. Shadow
  * roots, portals, `pointerdown` handlers and React-style components all need a real engine too.
  *
- * `channel: "chrome"` uses the Chrome already installed on the machine rather than downloading a
- * second browser, which also means the tests run against what a judge will actually use.
+ * `channel: "chrome"` uses real Google Chrome rather than bundled Chromium, on CI as well as
+ * locally. Several tests turn on measured pixel values (an `<input style="width:0">` reports
+ * 7.2px; a checkbox reports 13px; the honeypot rule lives between them), so both places need to
+ * be running the same engine or the suite would disagree with itself.
  */
 export default defineConfig({
   testDir: "./tests",
   fullyParallel: true,
-  reporter: process.env.CI ? "github" : [["list", { printSteps: false }]],
+
+  /**
+   * Half the cores locally. The suite is five hundred browser tests and letting it take every
+   * core makes the machine unusable while it runs — which is how it stops being run.
+   * CI has the box to itself.
+   */
+  workers: process.env.CI ? undefined : "50%",
+
+  /** A browser test that fails once under load has not necessarily found a bug. */
+  retries: process.env.CI ? 2 : 0,
+
+  /** No `.only` left behind in a commit. */
+  forbidOnly: !!process.env.CI,
+
+  reporter: process.env.CI
+    ? [["github"], ["html", { open: "never" }]]
+    : [["list", { printSteps: false }]],
+
   use: {
     channel: "chrome",
     headless: true,
+    trace: process.env.CI ? "retain-on-failure" : "off",
   },
+
   projects: [{ name: "chrome" }],
 });
