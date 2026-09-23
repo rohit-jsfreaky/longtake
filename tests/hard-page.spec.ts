@@ -131,11 +131,15 @@ test.describe("the hard page, read", () => {
     expect(byLabel(await read(page), "Referral code")).toBeTruthy();
   });
 
+  // The page's clock is held, so "before the field arrives" is a fact of the test and not a race
+  // with the machine: on a slow CI runner the 350 ms timer had already fired by the first read.
   test("4. a field that arrives late is missed by an immediate read", async ({ page }) => {
+    await page.clock.install();
     await load(page, HARD);
-    expect(await read(page).then((r) => r.specs.some((s) => s.label === "Current employer"))).toBe(
-      false,
-    );
+    const current = async () => (await read(page)).specs.some((s) => s.label === "Current employer");
+    expect(await current()).toBe(false);
+    await page.clock.runFor(400);
+    expect(await current()).toBe(true);
   });
 
   test("4b. …and found once the page has settled", async ({ page }) => {
