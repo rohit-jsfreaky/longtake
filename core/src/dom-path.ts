@@ -300,13 +300,80 @@ export function isVisible(el: Element): boolean {
  * therefore a large share of forms built in the last two years — registers `pointerdown` and
  * never registers `click`. A synthetic click leaves those menus shut.
  */
+/**
+ * Run a sequence of widget operations with the page to ourselves.
+ *
+ * ## The bug this exists for
+ *
+ * Opening a dropdown to read or pick from it is a sequence — press the trigger, wait, look at
+ * what appeared, press again — and it only makes sense if nothing else touches the page's
+ * widgets in the middle. Two things did. The hook reads the form at page load to bring back
+ * remembered answers, and reads it again when the microphone is pressed. Pressed soon after load,
+ * both loops ran at once. Traced on the landing page: `pointerdown gender` from one loop, then
+ * `pointerdown country` from the other four milliseconds later. Country ended empty, and on a live
+ * run it was refused with "pick from: Yes, No, Decline To Self Identify" — the Hispanic/Latino
+ * question's options, attributed to Country because they were the ones open at the time.
+ *
+ * So every widget-touching sequence in `core/` — reading the options, writing answers — runs
+ * through this queue, one after another. Not reentrant: nothing inside a queued sequence may
+ * queue another, or it waits on itself.
+ */
+let widgetQueue: Promise<unknown> = Promise.resolve();
+
+export function exclusively<T>(work: () => Promise<T>): Promise<T> {
+  const run = widgetQueue.then(work, work);
+  widgetQueue = run.catch(() => undefined);
+  return run;
+}
+
+/**
+ * Do these options belong to this trigger?
+ *
+ * `true` or `false` when the page says — through `aria-controls`, `aria-owns`, or a shared
+ * `aria-labelledby` — and `null` when it does not say at all, in which case only the order of
+ * events can tell, and the caller has to rely on having opened it itself.
+ */
+export function ownsOptions(trigger: HTMLElement, option: HTMLElement): boolean | null {
+  const list = option.closest("[role='listbox'],[role='menu'],[role='tree'],[role='grid']");
+  const controls = `${trigger.getAttribute("aria-controls") ?? ""} ${trigger.getAttribute("aria-owns") ?? ""}`
+    .split(/\s+/)
+    .filter(Boolean);
+  const labelledBy = trigger.getAttribute("aria-labelledby");
+
+  const listLabel = list?.getAttribute("aria-labelledby");
+
+  if (list?.id && controls.includes(list.id)) return true;
+  if (option.id && controls.includes(option.id)) return true;
+  if (labelledBy && listLabel === labelledBy) return true;
+
+  // "Not ours" only when the options declare a DIFFERENT owner. A menu that declares nothing —
+  // Radix-style triggers render bare `role="option"` divs into a portal with no linkage at all —
+  // is unknown, not foreign. Treating silence as "someone else's" refused a perfectly good pick.
+  if (labelledBy && listLabel && listLabel !== labelledBy) return false;
+  if (controls.length > 0 && list?.id && !controls.includes(list.id)) return false;
+  return null;
+}
+
 export function openWidget(el: HTMLElement): void {
-  el.scrollIntoView({ block: "center" });
+  // ⚠️ `nearest`, never `center`.
+  //
+  // `scrollIntoView` scrolls EVERY scrollable ancestor, the document included. With `center` it
+  // always scrolls, even when the field is already in plain sight — so opening six dropdowns to
+  // read their options yanked the whole page around six times while the person was mid-sentence,
+  // which on the landing page looked exactly like the page scrolling itself back up.
+  //
+  // `nearest` does nothing when the element is already visible, and the minimum otherwise. The
+  // element still has to be reachable — some libraries will not open an off-screen trigger — and
+  // this is the version of that which does not fight the reader for control of the page.
+  el.scrollIntoView({ block: "nearest", inline: "nearest" });
   try {
     el.focus({ preventScroll: true });
   } catch {
     el.focus();
   }
+  // Already open? Then pressing it again is a toggle, and would SHUT the menu we are about to
+  // read. Most triggers say so through `aria-expanded`; where one does not, it is pressed as before.
+  if (el.getAttribute("aria-expanded") === "true") return;
   for (const type of ["pointerdown", "mousedown", "mouseup", "click"]) {
     el.dispatchEvent(
       new MouseEvent(type, { bubbles: true, cancelable: true, composed: true, view: window }),
@@ -373,7 +440,8 @@ export function optionNodes(root: Document | ShadowRoot = document): HTMLElement
  * a page that polls in the background never goes quiet at all, so this can never be a hang.
  */
 export function whenSettled(
-  root: Document = document,
+  /** A document, or a single element to watch instead of the whole page. */
+  root: Document | Element = document,
   quietMs = 350,
   timeoutMs = 5000,
   /**
@@ -387,7 +455,10 @@ export function whenSettled(
   until?: () => boolean,
 ): Promise<void> {
   return new Promise((resolve) => {
-    if (!root.body) {
+    // A document is watched through its body; an element watches itself. Either can be absent —
+    // a detached document has no body — and there is nothing to wait for when it is.
+    const target = "body" in root ? root.body : root;
+    if (!target) {
       resolve();
       return;
     }
@@ -413,6 +484,6 @@ export function whenSettled(
 
     const hardStop = setTimeout(finish, timeoutMs);
     quiet = setTimeout(maybeFinish, quietMs);
-    observer.observe(root.body, { childList: true, subtree: true, attributes: true });
+    observer.observe(target, { childList: true, subtree: true, attributes: true });
   });
 }

@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { load, read, readThenWrite, valueOf } from "./helpers";
+import { load, read, readThenWrite, valueOf, write } from "./helpers";
 
 /**
  * Choosing among the options a page actually offers.
@@ -68,7 +68,35 @@ test.describe("native select", () => {
     await load(page, COUNTRY);
     const [outcome] = await readThenWrite(page, said("country", "Atlantis"));
     expect(outcome!.status).toBe("refused");
-    expect(outcome!.reason).toMatch(/does not clearly match/i);
+    expect(outcome!.reason).toMatch(/not one of the choices/i);
+  });
+
+  /**
+   * A refusal that does not say what WOULD be accepted is not recoverable.
+   *
+   * Measured on a live run: the form offered Conference / Job Board / LinkedIn / Podcast, the
+   * person said "I heard from X", and the agent asked "How did you hear about Glean?" three
+   * times in a row — because all it was ever told was that the answer did not match. The field
+   * ended the session empty. So the options travel with the refusal, both as a sentence the
+   * agent can read out and as a list it can use as data.
+   */
+  test("the refusal carries the options, so the agent can read them out", async ({ page }) => {
+    await load(page, COUNTRY);
+    const [outcome] = await readThenWrite(page, said("country", "Atlantis"));
+
+    expect(outcome!.reason).toContain("India");
+    expect(outcome!.reason).toContain("United States");
+    expect(outcome!.choices).toEqual(["India", "United States", "United Kingdom"]);
+  });
+
+  /**
+   * "Select…" is an option element and not an answer. Reading it out as one makes the agent
+   * sound broken, and matching it would silently write the empty placeholder into the field.
+   */
+  test("the placeholder option is not offered as a choice", async ({ page }) => {
+    await load(page, COUNTRY);
+    const [outcome] = await readThenWrite(page, said("country", "Atlantis"));
+    expect(outcome!.reason).not.toContain("Select");
   });
 
   test("a refusal leaves the select on its original value", async ({ page }) => {
@@ -323,5 +351,75 @@ test.describe("checkbox groups sharing a name", () => {
     await load(page, TOOLS);
     await readThenWrite(page, said("which_tools_have_you_used", "Copilot"));
     expect(await valueOf(page, '[value="copilot"]')).toBe("checked");
+  });
+});
+
+/**
+ * The choice the person named, recovered from their own words.
+ *
+ * Live run: "I'm based Kolkata, India." Glean has no City box, so the agent put "Kolkata" into
+ * Country, the form rightly refused it, and the agent told the person "India is not an option" —
+ * about an option that was on the list, that the person had said, inside the agent's own quote.
+ */
+test.describe("a choice named in what was said", () => {
+  const spoke = (value: string, evidence: string) => [{ fieldId: "country", value, evidence }];
+
+  test("a wrong value is rescued by the option the person actually named", async ({ page }) => {
+    await load(page, COUNTRY);
+    const [outcome] = await readThenWrite(page, spoke("Kolkata", "I'm based Kolkata, India"));
+    expect(outcome!.status).toBe("written");
+    expect(await valueOf(page, "#f")).toBe("in");
+  });
+
+  test("only a whole word counts — 'Indian' does not name India", async ({ page }) => {
+    await load(page, COUNTRY);
+    const [outcome] = await readThenWrite(page, spoke("Mumbai", "I love Indian food"));
+    expect(outcome!.status).toBe("refused");
+    expect(await valueOf(page, "#f")).toBe("");
+  });
+
+  test("two options named is not a choice — nothing is picked", async ({ page }) => {
+    await load(page, COUNTRY);
+    const [outcome] = await readThenWrite(page, spoke("Europe", "India or the United Kingdom, not sure"));
+    expect(outcome!.status).toBe("refused");
+    expect(await valueOf(page, "#f")).toBe("");
+  });
+
+  test("naming nothing on the list is still refused, with the choices", async ({ page }) => {
+    await load(page, COUNTRY);
+    const [outcome] = await readThenWrite(page, spoke("Twitter", "I heard from Twitter"));
+    expect(outcome!.status).toBe("refused");
+    expect(outcome!.choices).toContain("India");
+  });
+
+  test("a radio group is rescued the same way", async ({ page }) => {
+    await load(
+      page,
+      `<fieldset><legend>Willing to relocate?</legend>
+         <label><input type="radio" name="r" value="yes"> Yes</label>
+         <label><input type="radio" name="r" value="no"> No</label>
+       </fieldset>`,
+    );
+    const r = await read(page);
+    const [outcome] = await write(page, [
+      { fieldId: r.specs[0]!.id, value: "sure thing", evidence: "yes, happy to move" },
+    ]);
+    expect(outcome!.status).toBe("written");
+    expect(await valueOf(page, "input[value=yes]")).toBe("checked");
+  });
+
+  test("a group of checkboxes is not guessed from the words", async ({ page }) => {
+    await load(
+      page,
+      `<fieldset><legend>Industry</legend>
+         <label><input type="checkbox" name="i" value="Film"> Film</label>
+         <label><input type="checkbox" name="i" value="Stage"> Stage</label>
+       </fieldset>`,
+    );
+    const r = await read(page);
+    const [outcome] = await write(page, [
+      { fieldId: r.specs[0]!.id, value: "movies", evidence: "mostly Film work" },
+    ]);
+    expect(outcome!.status).toBe("refused");
   });
 });

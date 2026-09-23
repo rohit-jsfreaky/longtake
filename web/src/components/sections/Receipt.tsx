@@ -27,8 +27,8 @@ type Promise_ = {
 const PROMISES: Promise_[] = [
   {
     tag: "Evidence",
-    lead: "Every answer keeps the words you used to give it,",
-    rest: "so you can click any field and hear yourself say it.",
+    lead: "Every answer has to be something you actually said.",
+    rest: "If it cannot find your words for it, it does not go in — and a choice you did not name waits for your yes.",
   },
   {
     tag: "Blanks",

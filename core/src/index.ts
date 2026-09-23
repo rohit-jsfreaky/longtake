@@ -14,6 +14,17 @@ export * from "./evidence";
 export * from "./dictation";
 export * from "./hesitation";
 export * from "./memory";
+export * from "./dispatch";
+export * from "./conversation";
+export * from "./reconcile";
+export * from "./persona";
+export * from "./ledger";
+export * from "./form-state";
+export * from "./gate";
+export * from "./planner";
+export * from "./session";
+export * from "./clip";
+export * from "./errors";
 
 /** Bumped when the shape of a `FieldSpec` changes, so stored answers can be migrated. */
-export const CORE_VERSION = "0.7.0";
+export const CORE_VERSION = "0.9.0";

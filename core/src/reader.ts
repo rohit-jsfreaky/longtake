@@ -24,9 +24,11 @@
 import {
   closeWidget,
   deepQueryAll,
+  exclusively,
   isVisible,
   openWidget,
   optionNodes,
+  ownsOptions,
   uniqueSelector,
   whenSettled,
 } from "./dom-path";
@@ -54,6 +56,8 @@ const CANDIDATE_SELECTOR = [
   "[role='textbox']",
   "[role='searchbox']",
   "[role='spinbutton']",
+  // A slider built from divs — rating scales, "how many years", salary bands.
+  "[role='slider']",
   // Dropdowns that are not `<select>`. `role="combobox"` covers Radix and React-Select;
   // `aria-haspopup` covers Headless UI and every hand-rolled menu, whose trigger is usually a
   // plain `role="button"` and would otherwise be completely invisible to this file.
@@ -221,7 +225,7 @@ function kindOf(el: Element): FieldKind {
   if (role === "combobox" || popup === "listbox" || popup === "menu") return "select";
   if (role === "radiogroup") return "radio";
   if (role === "checkbox" || role === "switch") return "checkbox";
-  if (role === "spinbutton") return "number";
+  if (role === "spinbutton" || role === "slider") return "number";
 
   if (tag === "textarea") return "textarea";
   if (tag === "select") {
@@ -335,6 +339,11 @@ function slugify(raw: string): string {
     .slice(0, 48);
 }
 
+/** The document an element or document belongs to. */
+function ownerDocumentOf(root: Document | Element): Document {
+  return "ownerDocument" in root && root.ownerDocument ? root.ownerDocument : (root as Document);
+}
+
 /**
  * Read every answerable field on a page.
  *
@@ -342,8 +351,16 @@ function slugify(raw: string): string {
  * is how the tests run a saved copy of a real page.
  */
 export function readForm(
-  root: Document = document,
-  url = root.location?.href ?? "",
+  /**
+   * Where to look. A whole document, or one element to stay inside.
+   *
+   * Scoping matters wherever Longtake's own interface shares the page with the form: the landing
+   * page has a nav, an FAQ and the widget's own controls on it, and reading the whole document
+   * there builds the agent a tool made partly out of our furniture. The extension will want the
+   * same when a site embeds a form in a panel.
+   */
+  root: Document | Element = document,
+  url = ownerDocumentOf(root).location?.href ?? "",
   /**
    * Anything inside these is not part of the person's form.
    *
@@ -457,7 +474,7 @@ export function readForm(
           options: [option],
           ...(visible ? {} : { suspectedHoneypot: true }),
         };
-        const selector = uniqueSelector(el, root);
+        const selector = uniqueSelector(el, ownerDocumentOf(root));
         if (selector) spec.selector = selector;
 
         groups.set(groupKey, spec);
@@ -479,7 +496,7 @@ export function readForm(
       required: Boolean((el as HTMLInputElement).required) || el.getAttribute("aria-required") === "true",
     };
 
-    const selector = uniqueSelector(el, root);
+    const selector = uniqueSelector(el, ownerDocumentOf(root));
     if (selector) spec.selector = selector;
 
     const options = optionsOf(el);
@@ -496,13 +513,149 @@ export function readForm(
 
     if (isLongForm(el, kind, label)) spec.longForm = true;
     if (isCustom(el, kind)) spec.custom = true;
+
+    // A slider, whether a real `<input type=range>` or a div with role="slider": its range, so the
+    // agent can say what it goes from and to, and the writer can step it there.
+    const isRange = tag === "input" && (el as HTMLInputElement).type === "range";
+    if (isRange || el.getAttribute("role") === "slider") {
+      const read = (attr: string, aria: string, fallback: number) => {
+        const raw = el.getAttribute(aria) ?? el.getAttribute(attr);
+        const n = raw === null ? NaN : Number(raw);
+        return Number.isFinite(n) ? n : fallback;
+      };
+      spec.range = { min: read("min", "aria-valuemin", 0), max: read("max", "aria-valuemax", 100), step: read("step", "aria-valuestep", 1) || 1 };
+      if (!isRange) spec.custom = true;
+    }
     if (looksLikeTrap(el, visible)) spec.suspectedHoneypot = true;
 
     specs.push(spec);
     handles.set(id, el as HTMLElement);
   });
 
+  placeInSections(root, specs, handles, usedIds);
+
   return { specs, handles, skipped, url, readAt: Date.now() };
+}
+
+/** What counts as a heading that groups the fields after it. */
+const HEADING_SELECTOR = "h1,h2,h3,h4,h5,h6,legend,[role='heading']";
+
+/**
+ * What this form is called, for the agent's opening line.
+ *
+ * The nearest heading above the first field — "Society Membership Application", a job title —
+ * and the page title only when there is none. Empty is a fine answer: the opening line then says
+ * "this form" instead of inventing a name for it.
+ */
+export function titleOf(read: FormRead, root: Document | Element = document): string {
+  const FOLLOWING = 4;
+  const firstField = [...read.handles.values()].sort((a, b) =>
+    a.compareDocumentPosition(b) & FOLLOWING ? -1 : 1,
+  )[0];
+
+  if (firstField) {
+    const above = deepQueryAll(root, "h1,h2,h3,h4,[role='heading']")
+      .filter(isVisible)
+      .filter((heading) => heading.compareDocumentPosition(firstField) & FOLLOWING);
+    const nearest = above[above.length - 1];
+    const text = nearest ? cleanLabel(textOf(nearest)) : "";
+    if (text) return text.slice(0, 80);
+  }
+
+  const doc = ownerDocumentOf(root);
+  return (doc.title ?? "").split(/\s[|·–-]\s/)[0]!.trim().slice(0, 80);
+}
+
+/**
+ * Give every field the heading it sits under, and use it to tell repeated labels apart.
+ *
+ * A live Jotform membership application asks "First Name" twice — once for the person applying
+ * and once for an alternate representative — and the accessible name of each is exactly that,
+ * nothing more. The heading above is the only thing on the page that says whose name goes
+ * where. Read without it, the tool has `first_name` and `first_name_2`, and the model has to
+ * guess which one is the person talking.
+ *
+ * So each field records its section, and where a label repeats, the section goes into the id as
+ * well: `alternate_designated_representative_first_name` is a question a model can answer
+ * correctly. A label that is unique keeps its short id — nothing is renamed that did not need to
+ * be, because the short ids are what the rest of the product and its tests are written against.
+ */
+function placeInSections(
+  root: Document | Element,
+  specs: FieldSpec[],
+  handles: FieldHandles,
+  usedIds: Set<string>,
+): void {
+  const FOLLOWING = 4; // Node.DOCUMENT_POSITION_FOLLOWING, spelled out so an iframe's realm is irrelevant
+
+  // Sorted rather than trusted: `deepQueryAll` gathers shadow roots and frames after the light
+  // DOM, so its order is not the order a person reads the page in.
+  const byPosition = (a: Element, b: Element) => (a.compareDocumentPosition(b) & FOLLOWING ? -1 : 1);
+
+  const fields = [...handles.values()].sort(byPosition);
+  const first = fields[0];
+  if (!first) return;
+
+  // A heading above the very first field is the form's TITLE, not a section of it — the job
+  // title on a Greenhouse page, the form name on a Jotform one. It governs everything, so it
+  // tells nothing apart; and it can do real harm, because the exclusions in `memory.ts` read the
+  // section. A role called "Customer Success Manager" would have ruled out every email field on
+  // the page, since "manager" is how a manager's email is kept from being mistaken for yours.
+  const isTitle = (heading: Element) =>
+    heading.tagName.toLowerCase() !== "legend" &&
+    Boolean(heading.compareDocumentPosition(first) & FOLLOWING);
+
+  const headings = deepQueryAll(root, HEADING_SELECTOR)
+    .filter(isVisible)
+    .filter((heading) => !isTitle(heading))
+    .sort(byPosition);
+  if (headings.length === 0) return;
+
+  const sectionOf = (el: Element, label: string): string => {
+    let found = "";
+    for (const heading of headings) {
+      if (heading.contains(el)) continue;
+
+      // A legend names its own fieldset and nothing after it. Treated like a heading, the
+      // "Industry" legend of a checkbox group became the section of every field below it.
+      const governs =
+        heading.tagName.toLowerCase() === "legend"
+          ? Boolean(heading.parentElement?.contains(el))
+          : Boolean(heading.compareDocumentPosition(el) & FOLLOWING);
+
+      if (governs) found = cleanLabel(textOf(heading));
+    }
+    // A radio group's legend is its own question, not the section it lives in.
+    return found && found !== label ? found : "";
+  };
+
+  for (const spec of specs) {
+    const el = handles.get(spec.id);
+    if (!el) continue;
+    const section = sectionOf(el, spec.label);
+    if (section) spec.section = section;
+  }
+
+  // Only repeated labels are renamed, and only when a section actually separates them.
+  const count = new Map<string, number>();
+  for (const spec of specs) count.set(spec.label, (count.get(spec.label) ?? 0) + 1);
+
+  for (const spec of specs) {
+    if (!spec.section || (count.get(spec.label) ?? 0) < 2) continue;
+
+    const base = slugify(`${spec.section} ${spec.label}`);
+    if (!base || base === spec.id) continue;
+
+    let candidate = base;
+    for (let n = 2; usedIds.has(candidate); n++) candidate = `${base}_${n}`;
+
+    const el = handles.get(spec.id)!;
+    handles.delete(spec.id);
+    usedIds.delete(spec.id);
+    usedIds.add(candidate);
+    spec.id = candidate;
+    handles.set(candidate, el);
+  }
 }
 
 /**
@@ -523,7 +676,14 @@ export function readForm(
  * `readForm` stays synchronous and side-effect free, and this is the one function in `core/`
  * that touches the page in order to learn about it.
  */
-export async function harvestOptions(read: FormRead, settleMs = 150): Promise<FormRead> {
+export function harvestOptions(read: FormRead, settleMs = 150): Promise<FormRead> {
+  // One widget sequence at a time on the page — see `exclusively` in dom-path.ts. Two harvests at
+  // once (the memory pass at page load, and the one when the microphone is pressed) pressed each
+  // other's dropdowns and read each other's options.
+  return exclusively(() => harvestAll(read, settleMs));
+}
+
+async function harvestAll(read: FormRead, settleMs: number): Promise<FormRead> {
   const doc = typeof document !== "undefined" ? document : null;
   if (!doc) return read;
 
@@ -545,7 +705,11 @@ export async function harvestOptions(read: FormRead, settleMs = 150): Promise<Fo
       openWidget(el);
       await sleep(settleMs);
 
-      const revealed = allOptions().filter((option) => !before.has(option));
+      let revealed = allOptions().filter((option) => !before.has(option));
+      // Already open before we got here, so nothing is "new" — read its own options instead.
+      if (revealed.length === 0 && el.getAttribute("aria-expanded") === "true") {
+        revealed = allOptions().filter((option) => ownsOptions(el, option) === true);
+      }
       const options: FieldOption[] = [];
       const seen = new Set<string>();
 
@@ -557,6 +721,19 @@ export async function harvestOptions(read: FormRead, settleMs = 150): Promise<Fo
       }
 
       if (options.length > 0) spec.options = options;
+
+      // A list that says several can be picked is a multi-select, whatever the trigger looks like
+      // — React-Select's tag pickers are an input like any other until their menu is open.
+      const list = revealed[0]?.closest("[role='listbox']");
+      if (list?.getAttribute("aria-multiselectable") === "true") spec.kind = "multiselect";
+
+      // Opened, and nothing to read: a list that fills in as you type — a location, a college.
+      // Its answers cannot be offered in advance; they are searched for when written.
+      const typesToSearch =
+        el.tagName.toLowerCase() === "input" ||
+        Boolean(el.getAttribute("aria-autocomplete")) ||
+        Boolean(el.querySelector("input"));
+      if (options.length === 0 && typesToSearch) spec.searchable = true;
     } catch {
       // A widget that refuses to open is not a crash. The field keeps no options, the binder
       // leaves it as free text, and the agent asks about it out loud instead.
@@ -578,7 +755,10 @@ export async function harvestOptions(read: FormRead, settleMs = 150): Promise<Fo
  * one candidate control to exist, giving up at `timeoutMs` either way so a page that polls in
  * the background can never hang the hotkey.
  */
-export function waitForForm(root: Document = document, timeoutMs = 5000): Promise<void> {
+export function waitForForm(
+  root: Document | Element = document,
+  timeoutMs = 5000,
+): Promise<void> {
   return whenSettled(
     root,
     350,

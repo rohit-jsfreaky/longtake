@@ -9,6 +9,8 @@
  * session config and a `tool.call` handler — the shape below already leaves room for both.
  */
 
+import { ToolResultQueue, type TimelinePoint } from "@longtake/core";
+
 const WS_URL = "wss://agents.assemblyai.com/v1/ws";
 const TARGET_SAMPLE_RATE = 24000;
 
@@ -91,12 +93,20 @@ export type VoiceSessionOptions = {
    * The audio is PCM16 at 24 kHz mono — exactly what the Dictation API wants — or null when the
    * turn produced none. Keeping it is what makes the verbatim recoverable afterwards.
    */
-  onUserTranscript?: (text: string, audio: Int16Array | null) => void;
+  onUserTranscript?: (text: string, audio: Int16Array | null, timeline: TimelinePoint[]) => void;
   onAgentTranscript?: (text: string) => void;
   /** Fired the moment the person starts speaking a turn. */
   onSpeechStart?: () => void;
   onError?: (message: string) => void;
   onClosed?: () => void;
+  /**
+   * Tool results have just gone out.
+   *
+   * The moment to update the agent's prompt with the form as it now is. AssemblyAI's own pattern
+   * for changing an agent mid-call is exactly this order — "after each successful tool.result,
+   * send session.update" — rather than changing it while a tool call is still outstanding.
+   */
+  onResultsSent?: () => void;
 };
 
 export type VoiceSession = {
@@ -113,7 +123,56 @@ export type VoiceSession = {
   setTurnDetection: (turnDetection: TurnDetection) => void;
   /** Replace the tool list — `session.tools` replaces, it does not merge. */
   setTools: (tools: unknown[]) => void;
+  /**
+   * Replace the system prompt mid-call.
+   *
+   * Mutable, unlike `greeting`. Used when the form changes shape: the prompt carries a description
+   * of the form, and one that still says "this form has one question" after twenty have appeared
+   * contradicts the tool the agent is holding.
+   */
+  setSystemPrompt: (prompt: string) => void;
 };
+
+/**
+ * How long the tool handler gets before we answer on its behalf.
+ *
+ * Writing twenty fields, dropdowns included, runs to about two seconds. Twelve is far outside
+ * anything legitimate and far inside the API's own 60-second tool timeout, which is the length
+ * of silence a person would otherwise sit through.
+ */
+const TOOL_DEADLINE_MS = 12000;
+
+/**
+ * The last of the three ways this session found to leave an agent waiting for ever.
+ *
+ * `ToolResultQueue` guarantees a result that exists is delivered. It cannot help if the handler
+ * never returns one — an await that never settles produces no result to queue, no error to
+ * catch, and no event to recover on. So the promise races a clock, and a handler that misses it
+ * gets answered without it. Saying "that did not work, ask them again" is recoverable; saying
+ * nothing at all is the failure this whole file is about.
+ */
+function withDeadline<T>(work: Promise<T>, ms: number): Promise<T | { error: string }> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(
+      () =>
+        resolve({
+          error:
+            "Filling the form took too long and was abandoned. Tell the person that one did not go in and ask them to type it themselves.",
+        }),
+      ms,
+    );
+    work.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (cause) => {
+        clearTimeout(timer);
+        reject(cause);
+      },
+    );
+  });
+}
 
 function toBase64(samples: Int16Array): string {
   const bytes = new Uint8Array(samples.buffer, samples.byteOffset, samples.byteLength);
@@ -140,6 +199,7 @@ export async function startVoiceSession(options: VoiceSessionOptions): Promise<V
     onSpeechStart,
     onError,
     onClosed,
+    onResultsSent,
     tools,
     onToolCall,
   } = options;
@@ -307,10 +367,19 @@ export async function startVoiceSession(options: VoiceSessionOptions): Promise<V
   const MAX_TURN_SAMPLES = TARGET_SAMPLE_RATE * 110; // just inside the API's 120 s limit
   let turnAudio: Int16Array[] = [];
   let turnSamples = 0;
+  /**
+   * Each running transcript of this turn, with how much audio had been captured when it arrived.
+   *
+   * The API gives no word timings, but this bounds them: a word was spoken after the last delta
+   * that lacked it and before the first that had it. `clipFor` in core cuts an answer's own few
+   * seconds out of the turn with it, so playing back "First Name" plays the name, not the minute.
+   */
+  let timeline: TimelinePoint[] = [];
 
   const resetTurnAudio = () => {
     turnAudio = [];
     turnSamples = 0;
+    timeline = [];
   };
 
   /** The current turn's audio as one block, or null when there is nothing worth sending. */
@@ -371,22 +440,29 @@ export async function startVoiceSession(options: VoiceSessionOptions): Promise<V
   /**
    * Tool results are held until the agent has finished its current reply.
    *
-   * ⚠️ The two places this is documented disagree, and the specific one wins. AssemblyAI's
-   * general coding-agent prompt says to send `tool.result` "the moment your tool returns… no
-   * special timing dance". The Client-side tools page — which carries the working code — says
-   * the opposite and is precise about it: *"Send `tool.result` when `reply.done` is the latest
-   * event you've received. Not earlier (agent is still mid-transition-phrase), not later (a new
-   * turn has started)."* We follow the page with the mechanism on it.
+   * ⚠️ The two places this is documented disagree. AssemblyAI's general coding-agent prompt says
+   * to send `tool.result` "the moment your tool returns… no special timing dance". The
+   * Client-side tools page — which carries the working code — is precise: *"Send `tool.result`
+   * when `reply.done` is the latest event you've received. Not earlier (agent is still
+   * mid-transition-phrase), not later (a new turn has started)."*
    *
-   * A result that arrives while a turn is in flight is queued; an interrupted reply throws the
-   * queue away, because the agent has already moved on and a stale answer would be confusing.
+   * We follow the page, but not its literal wording, because "latest event" implemented as a
+   * single remembered string deadlocked a live session — the moment passed while a dropdown was
+   * being filled and the finished result was silently dropped for ever. `ToolResultQueue` holds
+   * for the reason the docs actually give (do not interrupt a transition phrase) and has a
+   * deadline, so a result can be late but can never be lost. The full sequence is in
+   * `core/src/dispatch.ts`, with the tests that pin it.
    */
-  let lastEvent: string | null = null;
-  const pendingResults: { call_id: string; result: unknown }[] = [];
+  const results = new ToolResultQueue();
 
-  const flushIfIdle = () => {
-    if (lastEvent !== "reply.done" || pendingResults.length === 0) return;
-    for (const pending of pendingResults.splice(0)) {
+  const flushResults = () => {
+    // Checked before draining, not inside `send`. `due` removes what it returns, so draining
+    // into a socket that is not open would throw the results away as thoroughly as the bug this
+    // replaces — just in a different place.
+    if (ws.readyState !== WebSocket.OPEN) return;
+
+    const due = results.due(Date.now());
+    for (const pending of due) {
       send({
         type: "tool.result",
         call_id: pending.call_id,
@@ -394,7 +470,17 @@ export async function startVoiceSession(options: VoiceSessionOptions): Promise<V
         result: JSON.stringify(pending.result),
       });
     }
+    if (due.length > 0) onResultsSent?.();
   };
+
+  /**
+   * A heartbeat, because the deadlock had no event to recover on.
+   *
+   * Every other flush is triggered by an incoming frame. The failure this guards against is the
+   * one where nothing else arrives at all: the agent is waiting on a tool result, so it does not
+   * speak, so no frame comes, so nothing calls the flush. Something has to tick on its own.
+   */
+  const heartbeat = setInterval(flushResults, 500);
 
   const runTool = async (message: AgentMessage) => {
     const callId = String(message.call_id ?? "");
@@ -404,21 +490,25 @@ export async function startVoiceSession(options: VoiceSessionOptions): Promise<V
     let result: unknown;
     try {
       result = onToolCall
-        ? await onToolCall(name, args)
+        ? await withDeadline(onToolCall(name, args), TOOL_DEADLINE_MS)
         : { error: `No handler for "${name}" in this client.` };
     } catch (cause) {
       // Read verbatim by the model, so it should name what failed and what to ask for next.
       result = { error: cause instanceof Error ? cause.message : String(cause) };
     }
 
-    pendingResults.push({ call_id: callId, result });
+    results.add({ call_id: callId, result }, Date.now());
     // The tool may well have finished after `reply.done` already fired, so try immediately.
-    flushIfIdle();
+    flushResults();
   };
 
   ws.addEventListener("message", (event) => {
     const message: AgentMessage = JSON.parse(event.data);
     if (message.type !== "reply.audio") onEvent?.("in", message);
+
+    // Every frame, before the switch. The queue itself decides which ones matter, and any frame
+    // arriving is a chance to notice that a held result can now go out.
+    results.note(message.type);
 
     switch (message.type) {
       case "session.ready": {
@@ -440,39 +530,41 @@ export async function startVoiceSession(options: VoiceSessionOptions): Promise<V
         void runTool(message);
         break;
       case "reply.started":
-        lastEvent = "reply.started"; // a turn is in flight; hold any results that arrive now
-        break;
+        break; // the queue already knows a reply is in flight
       case "input.speech.started":
-        lastEvent = "input.speech.started";
         // The moment somebody starts answering. How long they waited before this is one of the
         // signals the hesitation map reads, and it is the only one not recoverable from text.
         onSpeechStart?.();
         // Flushing here rather than waiting for `reply.done` makes barge-in ~300 ms snappier.
         flushPlayback();
+        // A new turn used to be the thing that shut the door on a finished tool result. It is
+        // now just another moment the agent is not speaking, so anything waiting goes out.
+        flushResults();
         break;
       case "reply.done":
-        lastEvent = "reply.done";
-        if (message.status === "interrupted") {
-          flushPlayback();
-          // The agent has moved on. Answers to the turn it abandoned are no longer wanted.
-          pendingResults.length = 0;
-        } else {
-          flushIfIdle();
-        }
+        if (message.status === "interrupted") flushPlayback();
+        // Not conditional on the status: the queue drops an interrupted turn's results itself,
+        // so this sends whatever survived and nothing otherwise.
+        flushResults();
         break;
       case "transcript.user.delta":
         // ⚠️ The docs example shows this event carrying an incremental `delta`. On the wire it
         // carries the full running text in `text` instead, and `delta` is absent. Verified
         // against a live session on 20 Sep 2026. Agent deltas really do use `delta`; only the
         // user ones differ. Reading `delta` here silently produced empty partials.
-        onUserPartial?.(String(message.text ?? message.delta ?? ""));
+      {
+        const running = String(message.text ?? message.delta ?? "");
+        timeline.push({ text: running, sample: turnSamples });
+        onUserPartial?.(running);
         break;
+      }
       case "transcript.user": {
         // The turn is over, so its audio is complete. Handed over with the words that go with
-        // it, then cleared — the next turn starts its own recording.
+        // it and the timeline of when they arrived, then cleared — the next turn starts afresh.
         const audio = takeTurnAudio();
+        const heard = timeline;
         resetTurnAudio();
-        onUserTranscript?.(String(message.text ?? ""), audio);
+        onUserTranscript?.(String(message.text ?? ""), audio, heard);
         break;
       }
       case "transcript.agent":
@@ -491,6 +583,8 @@ export async function startVoiceSession(options: VoiceSessionOptions): Promise<V
 
   ws.addEventListener("close", (event) => {
     ready = false;
+    // The socket is gone; there is nothing left to flush into.
+    clearInterval(heartbeat);
     if (!closing && event.code === 1008) {
       onError?.("Unauthorized (close 1008). The token was bad or already used.");
     }
@@ -498,6 +592,7 @@ export async function startVoiceSession(options: VoiceSessionOptions): Promise<V
   });
 
   const teardown = () => {
+    clearInterval(heartbeat);
     flushPlayback();
     worklet.port.onmessage = null;
     try {
@@ -516,6 +611,9 @@ export async function startVoiceSession(options: VoiceSessionOptions): Promise<V
     },
     setTools: (next: unknown[]) => {
       send({ type: "session.update", session: { tools: next } });
+    },
+    setSystemPrompt: (prompt: string) => {
+      send({ type: "session.update", session: { system_prompt: prompt } });
     },
     stop: async () => {
       closing = true;

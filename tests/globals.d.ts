@@ -25,6 +25,30 @@ import type {
   listMemory,
   forget,
   forgetAll,
+  ToolResultQueue,
+  openingLine,
+  howToAsk,
+  inAskingOrder,
+  FieldRegistry,
+  titleOf,
+  isFilled,
+  summarise,
+  stillOptional,
+  systemPrompt,
+  factsOf,
+  BANNED_PHRASES,
+  clearValues,
+  buildClearTool,
+  readValue,
+  Ledger,
+  snapshot,
+  gate,
+  nextMove,
+  brief,
+  doNext,
+  LongtakeSession,
+  clipFor,
+  readError,
 } from "@longtake/core";
 
 declare global {
@@ -56,6 +80,30 @@ declare global {
       listMemory: typeof listMemory;
       forget: typeof forget;
       forgetAll: typeof forgetAll;
+      ToolResultQueue: typeof ToolResultQueue;
+      openingLine: typeof openingLine;
+      howToAsk: typeof howToAsk;
+      inAskingOrder: typeof inAskingOrder;
+      FieldRegistry: typeof FieldRegistry;
+      titleOf: typeof titleOf;
+      isFilled: typeof isFilled;
+      summarise: typeof summarise;
+      stillOptional: typeof stillOptional;
+      systemPrompt: typeof systemPrompt;
+      factsOf: typeof factsOf;
+      BANNED_PHRASES: typeof BANNED_PHRASES;
+      clearValues: typeof clearValues;
+      buildClearTool: typeof buildClearTool;
+      readValue: typeof readValue;
+      Ledger: typeof Ledger;
+      snapshot: typeof snapshot;
+      gate: typeof gate;
+      nextMove: typeof nextMove;
+      brief: typeof brief;
+      doNext: typeof doNext;
+      LongtakeSession: typeof LongtakeSession;
+      clipFor: typeof clipFor;
+      readError: typeof readError;
       inspect: () => unknown;
       inspectDeep: () => Promise<unknown>;
       last?: ReturnType<typeof readForm>;

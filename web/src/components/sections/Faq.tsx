@@ -25,7 +25,7 @@ const QA = [
   },
   {
     q: "What if it gets something wrong?",
-    a: "Every answer keeps the words you used to give it, so you can click any field and hear yourself say it. If what it wrote does not match what you said, you will know immediately — and anything it could not find in your own words never reaches the page at all.",
+    a: "Anything it could not find in your own words never reaches the page at all. When you say something the form does not offer, or you are not sure, it asks before anything goes in. And you can tell it to clear or change any answer, out loud.",
   },
   {
     q: "Does it work on forms it has never seen?",

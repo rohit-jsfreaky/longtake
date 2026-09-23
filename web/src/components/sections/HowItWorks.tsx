@@ -52,8 +52,8 @@ const CELLS = [
   },
   {
     scene: ScenePlayback,
-    title: "Hear yourself say it",
-    body: "Click any filled answer and your own voice plays back saying it.",
+    title: "It asks before it guesses",
+    body: "Say “Twitter” to a list without Twitter and it offers the closest choice. Nothing goes in until you say yes.",
     span: "",
   },
   {

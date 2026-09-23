@@ -85,6 +85,25 @@ export type FieldSpec = {
    * speaker appears to have answered it.
    */
   suspectedHoneypot?: boolean;
+  /**
+   * The heading this field sits under — "Alternate Designated Representative", "Emergency
+   * contact" — when there is one.
+   *
+   * Real forms reuse labels. A live Jotform membership application has two fields whose only
+   * accessible name is "First Name": one for the person applying and one for somebody else
+   * entirely, told apart by nothing but the heading above them. Without this the model sees
+   * two identical questions and has to guess which is theirs — and a wrong guess puts a
+   * person's own name in the box meant for their stand-in.
+   */
+  section?: string;
+  /**
+   * A dropdown whose choices only appear once you type — a location or a college picker that asks a
+   * server as you go. Opening it shows nothing to read, so it cannot be answered from a list: the
+   * spoken answer is typed in, and one of the results has to match it clearly.
+   */
+  searchable?: boolean;
+  /** A slider's range, as the page declares it. */
+  range?: { min: number; max: number; step: number };
 };
 
 /** Live elements, keyed by `FieldSpec.id`. Never serialised, never leaves the page. */

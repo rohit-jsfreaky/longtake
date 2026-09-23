@@ -21,8 +21,11 @@ export function BrowserChrome({
   children: React.ReactNode;
 }) {
   return (
-    <div className="sq overflow-hidden border border-hair bg-ink-700">
-      <div className="flex items-center gap-4 border-b border-hair px-4 py-3">
+    // A flex column that fills whatever height it is given, so the form scrolls
+    // inside the window instead of stretching it. The demo is a browser; a
+    // browser has a fixed frame and the page moves behind it.
+    <div className="sq flex h-full flex-col overflow-hidden border border-hair bg-ink-700">
+      <div className="flex shrink-0 items-center gap-4 border-b border-hair px-4 py-3">
         {/* Traffic lights, drawn as three dots in the hairline colour rather
             than the usual red/amber/green — the page has no hue, and three
             coloured circles would be the loudest thing on it. */}
@@ -50,7 +53,11 @@ export function BrowserChrome({
         </span>
       </div>
 
-      {children}
+      {/* `min-h-0` is what makes this scroll. A flex child defaults to
+          `min-height: auto`, which means "never shrink below my content" — so
+          without it the tall form pushes the window open instead of scrolling
+          inside it, and every height set above here is quietly ignored. */}
+      <div className="min-h-0 flex-1 overflow-y-auto">{children}</div>
     </div>
   );
 }

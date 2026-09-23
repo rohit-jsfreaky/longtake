@@ -32,18 +32,44 @@
  * difference between a demo that looks like it works and a form that is actually filled in.
  */
 
-import { closeWidget, openWidget, optionNodes, pressOption } from "./dom-path";
+import { closeWidget, exclusively, openWidget, optionNodes, ownsOptions, pressOption } from "./dom-path";
 import type { FieldHandles, FieldSpec, SpokenValue } from "./types";
 
 export type WriteOutcome =
   | { fieldId: string; status: "written"; wrote: string }
-  /** We chose not to write, and why. Always safe to show a person. */
-  | { fieldId: string; status: "refused"; reason: string }
+  /**
+   * We chose not to write, and why. Always safe to show a person.
+   *
+   * `choices` is set whenever the refusal was "that is not one of the options", and it carries
+   * the page's real wording. Without it the agent can only repeat the question it just asked,
+   * get the same answer, and repeat it again — which is exactly what happened on a live run:
+   * the form offered Conference / Job Board / LinkedIn / Podcast, the person said "I heard from
+   * X", and the agent asked "How did you hear about Glean?" twice more before giving up. A
+   * refusal has to say what would be accepted, or it is not a recoverable failure.
+   */
+  | { fieldId: string; status: "refused"; reason: string; choices?: string[] }
   /** We tried, and the page did not take it. Never reported as success. */
-  | { fieldId: string; status: "rejected-by-page"; wrote: string; found: string };
+  | {
+      fieldId: string;
+      status: "rejected-by-page";
+      wrote: string;
+      found: string;
+      /** Set once the second attempt has also failed, so the agent knows to stop trying. */
+      retried?: boolean;
+    };
 
 /** How long to let a component draw its options before giving up on it. */
 const WIDGET_OPEN_MS = 400;
+
+/**
+ * How long to wait before trying a rejected write once more.
+ *
+ * A form that re-renders while we are writing — a validation pass, a controlled component
+ * catching up — drops the first value and keeps the second. One retry converts most of those
+ * into successes, and the ones it does not are then reported as genuinely failed rather than
+ * silently left empty.
+ */
+const RETRY_AFTER_MS = 250;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -79,6 +105,25 @@ function setNativeValue(el: HTMLElement, value: string): void {
   }
 }
 
+/**
+ * Tick or untick a native radio or checkbox the way a person does: by clicking it.
+ *
+ * ⚠️ Not by setting `.checked` and firing `change`. That looked right and passed every test on
+ * plain HTML, and it does nothing on a React form — React's `onChange` for radios and checkboxes
+ * listens for `click`, so the box shows a tick while the component never hears about it. On a
+ * form whose questions depend on this answer ("applying as an individual or an organisation?")
+ * that is the difference between the rest of the form appearing and nothing happening at all.
+ *
+ * A native `click()` sets the state and fires `click`, `input` and `change` in the browser's own
+ * order, which every framework and every plain page agrees on. Only clicked when the state is
+ * wrong, because clicking a checkbox that is already right would un-tick it.
+ */
+function pressChoice(box: HTMLInputElement, want: boolean): void {
+  if (box.checked !== want) box.click();
+  // A page that cancels the click (some "are you sure?" handlers do) leaves it unchanged; the
+  // caller reads `.checked` back and reports that honestly rather than forcing it.
+}
+
 function announce(el: HTMLElement, kinds: string[]): void {
   for (const kind of kinds) {
     el.dispatchEvent(new Event(kind, { bubbles: true }));
@@ -90,9 +135,9 @@ function normalise(text: string): string {
 }
 
 /** Words that mean no, in either of the two languages Longtake is built to hear. */
-const MEANS_NO = /\b(no|not|false|never|decline|disagree|refuse|nahi|nahin)\b/i;
+export const MEANS_NO = /\b(no|not|false|never|decline|disagree|refuse|nahi|nahin)\b/i;
 /** Words that mean yes. Only consulted once the negatives have had their say. */
-const MEANS_YES = /\b(yes|true|agree|agreed|accept|confirm|ok|okay|sure|haan|han|ji|sahi)\b/i;
+export const MEANS_YES = /\b(yes|true|agree|agreed|accept|confirm|ok|okay|sure|haan|han|ji|sahi)\b/i;
 
 /**
  * Did the speaker mean yes?
@@ -135,11 +180,40 @@ function matchAmong(candidates: string[], spoken: string): number | null {
 }
 
 /**
+ * The one option the person named, word for word, somewhere in what they said.
+ *
+ * ## Why
+ *
+ * Live run: "I'm based in Kolkata, India." The Glean application has no City box, so the agent put
+ * the location into Country — as "Kolkata" — and the form, correctly, did not offer Kolkata. The
+ * agent then announced "India is not an option", which was false: India was on the list, and the
+ * person had said it, and the agent's own evidence quote contained it.
+ *
+ * So when the value does not match, the evidence is read for an option named in it. This does not
+ * loosen the rule that nothing unspoken is written — the option has to appear in the person's own
+ * words, as a whole word or phrase, and exactly one option may. "Twitter" still matches nothing on
+ * a list without Twitter; "yes, no problem" names two answers and is left alone.
+ */
+export function optionNamedIn(spec: FieldSpec, evidence: string | undefined): { value: string; label: string } | null {
+  const heard = ` ${normalise(evidence ?? "")} `;
+  if (!heard.trim()) return null;
+
+  const named = (spec.options ?? [])
+    .filter((option) => option.value !== "")
+    .filter((option) => {
+      const label = normalise(option.label);
+      return label.length >= 2 && heard.includes(` ${label} `);
+    });
+
+  return named.length === 1 ? named[0]! : null;
+}
+
+/**
  * Which of the page's own options did the speaker mean?
  *
  * Returns `null` rather than a best guess. Every caller treats `null` as "leave it and ask".
  */
-function matchOption(spec: FieldSpec, spoken: string): { value: string; label: string } | null {
+export function matchOption(spec: FieldSpec, spoken: string): { value: string; label: string } | null {
   if (!spec.options || spec.options.length === 0) return null;
 
   // Labels and values are both offered, because a person says "India" and a form stores "in".
@@ -150,6 +224,36 @@ function matchOption(spec: FieldSpec, spoken: string): { value: string; label: s
   const values = spec.options.map((option) => option.value);
   const byValue = matchAmong(values, spoken);
   return byValue !== null ? spec.options[byValue]! : null;
+}
+
+/**
+ * The page's own wording for what this field will accept, as a sentence the agent can say.
+ *
+ * Capped, because the agent has to read it out loud and a person cannot hold thirty options in
+ * their head. Past the cap it says how many more there are, which is enough for the agent to
+ * offer to go through them.
+ */
+const MOST_CHOICES_TO_SAY = 10;
+
+/**
+ * The options a person could actually pick, with the placeholder dropped.
+ *
+ * A `<select>` almost always opens with `<option value="">Select…</option>`, and the reader
+ * keeps it because it is a real option element. It is not a real answer, though, and an agent
+ * reading "choose from: Select, India, United States" out loud sounds broken.
+ */
+export function realChoices(options: { value: string; label: string }[] | undefined): string[] {
+  const real = (options ?? []).filter((option) => option.value !== "");
+  // If every option has an empty value the form is unusual, not placeholder-only — keep them all
+  // rather than telling the person this field has no choices at all.
+  return (real.length > 0 ? real : (options ?? [])).map((option) => option.label).filter(Boolean);
+}
+
+function sayableChoices(labels: string[]): string {
+  const clean = labels.map((label) => label.trim()).filter(Boolean);
+  const shown = clean.slice(0, MOST_CHOICES_TO_SAY);
+  const rest = clean.length - shown.length;
+  return rest > 0 ? `${shown.join(", ")}, and ${rest} more` : shown.join(", ");
 }
 
 function readBack(el: HTMLElement): string {
@@ -203,6 +307,101 @@ function radioGroup(el: HTMLElement): HTMLInputElement[] {
   );
 }
 
+/** What a field holds: text, the chosen option(s), a tick — or `null` when it is empty. */
+export type FieldValue = string | string[] | boolean | null;
+
+/** What a dropdown shows when nothing is chosen: "Select...", "Choose one", "-- Please select --". */
+const PLACEHOLDER = /^(select|choose|pick|please (select|choose)|none selected)\b|^-+.*-+$|(\.\.\.|…)$/i;
+
+/**
+ * What this field holds right now — read off the page, for every kind of field.
+ *
+ * ## Why this is the foundation
+ *
+ * Everything that says anything about the form — the opening line, the counter, "still empty",
+ * what the agent is told — has to agree, and the only thing they can all agree on is the page.
+ * The previous version (`isFilled`) could not read a custom dropdown at all and answered "don't
+ * know", so each caller guessed differently: on a live run India was sitting in the Country box
+ * while the opening line asked where the person was based.
+ *
+ * A custom dropdown paints its choice as text, next to a placeholder when empty. So the text on
+ * show is matched against the field's own options: an option on show is the value; a placeholder
+ * or nothing is empty. Where the options were never learned, whatever non-placeholder text is on
+ * show is taken as the value.
+ */
+export function readValue(spec: FieldSpec, el: HTMLElement): FieldValue {
+  const tag = el.tagName.toLowerCase();
+
+  if (spec.kind === "radio") {
+    if (tag === "input") {
+      const on = radioGroup(el).find((radio) => radio.checked);
+      if (!on) return null;
+      return spec.options?.find((option) => option.value === on.value)?.label ?? on.value;
+    }
+    const on = el.querySelector<HTMLElement>("[aria-checked='true']");
+    return on ? (on.getAttribute("aria-label") ?? on.textContent ?? "").trim() || null : null;
+  }
+
+  if (spec.kind === "multiselect" && tag === "input") {
+    const name = el.getAttribute("name");
+    const root = el.getRootNode() as Document | ShadowRoot;
+    const boxes = name
+      ? Array.from(root.querySelectorAll<HTMLInputElement>(`input[type="checkbox"][name="${CSS.escape(name)}"]`))
+      : [el as HTMLInputElement];
+    const ticked = boxes
+      .filter((box) => box.checked)
+      .map((box) => spec.options?.find((option) => option.value === box.value)?.label ?? box.value);
+    return ticked.length > 0 ? ticked : null;
+  }
+
+  if (spec.kind === "checkbox") {
+    const on = tag === "input" ? (el as HTMLInputElement).checked : el.getAttribute("aria-checked") === "true";
+    return on ? true : null;
+  }
+
+  if (tag === "select") {
+    const select = el as HTMLSelectElement;
+    if (!select.value) return null;
+    return (select.selectedOptions[0]?.textContent ?? "").trim() || select.value;
+  }
+
+  // A div slider carries its value in ARIA; there is nothing else to read.
+  if (el.getAttribute("role") === "slider") {
+    return el.getAttribute("aria-valuenow");
+  }
+
+  if (spec.custom) {
+    // A div trigger shows its choice in its own text; an input-based one (React-Select) shows it
+    // in the block around it.
+    const own = tag === "input" ? "" : (el.innerText ?? "").replace(/\s+/g, " ").trim();
+    const shown = (own || renderedText(el)).replace(/\s*×\s*$/, "").trim();
+    if (!shown) return null;
+
+    const choices = realChoices(spec.options);
+    const heard = ` ${normalise(shown)} `;
+    const onShow = choices
+      .filter((choice) => {
+        const word = normalise(choice);
+        return word.length > 0 && heard.includes(` ${word} `);
+      })
+      .sort((a, b) => b.length - a.length);
+    // A tag picker shows every pick at once; a single picker shows one.
+    if (onShow.length > 0) return spec.kind === "multiselect" ? onShow : onShow[0]!;
+
+    // Showing text that is none of its options: a placeholder, or a label from further up.
+    if (PLACEHOLDER.test(shown) || choices.length > 0) return null;
+    return shown;
+  }
+
+  const text = readBack(el).trim();
+  return text ? text : null;
+}
+
+/** Does this field have an answer in it right now? Read off the page — see `readValue`. */
+export function isFilled(spec: FieldSpec, el: HTMLElement): boolean {
+  return readValue(spec, el) !== null;
+}
+
 /**
  * Operate a dropdown that is not a `<select>`: open it, find the option, press it.
  *
@@ -235,7 +434,14 @@ async function pickFromWidget(
   // …but nothing appearing does not always mean nothing opened. A widget that was ALREADY open —
   // left that way by the option-harvesting pass, because not every menu closes on Escape —
   // reveals nothing new, and treating that as a failure refuses a field we could have filled.
-  if (candidates.length === 0) candidates = optionNodes();
+  //
+  // Only options that are this widget's own, though. Taking "whatever is open" is how Country was
+  // once refused with the Hispanic/Latino question's choices — another menu happened to be open.
+  // Where the page does not say which list belongs to which trigger, there is nothing to check
+  // against, and the old behaviour stands; `exclusively` is what keeps our own menus out of it.
+  if (candidates.length === 0) {
+    candidates = optionNodes().filter((option) => ownsOptions(el, option) !== false);
+  }
 
   const labels = candidates.map((option) => (option.innerText ?? "").trim());
   const index = want ? matchAmong(labels, want.label) : matchAmong(labels, spoken);
@@ -253,11 +459,13 @@ async function pickFromWidget(
       };
     }
     // The widget opened and simply does not offer this. That is a question for the person, not
-    // a page failure, so it is a refusal — the agent will ask rather than apologise.
+    // a page failure, so it is a refusal — and the refusal carries the choices, so the agent
+    // reads them out instead of asking the same question again.
     return {
       fieldId: spec.id,
       status: "refused",
-      reason: `"${spoken}" does not clearly match any of the choices this dropdown offers. Asking instead of guessing.`,
+      reason: `"${spoken}" is not one of the choices. This field only accepts: ${sayableChoices(labels)}. Read those out to the person and ask which one fits.`,
+      choices: labels.filter(Boolean),
     };
   }
 
@@ -274,6 +482,155 @@ async function pickFromWidget(
   }
 
   return { fieldId: spec.id, status: "written", wrote: chosen };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════════════
+// Widgets that are not a list you can read in advance
+// ═══════════════════════════════════════════════════════════════════════════════════════
+
+/** How long a search-as-you-type list gets to answer a query before we stop waiting. */
+const SEARCH_WAIT_MS = 2000;
+
+/**
+ * A dropdown that searches as you type — a location, a college.
+ *
+ * Opening it shows nothing to read: the choices come from a server, for whatever has been typed.
+ * So the spoken answer is typed in, and the results are judged by the same rule as every other
+ * choice — exactly one must clearly be what they said. Several results that fit ("Kolkata" and
+ * "Kolkata Airport") come back as choices for the person to pick between; none at all is reported.
+ * If the full answer finds nothing, the part before the first comma is tried, because people say
+ * "Kolkata, India" and a city search wants "Kolkata".
+ */
+async function typeAndPick(spec: FieldSpec, el: HTMLElement, spoken: string): Promise<WriteOutcome> {
+  const input = (el.tagName.toLowerCase() === "input" ? el : el.querySelector("input")) as HTMLInputElement | null;
+  if (!input) return pickFromWidget(spec, el, null, spoken);
+
+  const queries = [spoken.trim(), spoken.split(",")[0]!.trim()].filter((q, i, all) => q && all.indexOf(q) === i);
+  let lastLabels: string[] = [];
+
+  for (const query of queries) {
+    const before = new Set(optionNodes());
+    openWidget(el);
+    try {
+      input.focus({ preventScroll: true });
+    } catch {
+      input.focus();
+    }
+    setNativeValue(input, query);
+    announce(input, ["input"]);
+
+    // Poll: results arrive whenever the server answers.
+    let candidates: HTMLElement[] = [];
+    for (let waited = 0; waited < SEARCH_WAIT_MS; waited += 100) {
+      await sleep(100);
+      candidates = optionNodes().filter((o) => !before.has(o) && ownsOptions(el, o) !== false);
+      if (candidates.length > 0) break;
+    }
+
+    const labels = candidates.map((o) => (o.innerText ?? "").trim());
+    const index = matchAmong(labels, spoken) ?? matchAmong(labels, query);
+    if (index !== null) {
+      const chosen = labels[index]!;
+      pressOption(candidates[index]!);
+      await sleep(200);
+      const showing = renderedText(el);
+      if (normalise(showing).includes(normalise(chosen))) return { fieldId: spec.id, status: "written", wrote: chosen };
+      closeWidget(el);
+      return { fieldId: spec.id, status: "rejected-by-page", wrote: chosen, found: showing };
+    }
+    if (labels.length > 0) lastLabels = labels;
+  }
+
+  // Leave the box as we found it — a half-typed search is not an answer.
+  setNativeValue(input, "");
+  announce(input, ["input"]);
+  closeWidget(el);
+
+  if (lastLabels.length > 0) {
+    return {
+      fieldId: spec.id,
+      status: "refused",
+      reason: `"${spoken}" matches more than one result. The search offers: ${sayableChoices(lastLabels)}. Ask which one.`,
+      choices: lastLabels,
+    };
+  }
+  return { fieldId: spec.id, status: "rejected-by-page", wrote: spoken, found: `no result for "${spoken}"` };
+}
+
+/**
+ * A slider built from divs: moved with the arrow keys, the way a keyboard user moves it.
+ *
+ * Nothing else is reliable — there is no value to assign, and a drag needs geometry the widget may
+ * compute differently. Every slider that follows the ARIA pattern answers the arrows.
+ */
+async function stepSlider(spec: FieldSpec, el: HTMLElement, spoken: SpokenValue): Promise<WriteOutcome> {
+  const target = Number(String(spoken.value).replace(/[^\d.-]/g, ""));
+  if (!Number.isFinite(target)) {
+    return { fieldId: spec.id, status: "refused", reason: `"${spoken.value}" is not a number this slider can go to.` };
+  }
+  const { min, max, step } = spec.range ?? { min: 0, max: 100, step: 1 };
+  const goal = Math.min(max, Math.max(min, target));
+  const now = () => Number(el.getAttribute("aria-valuenow"));
+
+  try {
+    el.focus({ preventScroll: true });
+  } catch {
+    el.focus();
+  }
+  for (let presses = 0; presses < 500 && Math.abs(now() - goal) >= step / 2; presses++) {
+    const key = now() < goal ? "ArrowRight" : "ArrowLeft";
+    el.dispatchEvent(new KeyboardEvent("keydown", { key, code: key, bubbles: true, cancelable: true }));
+    el.dispatchEvent(new KeyboardEvent("keyup", { key, code: key, bubbles: true }));
+    if (presses % 20 === 19) await sleep(0);
+  }
+
+  const landed = now();
+  return Math.abs(landed - goal) < step / 2
+    ? { fieldId: spec.id, status: "written", wrote: String(landed) }
+    : { fieldId: spec.id, status: "rejected-by-page", wrote: String(goal), found: String(landed) };
+}
+
+/** A placeholder that is really a date format: "MM/DD/YYYY", "dd-mm-yyyy", "YYYY-MM-DD". */
+const DATE_MASK = /^(mm|dd|yyyy)([/.\-\s])(mm|dd)\2(yyyy|mm|dd)$/i;
+
+/**
+ * A spoken date, in the shape this field takes.
+ *
+ * A native date input wants YYYY-MM-DD and silently stays empty given anything else. A text box
+ * with a "MM/DD/YYYY" placeholder wants exactly that, and "1 October 2026" in it fails the form's
+ * own validation. Anything that cannot be read as a date is left as it was said.
+ */
+export function asFieldDate(value: string, spec: FieldSpec, el: HTMLElement): string {
+  const isNative = el.tagName.toLowerCase() === "input" && (el as HTMLInputElement).type === "date";
+  const mask = DATE_MASK.exec((spec.placeholder ?? "").trim());
+  if (!isNative && !mask) return value;
+
+  const iso = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value.trim());
+  let y: number, m: number, d: number;
+  if (iso) {
+    [y, m, d] = [Number(iso[1]), Number(iso[2]), Number(iso[3])];
+  } else {
+    const parsed = new Date(value.replace(/(\d+)(st|nd|rd|th)\b/gi, "$1"));
+    if (Number.isNaN(parsed.getTime())) return value;
+    [y, m, d] = [parsed.getFullYear(), parsed.getMonth() + 1, parsed.getDate()];
+  }
+  const two = (n: number) => String(n).padStart(2, "0");
+  if (isNative || !mask) return `${y}-${two(m)}-${two(d)}`;
+
+  const [, first, sep, second, third] = mask;
+  const part = (token: string) => (/y/i.test(token) ? String(y) : /m/i.test(token) ? two(m) : two(d));
+  return [first!, second!, third!].map(part).join(sep!);
+}
+
+/**
+ * Leave the field the way a person does, so the form checks what was typed.
+ *
+ * Plenty of forms validate on blur — "invalid email", "enter a valid phone number" — and without
+ * this the agent would move on with the error never having been raised.
+ */
+function leave(el: HTMLElement): void {
+  el.dispatchEvent(new FocusEvent("focusout", { bubbles: true, composed: true }));
+  el.dispatchEvent(new FocusEvent("blur", { composed: true }));
 }
 
 async function writeOne(
@@ -294,7 +651,11 @@ async function writeOne(
   // ── Dropdowns ────────────────────────────────────────────────────────────────────
   if (spec.kind === "select") {
     const wanted = String(Array.isArray(spoken.value) ? spoken.value[0] : spoken.value);
-    const want = matchOption(spec, wanted);
+
+    // A list that fills in as you type has nothing to match against until something is typed.
+    if (spec.searchable) return typeAndPick(spec, el, wanted);
+
+    const want = matchOption(spec, wanted) ?? optionNamedIn(spec, spoken.evidence);
 
     // A component dropdown is worth opening even when we have no options for it. Some load
     // their choices only when asked, so the alternative is a field nobody can ever answer.
@@ -303,10 +664,14 @@ async function writeOne(
     }
 
     if (!want) {
+      const labels = realChoices(spec.options);
       return {
         fieldId: id,
         status: "refused",
-        reason: `"${wanted}" does not clearly match any option on the page. Asking instead of guessing.`,
+        reason: labels.length
+          ? `"${wanted}" is not one of the choices. This field only accepts: ${sayableChoices(labels)}. Read those out to the person and ask which one fits.`
+          : `"${wanted}" does not match anything this field offers, and its choices could not be read. Ask the person to fill this one in themselves.`,
+        choices: labels,
       };
     }
 
@@ -323,19 +688,49 @@ async function writeOne(
   // ── Choices: radio groups, and checkbox groups sharing a name ────────────────────
   if (spec.kind === "radio" || (spec.kind === "multiselect" && spec.options)) {
     const wanted = Array.isArray(spoken.value) ? spoken.value : [String(spoken.value)];
-    const chosen = wanted
+    let chosen = wanted
       .map((one) => matchOption(spec, one))
       .filter((v): v is { value: string; label: string } => v !== null);
 
+    // A single choice can be recovered from the person's own words, as for a dropdown. Not a
+    // group of checkboxes: which of several named things they meant to tick is not a fact the
+    // words alone settle.
+    if (chosen.length === 0 && spec.kind === "radio") {
+      const named = optionNamedIn(spec, spoken.evidence);
+      if (named) chosen = [named];
+    }
+
     if (chosen.length === 0) {
+      const labels = realChoices(spec.options);
       return {
         fieldId: id,
         status: "refused",
-        reason: `"${wanted.join(", ")}" does not clearly match any option on the page. Asking instead of guessing.`,
+        reason: labels.length
+          ? `"${wanted.join(", ")}" is not one of the choices. This field only accepts: ${sayableChoices(labels)}. Read those out to the person and ask which one fits.`
+          : `"${wanted.join(", ")}" does not match anything this field offers. Ask the person to fill this one in themselves.`,
+        choices: labels,
       };
     }
 
     // A group built out of divs is pressed, not assigned.
+    if (spec.custom && spec.kind === "multiselect") {
+      // A tag picker: one pick per answer, each confirmed. Already-picked ones are skipped — most
+      // pickers drop a chosen option from the menu, so looking for it again would fail.
+      const already = readValue(spec, el);
+      const onShow = new Set(Array.isArray(already) ? already.map(normalise) : []);
+      const picked: string[] = [];
+      for (const option of chosen) {
+        if (onShow.has(normalise(option.label))) {
+          picked.push(option.label);
+          continue;
+        }
+        const outcome = await pickFromWidget(spec, el, option, option.label);
+        if (outcome.status !== "written") return outcome;
+        picked.push(option.label);
+      }
+      return { fieldId: id, status: "written", wrote: picked.join(", ") };
+    }
+
     if (spec.custom) return pickFromWidget(spec, el, chosen[0]!, wanted.join(", "));
 
     if (spec.kind === "radio") {
@@ -343,8 +738,7 @@ async function writeOne(
       if (!target) {
         return { fieldId: id, status: "refused", reason: "That option is no longer on the page." };
       }
-      target.checked = true;
-      announce(target, ["input", "change"]);
+      pressChoice(target, true);
       return target.checked
         ? { fieldId: id, status: "written", wrote: chosen[0]!.label }
         : { fieldId: id, status: "rejected-by-page", wrote: chosen[0]!.label, found: "" };
@@ -364,8 +758,7 @@ async function writeOne(
     for (const box of boxes) {
       const shouldCheck = wantedValues.includes(box.value);
       if (box.checked !== shouldCheck) {
-        box.checked = shouldCheck;
-        announce(box, ["input", "change"]);
+        pressChoice(box, shouldCheck);
       }
     }
     return { fieldId: id, status: "written", wrote: chosen.map((c) => c.label).join(", ") };
@@ -393,12 +786,14 @@ async function writeOne(
     }
 
     const box = el as HTMLInputElement;
-    box.checked = yes;
-    announce(box, ["input", "change"]);
+    pressChoice(box, yes);
     return box.checked === yes
       ? { fieldId: id, status: "written", wrote: yes ? "checked" : "unchecked" }
       : { fieldId: id, status: "rejected-by-page", wrote: String(yes), found: String(box.checked) };
   }
+
+  // ── A slider built from divs ────────────────────────────────────────────────────
+  if (el.getAttribute("role") === "slider") return stepSlider(spec, el, spoken);
 
   // ── A div pretending to be a text box ───────────────────────────────────────────
   if (el.isContentEditable) {
@@ -412,13 +807,14 @@ async function writeOne(
   }
 
   // ── Everything else is text of some shape ───────────────────────────────────────
-  let text = String(spoken.value);
+  let text = asFieldDate(String(spoken.value), spec, el);
   if (spec.maxLength && text.length > spec.maxLength) {
     text = text.slice(0, spec.maxLength);
   }
 
   setNativeValue(el, text);
   announce(el, ["input", "change"]);
+  leave(el);
 
   const found = readBack(el);
   return found === text
@@ -435,7 +831,16 @@ async function writeOne(
  * Sequential on purpose. Two dropdowns opening at once would fight over the same portal, and
  * the option-diffing that locates them would attribute one widget's choices to the other.
  */
-export async function writeValues(
+export function writeValues(
+  specs: FieldSpec[],
+  handles: FieldHandles,
+  values: SpokenValue[],
+): Promise<WriteOutcome[]> {
+  // One widget sequence at a time on the page — see `exclusively` in dom-path.ts.
+  return exclusively(() => writeAll(specs, handles, values));
+}
+
+async function writeAll(
   specs: FieldSpec[],
   handles: FieldHandles,
   values: SpokenValue[],
@@ -483,8 +888,170 @@ export async function writeValues(
       continue;
     }
 
-    outcomes.push(await writeOne(spec, el, spoken));
+    // ── Try, and if the page threw it away, try once more ──────────────────────────
+    //
+    // Never a silent failure. A value the page refused to keep used to come back as one more
+    // row in a list nobody read, and the field simply stayed empty while the agent moved on to
+    // the next question — which is the single worst thing this can do, because the person
+    // believes the answer went in. So: one retry for the ordinary case (a controlled component
+    // re-rendering over the top of the write), and if that fails too it is marked `retried` and
+    // the agent is told to hand the field back to the person in plain words.
+    let outcome = await writeOne(spec, el, spoken);
+
+    if (outcome.status === "rejected-by-page") {
+      await sleep(RETRY_AFTER_MS);
+      // Re-checked rather than reused: the re-render that ate the first write may also have
+      // replaced the node, and writing to a detached element fails silently forever.
+      const fresh = handles.get(spoken.fieldId);
+      const target = fresh && fresh.isConnected ? fresh : el.isConnected ? el : null;
+
+      outcome = target
+        ? await writeOne(spec, target, spoken)
+        : { ...outcome, found: "the field left the page before it could be written" };
+
+      if (outcome.status === "rejected-by-page") outcome = { ...outcome, retried: true };
+    }
+
+    outcomes.push(outcome);
   }
 
   return outcomes;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════════════
+// Clearing — taking an answer back out
+// ═══════════════════════════════════════════════════════════════════════════════════════
+//
+// Live run: "Remove the gender." There was no way to remove anything — the agent could only fill —
+// so it filled Gender with "Decline To Self Identify" and said "I've cleared the gender field."
+// That is a false claim about an action, on the person's own form, the same kind of lie as "I
+// have submitted your application". A person must be able to take an answer back, and when the
+// form itself will not let an answer be removed, they must be told so, not handed a substitute.
+
+export type ClearOutcome =
+  | { fieldId: string; status: "cleared" }
+  /** The page offers no way to empty this one. Said plainly; never replaced with another answer. */
+  | { fieldId: string; status: "cannot-clear"; reason: string };
+
+/** A control inside a custom dropdown that empties it — React-Select's ×, and its cousins. */
+const CLEAR_CONTROL =
+  "[aria-label*='clear' i], [title*='clear' i], [class*='clear-indicator'], [class*='clearIndicator'], [class*='ClearIndicator']";
+
+function press(el: HTMLElement): void {
+  for (const type of ["pointerdown", "mousedown", "pointerup", "mouseup", "click"]) {
+    el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, composed: true, view: window }));
+  }
+}
+
+async function clearOne(spec: FieldSpec, el: HTMLElement): Promise<ClearOutcome> {
+  const id = spec.id;
+  const cannot = (reason: string): ClearOutcome => ({ fieldId: id, status: "cannot-clear", reason });
+  const tag = el.tagName.toLowerCase();
+
+  if (spec.kind === "file") return cannot("A file upload cannot be cleared by voice.");
+
+  // ── Radio: untick the group ───────────────────────────────────────────────────
+  if (spec.kind === "radio" && tag === "input") {
+    for (const radio of radioGroup(el)) {
+      if (!radio.checked) continue;
+      radio.checked = false;
+      announce(radio, ["input", "change"]);
+    }
+    return radioGroup(el).some((radio) => radio.checked)
+      ? cannot("The form put the choice back — it will not let this be left unanswered.")
+      : { fieldId: id, status: "cleared" };
+  }
+
+  // ── Checkboxes: untick them the way a person does ─────────────────────────────
+  if ((spec.kind === "multiselect" || spec.kind === "checkbox") && tag === "input") {
+    const name = el.getAttribute("name");
+    const root = el.getRootNode() as Document | ShadowRoot;
+    const boxes = name
+      ? Array.from(root.querySelectorAll<HTMLInputElement>(`input[type="checkbox"][name="${CSS.escape(name)}"]`))
+      : [el as HTMLInputElement];
+    for (const box of boxes) pressChoice(box, false);
+    return boxes.some((box) => box.checked)
+      ? cannot("The form would not let this be unticked.")
+      : { fieldId: id, status: "cleared" };
+  }
+
+  if (spec.kind === "checkbox") {
+    if (el.getAttribute("aria-checked") === "true") {
+      openWidget(el);
+      await sleep(120);
+    }
+    return el.getAttribute("aria-checked") === "true"
+      ? cannot("The switch would not turn off.")
+      : { fieldId: id, status: "cleared" };
+  }
+
+  // ── A real <select>: back to its empty option, if it has one ───────────────────
+  if (tag === "select") {
+    const select = el as HTMLSelectElement;
+    const blank = Array.from(select.options).find((option) => option.value === "");
+    if (!blank) return cannot("This dropdown has no empty choice, so one of its options has to stay picked.");
+    setNativeValue(select, "");
+    announce(select, ["input", "change"]);
+    return select.value === "" ? { fieldId: id, status: "cleared" } : cannot("The form put the choice back.");
+  }
+
+  // ── A custom dropdown: use its own clear control, or Backspace, as a person would ─
+  if (spec.custom) {
+    const before = renderedText(el);
+    let host: HTMLElement | null = el.parentElement;
+    let control: HTMLElement | null = null;
+    for (let hops = 0; host && !control && hops < 3; hops++) {
+      control = host.querySelector<HTMLElement>(CLEAR_CONTROL);
+      host = host.parentElement;
+    }
+
+    if (control) {
+      press(control);
+    } else {
+      el.focus();
+      for (const key of ["Backspace", "Delete"]) {
+        el.dispatchEvent(new KeyboardEvent("keydown", { key, code: key, bubbles: true, cancelable: true, composed: true }));
+      }
+    }
+    await sleep(150);
+    closeWidget(el);
+
+    return renderedText(el) !== before
+      ? { fieldId: id, status: "cleared" }
+      : cannot("This dropdown has no way to empty it — once picked, the form keeps a choice.");
+  }
+
+  // ── Text of every shape ────────────────────────────────────────────────────────
+  if (el.isContentEditable) {
+    el.textContent = "";
+    announce(el, ["input", "change"]);
+    return readBack(el) === "" ? { fieldId: id, status: "cleared" } : cannot("The page put the text back.");
+  }
+
+  setNativeValue(el, "");
+  announce(el, ["input", "change"]);
+  return readBack(el) === "" ? { fieldId: id, status: "cleared" } : cannot("The page put the text back.");
+}
+
+/**
+ * Empty the fields the person asked to have cleared.
+ *
+ * The rule that nothing is written without being said applies here too: the caller checks the
+ * request against the transcript before this runs. Every result is confirmed against the page.
+ */
+export function clearValues(specs: FieldSpec[], handles: FieldHandles, ids: string[]): Promise<ClearOutcome[]> {
+  return exclusively(async () => {
+    const byId = new Map(specs.map((spec) => [spec.id, spec]));
+    const outcomes: ClearOutcome[] = [];
+    for (const id of ids) {
+      const spec = byId.get(id);
+      const el = handles.get(id);
+      if (!spec || !el || !el.isConnected) {
+        outcomes.push({ fieldId: id, status: "cannot-clear", reason: "That field is not on the page." });
+        continue;
+      }
+      outcomes.push(await clearOne(spec, el));
+    }
+    return outcomes;
+  });
 }

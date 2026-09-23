@@ -52,8 +52,13 @@ export const MEMORY_VERSION = 1;
 /**
  * The things a form asks that are worth remembering, and how each one is worded in the wild.
  *
- * `match` is checked against the normalised label. `never` is checked first and wins — those are
- * the labels that look like the key and mean something else entirely.
+ * `match` is checked against the **normalised** label, and normalising has already replaced every
+ * punctuation mark with a space. So write patterns against what survives: `location city`, never
+ * `location \(city\)`. A pattern carrying punctuation is not a stricter match, it is a dead one —
+ * it silently matches nothing and the key quietly stops existing.
+ *
+ * `never` is checked first and wins — those are the labels that look like the key and mean
+ * something else entirely.
  */
 const KEYS: { key: string; match: RegExp; never?: RegExp }[] = [
   // ── identity ──────────────────────────────────────────────────────────────
@@ -61,17 +66,17 @@ const KEYS: { key: string; match: RegExp; never?: RegExp }[] = [
     key: "first_name",
     match: /^(first|given|fore)[ ]?name$|^first$/,
     // "Preferred first name" is a different question with a different answer.
-    never: /preferred|maiden|previous|former|parent|guardian|emergency|referrer|referee/,
+    never: /preferred|maiden|previous|former|parent|guardian|emergency|referrer|referee|alternate|secondary/,
   },
   {
     key: "last_name",
     match: /^(last|sur|family)[ ]?name$|^surname$/,
-    never: /preferred|maiden|previous|former|parent|guardian|emergency|referrer|referee/,
+    never: /preferred|maiden|previous|former|parent|guardian|emergency|referrer|referee|alternate|secondary/,
   },
   {
     key: "full_name",
     match: /^(full|legal|your)?[ ]?name$/,
-    never: /first|last|sur|family|preferred|maiden|previous|former|user|company|employer|school|parent|guardian|emergency|referee/,
+    never: /first|last|sur|family|preferred|maiden|previous|former|user|company|employer|school|parent|guardian|emergency|referee|alternate|secondary|organi[sz]ation/,
   },
   {
     key: "preferred_name",
@@ -94,16 +99,17 @@ const KEYS: { key: string; match: RegExp; never?: RegExp }[] = [
   // ── where you are ─────────────────────────────────────────────────────────
   {
     key: "city",
-    match: /^(current )?(city|town)$|city of residence|location \(city\)|^location$|where are you based/,
-    never: /birth|company|office|preferred work|desired|willing/,
+    // "Location (City)" arrives here as "location city" — the parens are gone by now.
+    match: /^(current )?(city|town)$|city of residence|location city|^location$|where are you based/,
+    never: /birth|company|office|preferred work|desired|willing|organi[sz]ation|business/,
   },
-  { key: "country", match: /^country$|country of residence/, never: /birth|citizenship|company/ },
-  { key: "postal_code", match: /post(al)? ?code|zip ?code|pin ?code/ },
+  { key: "country", match: /^country$|country of residence/, never: /birth|citizenship|company|organi[sz]ation|business/ },
+  { key: "postal_code", match: /post(al)? ?code|zip ?code|pin ?code/, never: /company|organi[sz]ation|business/ },
 
   // ── links ─────────────────────────────────────────────────────────────────
   { key: "linkedin", match: /linked ?in/ },
   { key: "github", match: /git ?hub/ },
-  { key: "portfolio", match: /portfolio|personal (web)?site|^website$/, never: /company|employer/ },
+  { key: "portfolio", match: /portfolio|personal (web)?site|^website$/, never: /company|employer|organi[sz]ation|business/ },
 
   // ── work ──────────────────────────────────────────────────────────────────
   {
@@ -150,8 +156,14 @@ export function canonicalKey(spec: FieldSpec): string | null {
   const label = normalise(spec.label || spec.id.replace(/_/g, " "));
   if (!label) return null;
 
+  // The exclusions read the section too. On a real Jotform application the alternate
+  // representative's name box is labelled "First Name" and nothing else — only the heading above
+  // it, "Alternate Designated Representative", says it is somebody else's. The label decides
+  // what a field IS; the section can only ever rule a match out, never create one.
+  const context = spec.section ? `${normalise(spec.section)} ${label}` : label;
+
   const hits = KEYS.filter((entry) => {
-    if (entry.never?.test(label)) return false;
+    if (entry.never?.test(context)) return false;
     return entry.match.test(label);
   });
 

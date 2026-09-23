@@ -30,6 +30,7 @@ export type TestFieldSpec = {
   longForm?: boolean;
   custom?: boolean;
   suspectedHoneypot?: boolean;
+  section?: string;
 };
 
 export type TestRead = {
@@ -44,7 +45,11 @@ export type TestOutcome = {
   status: "written" | "refused" | "rejected-by-page";
   wrote?: string;
   reason?: string;
+  /** The page's real options, on a refusal that was "that is not one of them". */
+  choices?: string[];
   found?: string;
+  /** Set once the second attempt has failed too. */
+  retried?: boolean;
 };
 
 /** Put markup on the page and load the real `core/` bundle over it. */

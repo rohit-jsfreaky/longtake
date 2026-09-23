@@ -119,8 +119,9 @@ function valueSchema(spec: FieldSpec): JsonSchema {
       }
       return {
         type: "string",
-        description:
-          "This dropdown's choices could not be read in advance. Put what the person said; it will be matched against the real options, and left blank if it does not match one.",
+        description: spec.searchable
+          ? "A list that searches as you type (a place, a school). Put what the person said, as they said it; it is searched for, and only a clear match goes in."
+          : "This dropdown's choices could not be read in advance. Put what the person said; it will be matched against the real options, and left blank if it does not match one.",
       };
     }
 
@@ -132,7 +133,9 @@ function valueSchema(spec: FieldSpec): JsonSchema {
       };
 
     case "number":
-      return { type: "number", description: FORMAT_HINTS.number!.hint };
+      return spec.range
+        ? { type: "number", description: `A number from ${spec.range.min} to ${spec.range.max}.` }
+        : { type: "number", description: FORMAT_HINTS.number!.hint };
 
     default: {
       const hint = FORMAT_HINTS[spec.kind];
@@ -143,6 +146,11 @@ function valueSchema(spec: FieldSpec): JsonSchema {
       if (hint?.format) schema.format = hint.format;
       if (hint?.examples) schema.examples = hint.examples;
       if (spec.maxLength) schema.maxLength = spec.maxLength;
+      // A placeholder that shows a format — "MM/DD/YYYY", "(000) 000-0000" — is the form telling
+      // us how it wants the answer written. "Type here..." tells nothing, and is left out.
+      if (spec.placeholder && /\d|mm|dd|yy|0{3}|x{2,}/i.test(spec.placeholder)) {
+        schema.description = `${schema.description} Written the way the form shows it: "${spec.placeholder}".`;
+      }
       if (spec.pattern) schema.pattern = spec.pattern;
       return schema;
     }
@@ -151,6 +159,9 @@ function valueSchema(spec: FieldSpec): JsonSchema {
 
 function fieldSchema(spec: FieldSpec): JsonSchema {
   const parts = [spec.label || spec.id];
+  // Where it sits, because a real form can ask "First Name" twice — once for the person and once
+  // for somebody else — and the heading above is the only thing that tells them apart.
+  if (spec.section) parts.push(`(in the "${spec.section}" section)`);
   if (spec.required) parts.push("(the form marks this required)");
   if (spec.longForm) parts.push("(a long answer — several sentences are welcome)");
 
@@ -203,6 +214,43 @@ export function buildFillTool(specs: FieldSpec[]): VoiceAgentTool {
       // precisely the form-shaped questioning Longtake exists to remove. What is still missing
       // is reported back in the tool's result, and asked about afterwards, one at a time.
       required: [],
+      additionalProperties: false,
+    },
+    execution_mode: EXECUTION_MODE,
+    timeout_seconds: TIMEOUT_SECONDS,
+  };
+}
+
+export const CLEAR_TOOL_NAME = "clear_fields";
+
+/**
+ * The other half: taking an answer back out.
+ *
+ * Without it, "remove the gender" had nowhere to go — the agent filled Gender with "Decline To
+ * Self Identify" and announced it had cleared it. Separate from `fill_fields` so the model cannot
+ * blur the two, and held to the same standard: it needs the person's own words asking for it.
+ */
+export function buildClearTool(specs: FieldSpec[]): VoiceAgentTool {
+  const ids = specs.filter((spec) => !spec.suspectedHoneypot && spec.kind !== "file").map((spec) => spec.id);
+  return {
+    type: "function",
+    name: CLEAR_TOOL_NAME,
+    description:
+      "Empty fields the person asked you to clear, remove or undo. Only when they ask for it. Never pick another option as a way of clearing one.",
+    parameters: {
+      type: "object",
+      properties: {
+        fields: {
+          type: "array",
+          description: "The fields to empty.",
+          items: ids.length > 0 ? { type: "string", enum: ids } : { type: "string" },
+        },
+        evidence: {
+          type: "string",
+          description: "The person's own words asking for this, quoted exactly.",
+        },
+      },
+      required: ["fields", "evidence"],
       additionalProperties: false,
     },
     execution_mode: EXECUTION_MODE,
@@ -279,6 +327,7 @@ export function describeForm(specs: FieldSpec[], url = ""): string {
 
   const lines = usable.map((spec) => {
     const bits = [`- ${spec.label || spec.id}`];
+    if (spec.section) bits.push(`[${spec.section}]`);
     if (spec.required) bits.push("(required)");
     if (spec.options?.length) {
       const shown = spec.options.slice(0, 6).map((o) => o.label).join(", ");
@@ -292,6 +341,22 @@ export function describeForm(specs: FieldSpec[], url = ""): string {
     `The form in front of the person${where} has ${usable.length} fields:`,
     ...lines,
   ].join("\n");
+}
+
+/**
+ * Which optional fields are still empty — offered once the required ones are in, never before.
+ *
+ * Asking about optional fields while required ones are still open would make a short form feel
+ * long. Leaving them out entirely was the other mistake: the agent went quiet the moment the
+ * required fields were done, and a person had no way to know the website box or "how did you
+ * hear about us" were there to be filled at all.
+ */
+export function stillOptional(specs: FieldSpec[], filledIds: Iterable<string>): FieldSpec[] {
+  const filled = new Set(filledIds);
+  return specs.filter(
+    (spec) =>
+      !spec.required && !filled.has(spec.id) && !spec.suspectedHoneypot && spec.kind !== "file",
+  );
 }
 
 /** Which required fields are still empty — what the agent asks about, one at a time. */
