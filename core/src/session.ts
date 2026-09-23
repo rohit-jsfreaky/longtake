@@ -27,7 +27,7 @@ import { Ledger } from "./ledger";
 import { asSpokenValues, canonicalKey, forget, forgetAll, listMemory, recall, remember } from "./memory";
 import type { Memory, RememberedAnswer } from "./memory";
 import { systemPrompt } from "./persona";
-import { brief, doNext, nextMove, type Move, type Plan } from "./planner";
+import { brief, doNext, nextMove, resumeLine, type Move, type Plan } from "./planner";
 import { harvestOptions, readForm, titleOf, waitForForm } from "./reader";
 import { FieldRegistry } from "./reconcile";
 import type { FieldSpec, FormRead, SpokenValue } from "./types";
@@ -182,6 +182,11 @@ export class LongtakeSession {
         remembered: state.fields.some((f) => f.source === "memory"),
       },
     );
+  }
+
+  /** The first words of a new session after the line dropped — where things stand, then the next ask. */
+  resumeGreeting(): string {
+    return resumeLine(this.state(), this.move());
   }
 
   remembered(): RememberedAnswer[] {

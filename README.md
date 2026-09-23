@@ -46,7 +46,7 @@ described as working before it works.
 | `core/src/dictation.ts` | per-field shaping, verbatim kept beside the clean text | ✅ working, 48 tests |
 | `core/src/hesitation.ts` | the gap between the two, and the one sentence it may say | ✅ working, 40 tests |
 | `core/src/memory.ts` | answers keyed by meaning, so the next form arrives filled | ✅ working, 63 tests |
-| `extension/` | Chrome MV3, runs `core/` against any live page | 🟡 skeleton + hotkey only |
+| `extension/` | Chrome MV3, runs `core/` against any live page | ✅ hotkey → voice → fill, tested end to end |
 
 ## How AssemblyAI is used
 
@@ -109,13 +109,20 @@ what lets one copy of the field logic serve both the web demo and the extension.
 
 ## The extension
 
-Not published yet. To run the skeleton:
+Not published yet. It runs the same `LongtakeSession` and the same voice call as the web demo,
+on any page. To run it:
 
-1. `chrome://extensions` → turn on **Developer mode**
-2. **Load unpacked** → pick the `extension/` folder
+1. `npm run build:extension` (bundles `core/` into `extension/dist/`)
+2. `chrome://extensions` → turn on **Developer mode** → **Load unpacked** → pick `extension/`
 3. Open any page with a form and press **Ctrl+Shift+L** (**Command+Shift+L** on a Mac)
 
-Right now it reports what it can see in the console. The real work lands with `reader.ts`.
+It needs the Longtake site for voice tokens — the API key lives there, never in the extension.
+That is `http://localhost:3000` (run `npm run dev`) unless you point it elsewhere from the
+extension's service worker console: `chrome.storage.local.set({ site: "https://…" })`.
+
+It picks the frame that holds the form (a careers page often embeds Greenhouse in an iframe),
+keeps going if the line drops, and carries the call to the next page of a form that loads each
+page afresh, the way Google Forms does. It never presses Submit.
 
 ## Design rules
 

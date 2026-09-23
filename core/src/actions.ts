@@ -74,7 +74,7 @@ export function readActions(root: Document | Element, ignore = "[data-longtake-i
     const words = wordsOf(el);
     const kind = classify(words);
     if (kind === "submit") {
-      submitLabel ??= words;
+      if (submitLabel === undefined) submitLabel = words;
       continue;
     }
     if (!kind) continue;

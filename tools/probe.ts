@@ -59,6 +59,11 @@ import {
   readActions,
   pressAction,
   buildPressTool,
+  startVoiceSession,
+  explainMicFailure,
+  VoiceStartError,
+  nextReconnect,
+  resumeLine,
   CORE_VERSION,
 } from "@longtake/core";
 
@@ -119,6 +124,11 @@ declare global {
       readActions: typeof readActions;
       pressAction: typeof pressAction;
       buildPressTool: typeof buildPressTool;
+      startVoiceSession: typeof startVoiceSession;
+      explainMicFailure: typeof explainMicFailure;
+      VoiceStartError: typeof VoiceStartError;
+      nextReconnect: typeof nextReconnect;
+      resumeLine: typeof resumeLine;
       /** Read, then open every dropdown to learn its real choices. */
       inspectDeep: () => Promise<unknown>;
       /** The live read, kept so a fill can reuse the same element handles. */
@@ -184,6 +194,11 @@ window.__longtake = {
   readActions,
   pressAction,
   buildPressTool,
+  startVoiceSession,
+  explainMicFailure,
+  VoiceStartError,
+  nextReconnect,
+  resumeLine,
   inspect: () => {
     const read = readForm();
     window.__longtake.last = read;

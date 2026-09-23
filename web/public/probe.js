@@ -2569,6 +2569,29 @@
     lines.push("", `DO NEXT: ${doNext(move)}`);
     return lines.join("\n");
   }
+  function resumeLine(state, move) {
+    const { filled, total } = state.progress;
+    const where = `Sorry, lost the line for a second. ${filled} of ${total} are in`;
+    switch (move.kind) {
+      case "confirm":
+        return move.reason === "hedged" ? `${where}. For ${move.field.question}, which was it?` : `${where}. For ${move.field.question}, is ${move.suggestion} right?`;
+      case "resolve":
+        return `${where}. The form won't take ${move.value} for ${move.field.question} \u2014 can you say it again?`;
+      case "ask": {
+        const [first] = move.fields;
+        const what = move.fields.length > 1 && first?.group === "address" ? "your address" : move.fields.length > 1 && first?.group === "phone" ? "your phone number" : first?.question ?? "the next one";
+        return `${where}. Next up: ${what}.`;
+      }
+      case "offer_optional":
+        return `${where} \u2014 all the required ones. Want to do the ${move.fields.length} optional ones too?`;
+      case "optional":
+        return `${where}. Shall we carry on with the optional ones?`;
+      case "next_page":
+        return `${where} \u2014 this page is done. Ready for the next one?`;
+      case "handover":
+        return `${where} \u2014 that's everything. Have a look and ${move.submit ? `press ${move.submit}` : "send it"} yourself.`;
+    }
+  }
 
   // core/src/actions.ts
   var BUTTONS = "button, input[type='submit'], input[type='button'], [role='button'], a[role='button']";
@@ -2601,7 +2624,7 @@
       const words3 = wordsOf(el);
       const kind = classify(words3);
       if (kind === "submit") {
-        submitLabel ?? (submitLabel = words3);
+        if (submitLabel === void 0) submitLabel = words3;
         continue;
       }
       if (!kind) continue;
@@ -2728,6 +2751,10 @@
           remembered: state.fields.some((f) => f.source === "memory")
         }
       );
+    }
+    /** The first words of a new session after the line dropped — where things stand, then the next ask. */
+    resumeGreeting() {
+      return resumeLine(this.state(), this.move());
     }
     remembered() {
       return listMemory(this.memory);
@@ -3131,6 +3158,473 @@
     return { start, end };
   }
 
+  // core/src/reconnect.ts
+  var RESUME_WINDOW_MS = 25e3;
+  var RECONNECT_DELAYS_MS = [0, 1e3, 2e3, 4e3, 8e3];
+  function nextReconnect(drop, now) {
+    if (drop.attempts >= RECONNECT_DELAYS_MS.length) {
+      return { action: "give-up", reason: `Lost the connection and could not get it back after ${drop.attempts} tries.` };
+    }
+    const delayMs = RECONNECT_DELAYS_MS[drop.attempts];
+    const resumable = drop.sessionId !== null && !drop.ended && now + delayMs - drop.droppedAt < RESUME_WINDOW_MS;
+    return { action: resumable ? "resume" : "fresh", delayMs };
+  }
+  var RESUME_REFUSED = /* @__PURE__ */ new Set(["session_not_found", "session_forbidden", "session_expired"]);
+
+  // core/src/voice.ts
+  var WS_URL = "wss://agents.assemblyai.com/v1/ws";
+  var TARGET_SAMPLE_RATE = 24e3;
+  var SAMPLES_PER_CHUNK = TARGET_SAMPLE_RATE / 20;
+  var LONG_TAKE_TURN_DETECTION = {
+    vad_threshold: 0.5,
+    min_silence: 3500,
+    max_silence: 6e3,
+    interrupt_response: true
+  };
+  var HINGLISH_LANGUAGES = ["en", "hi"];
+  var VoiceStartError = class extends Error {
+    constructor(problem, message) {
+      super(message);
+      this.problem = problem;
+      this.name = "VoiceStartError";
+    }
+  };
+  var PROBLEM_WORDS = {
+    "mic-denied": "The microphone is blocked for this page. Click the icon at the left of the address bar, allow the microphone, and try again.",
+    "no-mic": "No microphone was found. Plug one in or turn it on, then try again.",
+    "mic-busy": "Another app is using the microphone. Close it (a call, a recorder), then try again.",
+    insecure: "The microphone only works on a secure page. Open this page over https.",
+    unsupported: "This browser cannot record audio here. Try a recent Chrome, Edge, Firefox or Safari.",
+    token: "Could not start a voice session.",
+    other: "The microphone could not be started."
+  };
+  function explainMicFailure(cause, secure = true) {
+    if (cause instanceof VoiceStartError) return cause;
+    const name = cause?.name ?? "";
+    const problem = !secure ? "insecure" : name === "NotAllowedError" || name === "PermissionDeniedError" || name === "SecurityError" ? "mic-denied" : name === "NotFoundError" || name === "DevicesNotFoundError" || name === "OverconstrainedError" ? "no-mic" : name === "NotReadableError" || name === "TrackStartError" || name === "AbortError" ? "mic-busy" : "other";
+    const detail = problem === "other" && cause instanceof Error ? ` (${cause.message})` : "";
+    return new VoiceStartError(problem, `${PROBLEM_WORDS[problem]}${detail}`);
+  }
+  var TOOL_DEADLINE_MS = 12e3;
+  function withDeadline(work, ms) {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(
+        () => resolve({
+          error: "Filling the form took too long and was abandoned. Tell the person that one did not go in and ask them to type it themselves."
+        }),
+        ms
+      );
+      work.then(
+        (value) => {
+          clearTimeout(timer);
+          resolve(value);
+        },
+        (cause) => {
+          clearTimeout(timer);
+          reject(cause);
+        }
+      );
+    });
+  }
+  function toBase64(samples) {
+    const bytes = new Uint8Array(samples.buffer, samples.byteOffset, samples.byteLength);
+    let binary = "";
+    const CHUNK = 32768;
+    for (let i = 0; i < bytes.length; i += CHUNK) {
+      binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+    }
+    return btoa(binary);
+  }
+  async function startVoiceSession(options) {
+    const {
+      voice = "alba",
+      languageCodes = HINGLISH_LANGUAGES,
+      getToken,
+      workletUrl,
+      wsUrl = WS_URL,
+      freshStart,
+      onEvent,
+      onReady,
+      onUserPartial,
+      onUserTranscript,
+      onAgentTranscript,
+      onSpeechStart,
+      onError,
+      onClosed,
+      onReconnecting,
+      onReconnected,
+      onResultsSent,
+      onToolCall
+    } = options;
+    let turnDetection = options.turnDetection ?? LONG_TAKE_TURN_DETECTION;
+    if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
+      const secure = typeof isSecureContext === "undefined" || isSecureContext;
+      throw secure ? new VoiceStartError("unsupported", PROBLEM_WORDS.unsupported) : explainMicFailure(null, false);
+    }
+    const audioReady = (async () => {
+      let audioCtx2 = null;
+      try {
+        audioCtx2 = new AudioContext();
+        await audioCtx2.resume();
+        await audioCtx2.audioWorklet.addModule(workletUrl);
+        const stream2 = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: true,
+            // stops the agent interrupting itself
+            noiseSuppression: false,
+            // server-side Voice Focus already does this; stacking hurts ASR
+            autoGainControl: true
+          }
+        });
+        const source2 = audioCtx2.createMediaStreamSource(stream2);
+        const worklet2 = new AudioWorkletNode(audioCtx2, "pcm-processor", {
+          processorOptions: { inputSampleRate: audioCtx2.sampleRate, targetSampleRate: TARGET_SAMPLE_RATE }
+        });
+        source2.connect(worklet2).connect(audioCtx2.destination);
+        return { audioCtx: audioCtx2, stream: stream2, source: source2, worklet: worklet2 };
+      } catch (cause) {
+        void audioCtx2?.close();
+        throw explainMicFailure(cause);
+      }
+    })();
+    const firstToken = getToken().catch((cause) => {
+      throw new VoiceStartError("token", `${PROBLEM_WORDS.token} ${cause instanceof Error ? cause.message : String(cause)}`);
+    });
+    const [audio, token] = await Promise.all([
+      audioReady,
+      // If the token fails we still have to release the microphone, or the browser keeps showing
+      // a recording indicator for a session that never happened.
+      firstToken.catch(async (cause) => {
+        const held = await audioReady.catch(() => null);
+        if (held) {
+          for (const track of held.stream.getTracks()) track.stop();
+          void held.audioCtx.close();
+        }
+        throw cause;
+      })
+    ]).catch(async (cause) => {
+      firstToken.catch(() => void 0);
+      throw cause;
+    });
+    const { audioCtx, stream, source, worklet } = audio;
+    let nextStartTime = 0;
+    const liveSources = /* @__PURE__ */ new Set();
+    function playReplyAudio(base64) {
+      const raw = atob(base64);
+      const pcm16 = new Int16Array(raw.length / 2);
+      for (let i = 0; i < pcm16.length; i++) {
+        pcm16[i] = raw.charCodeAt(i * 2) | raw.charCodeAt(i * 2 + 1) << 8;
+      }
+      const buffer = audioCtx.createBuffer(1, pcm16.length, TARGET_SAMPLE_RATE);
+      const channel = buffer.getChannelData(0);
+      for (let i = 0; i < pcm16.length; i++) channel[i] = pcm16[i] / 32768;
+      const src = audioCtx.createBufferSource();
+      src.buffer = buffer;
+      src.connect(audioCtx.destination);
+      const startAt = Math.max(audioCtx.currentTime, nextStartTime);
+      src.start(startAt);
+      src.onended = () => liveSources.delete(src);
+      liveSources.add(src);
+      nextStartTime = startAt + buffer.duration;
+    }
+    function flushPlayback() {
+      for (const src of liveSources) {
+        try {
+          src.onended = null;
+          src.stop(0);
+          src.disconnect();
+        } catch {
+        }
+      }
+      liveSources.clear();
+      nextStartTime = audioCtx.currentTime;
+    }
+    let ws = null;
+    let ready = false;
+    let closing = false;
+    let sessionId = null;
+    let ended = false;
+    let drop = null;
+    let reconnectTimer;
+    let opening = "first";
+    const send = (message) => {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      ws.send(JSON.stringify(message));
+      if (message.type !== "input.audio") onEvent?.("out", message);
+    };
+    let pending = new Int16Array(0);
+    function enqueue(samples) {
+      const merged = new Int16Array(pending.length + samples.length);
+      merged.set(pending, 0);
+      merged.set(samples, pending.length);
+      pending = merged;
+      while (pending.length >= SAMPLES_PER_CHUNK) {
+        const chunk = pending.slice(0, SAMPLES_PER_CHUNK);
+        pending = pending.slice(SAMPLES_PER_CHUNK);
+        send({ type: "input.audio", audio: toBase64(chunk) });
+      }
+    }
+    const PREBUFFER_MAX_SAMPLES = TARGET_SAMPLE_RATE * 20;
+    let prebuffer = [];
+    let prebufferedSamples = 0;
+    function flushPrebuffer() {
+      if (prebuffer.length === 0) return 0;
+      const held = prebuffer;
+      const heldSamples = prebufferedSamples;
+      prebuffer = [];
+      prebufferedSamples = 0;
+      for (const block of held) enqueue(block);
+      return heldSamples;
+    }
+    const MAX_TURN_SAMPLES = TARGET_SAMPLE_RATE * 110;
+    let turnAudio = [];
+    let turnSamples = 0;
+    let timeline = [];
+    const resetTurnAudio = () => {
+      turnAudio = [];
+      turnSamples = 0;
+      timeline = [];
+    };
+    const takeTurnAudio = () => {
+      if (turnSamples === 0) return null;
+      const joined = new Int16Array(turnSamples);
+      let at = 0;
+      for (const block of turnAudio) {
+        joined.set(block, at);
+        at += block.length;
+      }
+      return joined;
+    };
+    worklet.port.onmessage = (event) => {
+      const incoming = new Int16Array(event.data);
+      if (turnSamples < MAX_TURN_SAMPLES) {
+        turnAudio.push(incoming);
+        turnSamples += incoming.length;
+      }
+      if (!ready) {
+        prebuffer.push(incoming);
+        prebufferedSamples += incoming.length;
+        while (prebufferedSamples > PREBUFFER_MAX_SAMPLES && prebuffer.length > 1) {
+          prebufferedSamples -= prebuffer.shift().length;
+        }
+        return;
+      }
+      enqueue(incoming);
+    };
+    let results = new ToolResultQueue();
+    const flushResults = () => {
+      if (!ready || !ws || ws.readyState !== WebSocket.OPEN) return;
+      const due = results.due(Date.now());
+      for (const held of due) {
+        send({ type: "tool.result", call_id: held.call_id, result: JSON.stringify(held.result) });
+      }
+      if (due.length > 0) onResultsSent?.();
+    };
+    const heartbeat = setInterval(flushResults, 500);
+    const runTool = async (message) => {
+      const callId = String(message.call_id ?? "");
+      const name = String(message.name ?? "");
+      const args = message.arguments ?? {};
+      let result;
+      try {
+        result = onToolCall ? await withDeadline(onToolCall(name, args), TOOL_DEADLINE_MS) : { error: `No handler for "${name}" in this client.` };
+      } catch (cause) {
+        result = { error: cause instanceof Error ? cause.message : String(cause) };
+      }
+      results.add({ call_id: callId, result }, Date.now());
+      flushResults();
+    };
+    const sessionConfig = (config) => ({
+      system_prompt: config.systemPrompt,
+      greeting: config.greeting,
+      input: {
+        format: { encoding: "audio/pcm" },
+        turn_detection: turnDetection,
+        ...languageCodes.length > 0 ? { language_codes: languageCodes } : {}
+      },
+      output: { voice, format: { encoding: "audio/pcm" }, volume: 100 },
+      ...config.tools.length > 0 ? { tools: config.tools } : {}
+    });
+    const onMessage = (event) => {
+      const message = JSON.parse(String(event.data));
+      if (message.type !== "reply.audio") onEvent?.("in", message);
+      results.note(message.type);
+      switch (message.type) {
+        case "session.ready": {
+          ready = true;
+          sessionId = String(message.session_id ?? "") || sessionId;
+          ended = false;
+          const how = opening;
+          drop = null;
+          if (how !== "first") results.note("reply.done");
+          if (how === "resumed" && freshStart) {
+            const now = freshStart();
+            send({ type: "session.update", session: { system_prompt: now.systemPrompt, tools: now.tools } });
+          }
+          const heldSamples = flushPrebuffer();
+          if (heldSamples > 0) {
+            onEvent?.("out", {
+              type: "longtake.prebuffer.flushed",
+              seconds: Number((heldSamples / TARGET_SAMPLE_RATE).toFixed(2))
+            });
+          }
+          flushResults();
+          if (how === "first") onReady?.(sessionId ?? "");
+          else onReconnected?.(how);
+          break;
+        }
+        case "reply.audio":
+          playReplyAudio(String(message.data));
+          break;
+        case "tool.call":
+          void runTool(message);
+          break;
+        case "input.speech.started":
+          onSpeechStart?.();
+          flushPlayback();
+          flushResults();
+          break;
+        case "reply.done":
+          if (message.status === "interrupted") flushPlayback();
+          flushResults();
+          break;
+        case "transcript.user.delta": {
+          const running = String(message.text ?? message.delta ?? "");
+          timeline.push({ text: running, sample: turnSamples });
+          onUserPartial?.(running);
+          break;
+        }
+        case "transcript.user": {
+          const turn = takeTurnAudio();
+          const heard = timeline;
+          resetTurnAudio();
+          onUserTranscript?.(String(message.text ?? ""), turn, heard);
+          break;
+        }
+        case "transcript.agent":
+          onAgentTranscript?.(String(message.text ?? ""));
+          break;
+        case "session.ended":
+          ended = true;
+          break;
+        case "session.error":
+        case "error": {
+          const code = String(message.code ?? "");
+          if (drop && RESUME_REFUSED.has(code)) {
+            sessionId = null;
+            break;
+          }
+          onError?.(String(message.message ?? JSON.stringify(message)));
+          break;
+        }
+      }
+    };
+    const connect = async (how, firstToken2) => {
+      const socketToken = firstToken2 ?? await getToken();
+      if (closing) return;
+      opening = how;
+      const url = new URL(wsUrl);
+      url.searchParams.set("token", socketToken);
+      const socket = new WebSocket(url);
+      ws = socket;
+      socket.addEventListener("open", () => {
+        if (how === "resumed" && sessionId) {
+          send({ type: "session.resume", session_id: sessionId });
+          return;
+        }
+        if (how === "fresh") results = new ToolResultQueue();
+        const config = how === "fresh" && freshStart ? freshStart() : { systemPrompt: options.systemPrompt, greeting: options.greeting, tools: options.tools ?? [] };
+        send({ type: "session.update", session: sessionConfig(config) });
+      });
+      socket.addEventListener("message", onMessage);
+      socket.addEventListener("error", () => {
+        if (!closing && how === "first" && !sessionId) onError?.("Could not connect to the voice service. Check the network and try again.");
+      });
+      socket.addEventListener("close", (event) => {
+        if (socket !== ws) return;
+        ready = false;
+        flushPlayback();
+        if (closing) {
+          onClosed?.();
+          return;
+        }
+        if (how === "first" && !sessionId) {
+          if (event.code === 1008) onError?.("Unauthorized (close 1008). The token was bad or already used.");
+          onClosed?.();
+          return;
+        }
+        lineDropped();
+      });
+    };
+    const lineDropped = () => {
+      if (!freshStart && (ended || !sessionId)) {
+        onClosed?.();
+        return;
+      }
+      drop = drop ?? { sessionId, droppedAt: Date.now(), attempts: 0, ended };
+      drop.sessionId = sessionId;
+      drop.ended = ended;
+      const step = nextReconnect(drop, Date.now());
+      if (step.action === "give-up" || step.action === "fresh" && !freshStart) {
+        onError?.(step.action === "give-up" ? step.reason : "The connection dropped and the session could not be resumed.");
+        closing = true;
+        teardown();
+        onClosed?.();
+        return;
+      }
+      drop.attempts += 1;
+      onReconnecting?.(drop.attempts);
+      clearTimeout(reconnectTimer);
+      reconnectTimer = setTimeout(() => {
+        connect(step.action === "resume" ? "resumed" : "fresh").catch(() => lineDropped());
+      }, step.delayMs);
+    };
+    const teardown = () => {
+      clearInterval(heartbeat);
+      clearTimeout(reconnectTimer);
+      flushPlayback();
+      worklet.port.onmessage = null;
+      try {
+        worklet.disconnect();
+        source.disconnect();
+      } catch {
+      }
+      for (const track of stream.getTracks()) track.stop();
+      void audioCtx.close();
+    };
+    await connect("first", token);
+    return {
+      setTurnDetection: (next) => {
+        turnDetection = next;
+        send({ type: "session.update", session: { input: { turn_detection: next } } });
+      },
+      setTools: (next) => {
+        send({ type: "session.update", session: { tools: next } });
+      },
+      setSystemPrompt: (prompt) => {
+        send({ type: "session.update", session: { system_prompt: prompt } });
+      },
+      stop: async () => {
+        closing = true;
+        clearTimeout(reconnectTimer);
+        const socket = ws;
+        if (socket && socket.readyState === WebSocket.OPEN) {
+          send({ type: "session.end" });
+          await new Promise((resolve) => {
+            const done = () => resolve();
+            socket.addEventListener("close", done, { once: true });
+            setTimeout(done, 1e3);
+          });
+        }
+        try {
+          socket?.close();
+        } catch {
+        }
+        teardown();
+      }
+    };
+  }
+
   // core/src/index.ts
   var CORE_VERSION = "0.9.0";
 
@@ -3190,6 +3684,11 @@
     readActions,
     pressAction,
     buildPressTool,
+    startVoiceSession,
+    explainMicFailure,
+    VoiceStartError,
+    nextReconnect,
+    resumeLine,
     inspect: () => {
       const read = readForm();
       window.__longtake.last = read;

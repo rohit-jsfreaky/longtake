@@ -211,3 +211,42 @@ export function brief(state: FormState, move: Move): string {
   lines.push("", `DO NEXT: ${doNext(move)}`);
   return lines.join("\n");
 }
+
+/**
+ * What the agent says first after the line dropped and a new session had to start.
+ *
+ * A greeting is spoken verbatim, so it is built here, from the form, like the opening line. It
+ * owns up to the drop in five words, says where things stand, and asks the next thing — the new
+ * agent has no memory of the call, but the form does, and the person should not have to repeat
+ * what is already in it.
+ */
+export function resumeLine(state: FormState, move: Move): string {
+  const { filled, total } = state.progress;
+  const where = `Sorry, lost the line for a second. ${filled} of ${total} are in`;
+  switch (move.kind) {
+    case "confirm":
+      return move.reason === "hedged"
+        ? `${where}. For ${move.field.question}, which was it?`
+        : `${where}. For ${move.field.question}, is ${move.suggestion} right?`;
+    case "resolve":
+      return `${where}. The form won't take ${move.value} for ${move.field.question} — can you say it again?`;
+    case "ask": {
+      const [first] = move.fields;
+      const what =
+        move.fields.length > 1 && first?.group === "address"
+          ? "your address"
+          : move.fields.length > 1 && first?.group === "phone"
+            ? "your phone number"
+            : (first?.question ?? "the next one");
+      return `${where}. Next up: ${what}.`;
+    }
+    case "offer_optional":
+      return `${where} — all the required ones. Want to do the ${move.fields.length} optional ones too?`;
+    case "optional":
+      return `${where}. Shall we carry on with the optional ones?`;
+    case "next_page":
+      return `${where} — this page is done. Ready for the next one?`;
+    case "handover":
+      return `${where} — that's everything. Have a look and ${move.submit ? `press ${move.submit}` : "send it"} yourself.`;
+  }
+}

@@ -30,8 +30,10 @@ jobs:
       # values — an `<input style="width:0">` reports 7.2px and a checkbox 13px, and the rule
       # that separates a real control from a honeypot sits between those two numbers. Running
       # the same engine as a developer's machine keeps that honest.
+      # Plus Playwright's own Chromium for tests/extension.spec.ts only: branded Chrome stopped
+      # loading unpacked extensions from the command line in version 137.
       - name: Install Chrome
-        run: npx playwright install --with-deps chrome
+        run: npx playwright install --with-deps chrome chromium
 
       # Build first. Next generates types into `.next/types` that the app's own tsconfig
       # includes, so on a clean checkout anything depending on them does not exist yet — which

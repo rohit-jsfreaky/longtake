@@ -53,6 +53,11 @@ import type {
   readActions,
   pressAction,
   buildPressTool,
+  startVoiceSession,
+  explainMicFailure,
+  VoiceStartError,
+  nextReconnect,
+  resumeLine,
 } from "@longtake/core";
 
 declare global {
@@ -112,6 +117,11 @@ declare global {
       readActions: typeof readActions;
       pressAction: typeof pressAction;
       buildPressTool: typeof buildPressTool;
+      startVoiceSession: typeof startVoiceSession;
+      explainMicFailure: typeof explainMicFailure;
+      VoiceStartError: typeof VoiceStartError;
+      nextReconnect: typeof nextReconnect;
+      resumeLine: typeof resumeLine;
       inspect: () => unknown;
       inspectDeep: () => Promise<unknown>;
       last?: ReturnType<typeof readForm>;

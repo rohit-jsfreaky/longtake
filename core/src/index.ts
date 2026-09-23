@@ -26,6 +26,8 @@ export * from "./session";
 export * from "./clip";
 export * from "./errors";
 export * from "./actions";
+export * from "./reconnect";
+export * from "./voice";
 
 /** Bumped when the shape of a `FieldSpec` changes, so stored answers can be migrated. */
 export const CORE_VERSION = "0.9.0";

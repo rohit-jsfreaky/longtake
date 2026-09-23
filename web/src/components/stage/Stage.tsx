@@ -8,6 +8,7 @@ import { RecordDot } from "@/components/RecordDot";
 import { Reveal } from "@/components/motion";
 import { Waveform } from "@/components/Waveform";
 import { useLongtake } from "@/lib/use-longtake";
+import type { StartProblem } from "@longtake/core";
 import { BrowserChrome } from "./BrowserChrome";
 import { ActsafeMembership } from "./ActsafeMembership";
 import { DiscordApplication } from "./DiscordApplication";
@@ -53,6 +54,15 @@ const FORMS = {
 
 type FormKey = keyof typeof FORMS;
 
+/** A short name for what stopped the call starting, above the sentence that says how to fix it. */
+const PROBLEM_TITLE: Partial<Record<StartProblem, string>> = {
+  "mic-denied": "Microphone blocked",
+  "no-mic": "No microphone",
+  "mic-busy": "Microphone in use",
+  insecure: "Not a secure page",
+  unsupported: "Browser can't record",
+};
+
 /** The query string does not change under a mounted page, so there is nothing to subscribe to. */
 const noSubscription = () => () => {};
 
@@ -82,6 +92,7 @@ export function Stage() {
     status,
     live,
     error,
+    problem,
     fieldCount,
     missing,
     optionalLeft,
@@ -132,7 +143,9 @@ export function Stage() {
       ? "Reading the form…"
       : status === "connecting"
         ? "Connecting…"
-        : live
+        : status === "reconnecting"
+          ? "Reconnecting…"
+          : live
           ? "Stop"
           : "Hold to talk";
 
@@ -243,10 +256,28 @@ export function Stage() {
               {/* Everything the person may need to act on, in one strip with its own height
                   limit — so however many notices there are, they scroll here instead of eating
                   the conversation above. */}
-              {(error || needsYou.length > 0 || waiting.length > 0 || fromMemory.length > 0 || filled > 0) && (
+              {(error ||
+                status === "reconnecting" ||
+                needsYou.length > 0 ||
+                waiting.length > 0 ||
+                fromMemory.length > 0 ||
+                filled > 0) && (
                 <div className="max-h-[7.5rem] shrink-0 space-y-2 overflow-y-auto text-[12.5px] leading-snug">
+                  {/* The microphone stays open through a drop and nothing said is lost, so the one
+                      thing worth telling the person is to carry on. */}
+                  {status === "reconnecting" && (
+                    <p className="rounded-lg border border-hair px-3 py-2 text-dim">
+                      <span className="text-paper">Line dropped — getting it back. </span>
+                      Keep talking; nothing you say is lost.
+                    </p>
+                  )}
                   {error && (
-                    <p className="rounded-lg border border-hair px-3 py-2 text-dim">{error}</p>
+                    <p className="rounded-lg border border-hair px-3 py-2 text-dim">
+                      {problem && PROBLEM_TITLE[problem] && (
+                        <span className="text-paper">{PROBLEM_TITLE[problem]}. </span>
+                      )}
+                      {error}
+                    </p>
                   )}
 
                   {/* The ones Longtake could not fill. Said out loud too, but a spoken sentence

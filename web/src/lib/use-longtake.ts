@@ -36,14 +36,20 @@ import {
 } from "@longtake/core";
 
 import { loadMemory, saveMemory } from "@/lib/memory-store";
-import { CONVERSATION_TURN_DETECTION, startVoiceSession, type VoiceSession } from "@/lib/voice-session";
+import {
+  CONVERSATION_TURN_DETECTION,
+  startVoiceSession,
+  VoiceStartError,
+  type VoiceSession,
+} from "@/lib/voice-session";
+import type { StartProblem } from "@longtake/core";
 
 export type LogLine = { at: string; kind: "in" | "out" | "app"; text: string };
 
 export type Written = Extract<WriteOutcome, { status: "written" }>;
 export type NotWritten = Exclude<WriteOutcome, { status: "written" }>;
 
-export type Status = "idle" | "reading" | "connecting" | "live" | "error";
+export type Status = "idle" | "reading" | "connecting" | "live" | "reconnecting" | "error";
 
 /**
  * Longtake's own controls, and the Next.js dev overlay, are not part of anybody's form.
@@ -97,6 +103,8 @@ export type UseLongtake = {
   status: Status;
   live: boolean;
   error: string | null;
+  /** What kind of problem stopped the call starting — the microphone, most often — or null. */
+  problem: StartProblem | null;
   /** The form as it is right now — the one source for everything below. */
   form: FormState;
   /** How many fields the reader found on the page. */
@@ -144,6 +152,7 @@ export function useLongtake({
 } = {}): UseLongtake {
   const [status, setStatus] = useState<Status>("idle");
   const [error, setError] = useState<string | null>(null);
+  const [problem, setProblem] = useState<StartProblem | null>(null);
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [known, setKnown] = useState<RememberedAnswer[]>([]);
   const [outcomes, setOutcomes] = useState<WriteOutcome[]>([]);
@@ -154,6 +163,8 @@ export function useLongtake({
   const [hesitations, setHesitations] = useState<Record<string, Hesitation>>({});
 
   const voiceRef = useRef<VoiceSession | null>(null);
+  /** The prompt the agent last got, so an unchanged form is not sent again. */
+  const sentPromptRef = useRef("");
   const switchedModeRef = useRef(false);
   const transcriptRef = useRef("");
   /**
@@ -201,7 +212,8 @@ export function useLongtake({
             return;
           }
           voiceRef.current?.setTools(created.tools());
-          voiceRef.current?.setSystemPrompt(created.prompt());
+          sentPromptRef.current = created.prompt();
+          voiceRef.current?.setSystemPrompt(sentPromptRef.current);
         },
       });
       sessionRef.current = created;
@@ -233,6 +245,25 @@ export function useLongtake({
     };
   }, [hesitations]);
 
+  /**
+   * Give the agent the form as it is now — if it changed since it last heard.
+   *
+   * After tool results the agent is caught up anyway. This is for what happens without one: the
+   * person typing into a box, picking an option themselves, correcting an answer of ours. Before,
+   * none of that reached the agent until its next tool call, so it would ask for a field the person
+   * had just typed in front of it.
+   */
+  const syncPrompt = useCallback(() => {
+    const current = sessionRef.current;
+    const voice = voiceRef.current;
+    if (!current || !voice || current.isWriting) return;
+    const prompt = current.prompt();
+    if (prompt === sentPromptRef.current) return;
+    sentPromptRef.current = prompt;
+    voice.setSystemPrompt(prompt);
+    push("app", "form changed by hand — agent brought up to date");
+  }, [push]);
+
   // ── Watching the page ────────────────────────────────────────────────────────────
 
   /**
@@ -242,7 +273,8 @@ export function useLongtake({
    * re-reads before it answers.
    */
   useEffect(() => {
-    if (status !== "live") return;
+    // Reconnecting counts: the person can still type while the line is down.
+    if (status !== "live" && status !== "reconnecting") return;
     const scope = root?.() ?? document;
     const target = "body" in scope ? scope.body : scope;
     if (!target) return;
@@ -256,22 +288,41 @@ export function useLongtake({
         return;
       }
       clearTimeout(timer);
-      timer = setTimeout(() => void current.pageChanged(), 500);
+      timer = setTimeout(() => {
+        void current.pageChanged().then(() => {
+          setForm(current.state());
+          syncPrompt();
+        });
+      }, 500);
     });
-    observer.observe(target, { subtree: true, childList: true, attributes: true, attributeFilter: ["style", "class", "hidden"] });
+    observer.observe(target, {
+      subtree: true,
+      childList: true,
+      characterData: true,
+      attributes: true,
+      attributeFilter: ["style", "class", "hidden", "aria-checked", "aria-selected"],
+    });
 
+    // Typing: redraw at once, tell the agent once they pause.
+    let typing: ReturnType<typeof setTimeout> | undefined;
     const onInput = () => {
       const current = sessionRef.current;
-      if (current && !current.isWriting) setForm(current.state());
+      if (!current || current.isWriting) return;
+      setForm(current.state());
+      clearTimeout(typing);
+      typing = setTimeout(syncPrompt, 1200);
     };
     target.addEventListener("input", onInput, true);
+    target.addEventListener("change", onInput, true);
 
     return () => {
       observer.disconnect();
       target.removeEventListener("input", onInput, true);
+      target.removeEventListener("change", onInput, true);
       clearTimeout(timer);
+      clearTimeout(typing);
     };
-  }, [status, root]);
+  }, [status, root, syncPrompt]);
 
   // ── The answer's own audio: a clip, and the Dictation pass that uses it ─────────────
 
@@ -411,6 +462,7 @@ export function useLongtake({
   const start = useCallback(async () => {
     setStatus("reading");
     setError(null);
+    setProblem(null);
     setTurns([]);
     setLog([]);
     switchedModeRef.current = false;
@@ -434,11 +486,25 @@ export function useLongtake({
       push("app", `opening line: ${greeting}`);
 
       setStatus("connecting");
+      sentPromptRef.current = current.prompt();
       voiceRef.current = await startVoiceSession({
         voice: chooseVoice(),
-        systemPrompt: current.prompt(),
+        systemPrompt: sentPromptRef.current,
         greeting,
         tools: current.tools(),
+        // The line dropped past saving: a new agent, told the form as it is and where to pick up.
+        freshStart: () => {
+          sentPromptRef.current = current.prompt();
+          return { systemPrompt: sentPromptRef.current, greeting: current.resumeGreeting(), tools: current.tools() };
+        },
+        onReconnecting: (attempt) => {
+          setStatus("reconnecting");
+          push("app", `line dropped — reconnecting (try ${attempt})`);
+        },
+        onReconnected: (how) => {
+          setStatus("live");
+          push("app", how === "resumed" ? "reconnected — same conversation" : "reconnected — new session, picked up from the form");
+        },
         onToolCall: async (name, args) => {
           const result = await runTool(name, args);
           // In full, never truncated — the frame log cuts at 260 characters, which is exactly the
@@ -450,7 +516,10 @@ export function useLongtake({
         },
         // After the result is out, the agent's prompt catches up with the form — so even a turn
         // with no tool call ("hello?", "what's left?") is answered from the form as it is.
-        onResultsSent: () => voiceRef.current?.setSystemPrompt(current.prompt()),
+        onResultsSent: () => {
+          sentPromptRef.current = current.prompt();
+          voiceRef.current?.setSystemPrompt(sentPromptRef.current);
+        },
         onEvent: (direction, message) => push(direction, JSON.stringify(message).slice(0, 260)),
         onReady: () => {
           setStatus("live");
@@ -491,6 +560,7 @@ export function useLongtake({
         onClosed: () => setStatus((s) => (s === "error" ? s : "idle")),
       });
     } catch (cause) {
+      setProblem(cause instanceof VoiceStartError ? cause.problem : null);
       setError(cause instanceof Error ? cause.message : String(cause));
       setStatus("error");
     }
@@ -554,6 +624,7 @@ export function useLongtake({
     status,
     live: status !== "idle" && status !== "error",
     error,
+    problem,
     form,
     fieldCount: form.progress.total,
     filledCount: form.progress.filled,

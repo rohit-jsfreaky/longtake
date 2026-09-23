@@ -95,6 +95,7 @@ export default function FillPage() {
             <span className="text-sm text-neutral-500">
               {status === "idle" && `${fieldCount || "—"} fields`}
               {status === "connecting" && "talk anyway, nothing is lost"}
+              {status === "reconnecting" && "line dropped, reconnecting — keep talking"}
               {status === "error" && "Failed"}
             </span>
           )}

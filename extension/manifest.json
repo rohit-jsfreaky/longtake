@@ -1,12 +1,18 @@
 {
   "manifest_version": 3,
   "name": "Longtake — the whole form, in one take",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Speak once, like telling a friend, and the whole form fills. It asks out loud only for what you did not cover.",
   "permissions": [
     "activeTab",
     "scripting",
-    "storage"
+    "storage",
+    "webNavigation"
+  ],
+  "host_permissions": [
+    "http://localhost/*",
+    "http://127.0.0.1/*",
+    "https://*.vercel.app/*"
   ],
   "background": {
     "service_worker": "background.js"
@@ -17,11 +23,21 @@
         "<all_urls>"
       ],
       "js": [
-        "content.js"
+        "dist/content.js"
       ],
       "run_at": "document_idle",
       "all_frames": true,
       "match_about_blank": true
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "dist/pcm-processor.js"
+      ],
+      "matches": [
+        "<all_urls>"
+      ]
     }
   ],
   "commands": {
