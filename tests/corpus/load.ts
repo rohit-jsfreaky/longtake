@@ -9,14 +9,17 @@
  */
 
 import type { Page } from "@playwright/test";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 import { HAR, REPLAYED, type AxCapture, type Locator, type Meta, type Truth } from "../../tools/corpus/types";
 import { runSteps } from "../../tools/corpus/steps";
+import type { ReadJoin, ReadSpec } from "../../tools/corpus/score";
 import { PROBE } from "../helpers";
 
 export const CORPUS = resolve(process.cwd(), process.env.CORPUS_DIR ?? "corpus");
+/** One JSON per form per scorer, read by the report. Cleared at the start of every run. */
+export const RESULTS = resolve(process.cwd(), process.env.CORPUS_RESULTS ?? "corpus-results");
 
 export type CorpusForm = { id: string; dir: string; meta: Meta; ax: AxCapture; truth: Truth | null };
 
@@ -85,16 +88,29 @@ export async function sentSoFar(page: Page, sent: Sent): Promise<Sent> {
   return { submits: [...sent.submits, ...submits], posts: [...sent.posts] };
 }
 
-/** One truth locator → our spec id, or why there is none. */
-export type Joined = { at: string; specId: string | null; found: boolean };
+/** Read the page the way the product does: wait for it to settle, read, open every dropdown. */
+export async function readLikeTheProduct(page: Page): Promise<ReadSpec[]> {
+  return page.evaluate(async () => {
+    const core = window.__longtake;
+    await core.waitForForm();
+    const read = await core.harvestOptions(core.readForm());
+    core.last = read;
+    return read.specs as unknown as ReadSpec[];
+  });
+}
+
+/** Read without opening anything — enough to know which elements `core/` took as fields. */
+export async function readAsIs(page: Page): Promise<ReadSpec[]> {
+  return page.evaluate(() => (window.__longtake.inspect() as { specs: ReadSpec[] }).specs);
+}
 
 /**
- * Read the page with `core/`, then find which of our specs sits on each locator's element.
- * `found: false` means the locator itself no longer resolves — a corpus problem, not a reader one.
+ * Join truth to the last read **by element**. Each truth field comes as all of its elements (its
+ * own first, then the other choices of its group); `found[i]` is false when its own no longer
+ * resolves — a corpus problem, not a reader one.
  */
-export async function joinByElement(page: Page, locators: Locator[]): Promise<{ joined: Joined[]; specs: unknown[] }> {
-  return page.evaluate((locators) => {
-    const read = window.__longtake.inspect() as { specs: { id: string }[] };
+export async function joinTruth(page: Page, fields: Locator[][]): Promise<ReadJoin & { found: boolean[] }> {
+  return page.evaluate((fields) => {
     const handles = window.__longtake.last!.handles;
 
     const inHops = (root: Document | ShadowRoot, hops: string[]): Element | null => {
@@ -121,19 +137,38 @@ export async function joinByElement(page: Page, locators: Locator[]): Promise<{ 
       return doc ? inHops(doc, locator.path) : null;
     };
 
-    const joined = locators.map((locator) => {
-      const at = [...locator.frames, ...locator.path].join(" | ");
-      const el = resolveLocator(locator);
-      if (!el) return { at, specId: null, found: false };
-      let best: { id: string; rank: number } | null = null;
-      for (const [id, handle] of handles) {
-        // Same element beats one holding the other; among those, the tightest fit wins.
+    const elements = fields.map((locators) => locators.map(resolveLocator));
+    const size = (el: Element) => el.querySelectorAll("*").length;
+    /** How closely a handle is this field: lower is closer, -1 is not at all. */
+    const closeness = (handle: Element, els: (Element | null)[]) => {
+      let best = -1;
+      els.forEach((el, i) => {
+        if (!el) return;
         const rank =
-          handle === el ? 0 : el.contains(handle) ? el.querySelectorAll("*").length : handle.contains(el) ? 1e6 + handle.querySelectorAll("*").length : -1;
-        if (rank >= 0 && (!best || rank < best.rank)) best = { id, rank };
+          handle === el ? i === 0 ? 0 : 1 : el.contains(handle) ? 2 + size(el) : handle.contains(el) ? 1e6 + size(handle) : -1;
+        if (rank >= 0 && (best < 0 || rank < best)) best = rank;
+      });
+      return best;
+    };
+
+    const best = elements.map((els) => {
+      let found: { id: string; rank: number } | null = null;
+      for (const [id, handle] of handles) {
+        const rank = closeness(handle, els);
+        if (rank >= 0 && (!found || rank < found.rank)) found = { id, rank };
       }
-      return { at, specId: best?.id ?? null, found: true };
+      return found?.id ?? null;
     });
-    return { joined, specs: read.specs };
-  }, locators);
+    const touches: Record<string, number[]> = {};
+    for (const [id, handle] of handles) {
+      touches[id] = elements.flatMap((els, i) => (closeness(handle, els) >= 0 ? [i] : []));
+    }
+    return { best, touches, found: elements.map((els) => els[0] !== null) };
+  }, fields);
+}
+
+/** Keep one scorer's result for one form, for the report. */
+export function saveResult(scorer: string, id: string, result: object): void {
+  mkdirSync(join(RESULTS, scorer), { recursive: true });
+  writeFileSync(join(RESULTS, scorer, `${id}.json`), JSON.stringify({ id, at: new Date().toISOString(), ...result }, null, 1));
 }

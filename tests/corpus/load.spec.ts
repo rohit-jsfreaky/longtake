@@ -7,7 +7,7 @@
 
 import { expect, test } from "@playwright/test";
 
-import { corpusForms, joinByElement, openForm, sentSoFar } from "./load";
+import { corpusForms, joinTruth, openForm, readAsIs, sentSoFar } from "./load";
 
 const forms = corpusForms();
 
@@ -20,22 +20,24 @@ for (const form of forms) {
   test(`${form.id} opens offline and every captured control is still there`, async ({ page }) => {
     test.skip(!form.meta.fillable, "replay does not reproduce this page — read-only form");
     const sent = await openForm(page, form);
-    const { joined } = await joinByElement(
+    await readAsIs(page);
+    const { best, found } = await joinTruth(
       page,
-      form.ax.controls.map((c) => c.locator),
+      form.ax.controls.map((c) => [c.locator]),
     );
+    const at = (i: number) => [...form.ax.controls[i]!.locator.frames, ...form.ax.controls[i]!.locator.path].join(" | ");
 
-    const lost = joined.filter((j) => !j.found).map((j) => j.at);
+    const lost = found.flatMap((ok, i) => (ok ? [] : [at(i)]));
     expect(lost, "locators that no longer resolve").toEqual([]);
 
     // A radio or checkbox group is read when any of its choices is part of a field we read.
     const groupRead = new Set<string>();
     form.ax.controls.forEach((control, i) => {
-      if (control.group && joined[i]!.specId !== null) groupRead.add(control.group.key);
+      if (control.group && best[i] !== null) groupRead.add(control.group.key);
     });
     const unread = form.ax.controls
       .filter((control, i) =>
-        control.group ? !groupRead.has(control.group.key) : control.dom.visible && joined[i]!.specId === null,
+        control.group ? !groupRead.has(control.group.key) : control.dom.visible && best[i] === null,
       )
       .map((control) => `${control.role} "${control.group?.label || control.name}"`)
       .filter((text, i, all) => all.indexOf(text) === i);

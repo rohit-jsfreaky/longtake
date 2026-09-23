@@ -9,17 +9,8 @@
 
 import { classify } from "../../core/src/actions";
 import type { FieldKind } from "../../core/src/types";
+import { cleanQuestion } from "./text";
 import type { AxCapture, AxControl, Truth, TruthField } from "./types";
-
-/** "Email*", "Email Required question", "Email (required)" are all the question "Email". */
-export function cleanQuestion(raw: string): string {
-  return raw
-    .replace(/\s*\((required|optional)\)\s*$/i, "")
-    .replace(/\s*required question\s*$/i, "")
-    .replace(/[\s*✱]+$/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-}
 
 function kindOf(control: AxControl, groupSize: number): FieldKind {
   const { role, dom } = control;

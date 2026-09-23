@@ -48,6 +48,15 @@ export default defineConfig({
      * Real forms, replayed offline from the private corpus. A site's own CSP would refuse the
      * injected `core/` bundle; the extension is never subject to it, so the corpus is not either.
      */
-    { name: "corpus", testMatch: /corpus[\\/].*\.spec\.ts$/, use: { bypassCSP: true } },
+    {
+      name: "corpus",
+      testMatch: /corpus[\\/].*\.spec\.ts$/,
+      use: { bypassCSP: true },
+      // Last run's results cleared first; the report runs after, whatever passed or failed.
+      dependencies: ["corpus-setup"],
+      teardown: "corpus-report",
+    },
+    { name: "corpus-setup", testMatch: /corpus[\\/]setup\.ts$/ },
+    { name: "corpus-report", testMatch: /corpus[\\/]report\.teardown\.ts$/ },
   ],
 });
