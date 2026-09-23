@@ -250,6 +250,7 @@
   var LONG_FORM_LABEL = /cover letter|why (do|are|would)|tell us|describe|excites|about your|in your own words|summar/i;
   var TRAP_NAME = /honey ?pot|\bhp\b|bot ?(field|check|trap)|leave (this )?blank|do not fill/i;
   var LONG_FORM_MIN_MAXLENGTH = 1e3;
+  var SEARCH_NOT_SCROLL = 50;
   function textOf(el) {
     if (!el) return "";
     return (el.innerText ?? el.textContent ?? "").replace(/\s+/g, " ").trim();
@@ -282,6 +283,11 @@
     const labelledBy = el.getAttribute("aria-labelledby");
     if (labelledBy) {
       const text2 = labelledBy.split(/\s+/).map((id) => textOf(root.querySelector(`#${CSS.escape(id)}`) ?? doc?.getElementById(id))).filter(Boolean).join(" ");
+      if (text2 && PART_ONLY.test(cleanLabel(text2))) {
+        const group = el.parentElement?.closest("[aria-labelledby], [aria-label], fieldset");
+        const outer = group ? labelOf(group) : "";
+        if (outer) return outer;
+      }
       if (text2) return text2;
     }
     const ariaLabel = el.getAttribute("aria-label")?.trim();
@@ -315,6 +321,8 @@
     }
     return "";
   }
+  var PART_ONLY = /^(date|time|day|month|year|hour|minute|dd|mm|yyyy|hh)$/i;
+  var STARRED = /[*✱]\s*$/;
   function cleanLabel(raw) {
     return raw.replace(/[\s*✱]+$/g, "").replace(/\s+/g, " ").trim();
   }
@@ -422,6 +430,8 @@
     };
     candidates.forEach((el, index) => {
       const tag = el.tagName.toLowerCase();
+      const typed = tag === "textarea" || tag === "input" && !/^(radio|checkbox)$/i.test(el.type);
+      if (typed && el.parentElement?.closest("[role='radiogroup']")) return;
       if (tag === "input") {
         const type = (el.type || "text").toLowerCase();
         if (NON_ANSWER_TYPES.has(type)) return;
@@ -431,7 +441,9 @@
       if (el.readOnly) return;
       const visible = isVisible(el);
       const kind = kindOf(el);
-      const label = cleanLabel(labelOf(el));
+      const rawLabel = labelOf(el);
+      const label = cleanLabel(rawLabel);
+      const starred = STARRED.test(rawLabel);
       const name = el.getAttribute("name") ?? "";
       if (!visible) {
         skipped.push({ label: label || name || kind, reason: "not visible on the page" });
@@ -481,7 +493,7 @@
         id,
         label,
         kind,
-        required: Boolean(el.required) || el.getAttribute("aria-required") === "true"
+        required: Boolean(el.required) || el.getAttribute("aria-required") === "true" || starred
       };
       const selector = uniqueSelector(el, ownerDocumentOf(root));
       if (selector) spec.selector = selector;
@@ -600,7 +612,7 @@
         const list = revealed[0]?.closest("[role='listbox']");
         if (list?.getAttribute("aria-multiselectable") === "true") spec.kind = "multiselect";
         const typesToSearch = el.tagName.toLowerCase() === "input" || Boolean(el.getAttribute("aria-autocomplete")) || Boolean(el.querySelector("input"));
-        if (options.length === 0 && typesToSearch) spec.searchable = true;
+        if (typesToSearch && (options.length === 0 || options.length >= SEARCH_NOT_SCROLL)) spec.searchable = true;
       } catch {
       } finally {
         closeWidget(el);
@@ -764,7 +776,7 @@
         return word.length > 0 && heard.includes(` ${word} `);
       }).sort((a, b) => b.length - a.length);
       if (onShow.length > 0) return spec.kind === "multiselect" ? onShow : onShow[0];
-      if (PLACEHOLDER.test(shown2) || choices.length > 0) return null;
+      if (PLACEHOLDER.test(shown2) || choices.length > 0 && !spec.searchable) return null;
       return shown2;
     }
     const text2 = readBack(el).trim();
@@ -814,10 +826,22 @@
     return { fieldId: spec.id, status: "written", wrote: chosen };
   }
   var SEARCH_WAIT_MS = 2e3;
+  var GENERIC_WORD = /^(university|college|institute|school|academy|technology|the|and|of|in|at|for|city)$/i;
+  function distinctiveWords(spoken) {
+    return spoken.split(/[\s,]+/).filter((word) => word.length >= 4 && !GENERIC_WORD.test(word)).sort((a, b) => b.length - a.length).slice(0, 2);
+  }
+  function everyWordIn(candidates, spoken) {
+    const words3 = normalise(spoken).split(" ").filter(Boolean);
+    if (words3.length === 0) return null;
+    const hits = candidates.map((candidate, index) => ({ text: normalise(candidate), index })).filter(({ text: text2 }) => words3.every((word) => text2.includes(word)));
+    return hits.length === 1 ? hits[0].index : null;
+  }
   async function typeAndPick(spec, el, spoken) {
     const input = el.tagName.toLowerCase() === "input" ? el : el.querySelector("input");
     if (!input) return pickFromWidget(spec, el, null, spoken);
-    const queries = [spoken.trim(), spoken.split(",")[0].trim()].filter((q, i, all) => q && all.indexOf(q) === i);
+    const queries = [spoken.trim(), spoken.split(",")[0].trim(), ...distinctiveWords(spoken)].filter(
+      (q, i, all) => q && all.indexOf(q) === i
+    );
     let lastLabels = [];
     for (const query of queries) {
       const before = new Set(optionNodes());
@@ -836,7 +860,8 @@
         if (candidates.length > 0) break;
       }
       const labels = candidates.map((o) => (o.innerText ?? "").trim());
-      const index = matchAmong(labels, spoken) ?? matchAmong(labels, query);
+      const whole = query === spoken.trim() || query === spoken.split(",")[0].trim();
+      const index = matchAmong(labels, spoken) ?? (whole ? matchAmong(labels, query) : null) ?? everyWordIn(labels, spoken);
       if (index !== null) {
         const chosen = labels[index];
         pressOption(candidates[index]);
@@ -918,7 +943,10 @@
     }
     if (spec.kind === "select") {
       const wanted = String(Array.isArray(spoken.value) ? spoken.value[0] : spoken.value);
-      if (spec.searchable) return typeAndPick(spec, el, wanted);
+      if (spec.searchable) {
+        const searched = await typeAndPick(spec, el, wanted);
+        if (searched.status !== "rejected-by-page" || !spec.options?.length || searched.wrote !== wanted) return searched;
+      }
       const want = matchOption(spec, wanted) ?? optionNamedIn(spec, spoken.evidence);
       if (!want && spec.custom && !spec.options?.length) {
         return pickFromWidget(spec, el, null, wanted);
@@ -968,6 +996,16 @@
           picked.push(option.label);
         }
         return { fieldId: id, status: "written", wrote: picked.join(", ") };
+      }
+      if (spec.kind === "radio" && el.getAttribute("role") === "radiogroup") {
+        const want = normalise(chosen[0].label);
+        const target = deepQueryAll(el, "[role='radio']").find(
+          (radio) => normalise(radio.getAttribute("aria-label") ?? radio.textContent ?? "") === want || radio.getAttribute("data-value") === chosen[0].value
+        );
+        if (!target) return { fieldId: id, status: "refused", reason: "That option is no longer on the page." };
+        if (target.getAttribute("aria-checked") !== "true") target.click();
+        await sleep(30);
+        return target.getAttribute("aria-checked") === "true" ? { fieldId: id, status: "written", wrote: chosen[0].label } : { fieldId: id, status: "rejected-by-page", wrote: chosen[0].label, found: "" };
       }
       if (spec.custom) return pickFromWidget(spec, el, chosen[0], wanted.join(", "));
       if (spec.kind === "radio") {
@@ -1203,6 +1241,12 @@
         return { type: "boolean", description: "true if the person agreed, false if they declined." };
       case "select":
       case "radio": {
+        if (spec.searchable) {
+          return {
+            type: "string",
+            description: "A list that searches as you type (a place, a school). Put what the person said, as they said it; it is searched for, and only a clear match goes in."
+          };
+        }
         if (options.length > 0) {
           return {
             type: "string",
@@ -1307,6 +1351,30 @@
           }
         },
         required: ["fields", "evidence"],
+        additionalProperties: false
+      },
+      execution_mode: EXECUTION_MODE,
+      timeout_seconds: TIMEOUT_SECONDS
+    };
+  }
+  var PRESS_TOOL_NAME = "press_form_button";
+  function buildPressTool(actions) {
+    if (actions.length === 0) return null;
+    return {
+      type: "function",
+      name: PRESS_TOOL_NAME,
+      description: "Press a button on the form when the person asks: add another entry to a section, or go to the next page. Only when they ask for it. There is no submit button here \u2014 the person always submits themselves.",
+      parameters: {
+        type: "object",
+        properties: {
+          action: {
+            type: "string",
+            enum: actions.map((a) => a.id),
+            description: `Which button: ${actions.map((a) => `${a.id} = "${a.label}"`).join("; ")}.`
+          },
+          evidence: { type: "string", description: "The person's own words asking for it, quoted exactly." }
+        },
+        required: ["action", "evidence"],
         additionalProperties: false
       },
       execution_mode: EXECUTION_MODE,
@@ -2117,6 +2185,8 @@
         if (!ids.includes(id)) this.idsBySignature.set(signature(spec), [...ids, id]);
         const old = before.get(id);
         if (!spec.options?.length && old?.options?.length) spec.options = old.options;
+        if (old?.searchable) spec.searchable = true;
+        if (old?.kind === "multiselect" && spec.kind === "select") spec.kind = "multiselect";
       }
       const read = { ...next, handles };
       this.current = read;
@@ -2169,6 +2239,7 @@
       "Call fill_fields the moment you hear an answer, and again whenever you hear more \u2014 several answers in one call. Fill only what they actually said, even for required fields; never work one answer out from another.",
       "Every answer's evidence is their own words, copied exactly, in the language they said them. They may mix English and Hindi; the value goes in English, in the Latin alphabet, never Devanagari. Evidence that isn't in what they said is thrown away.",
       "Each result says what went in, what didn't and why. Acknowledge what went in in a few words, not a readback. waiting_for_yes: nothing went in yet \u2014 it's in DO NEXT. not_an_option: tried is what you sent; check the choices before saying anything is missing. quote_not_found: they did say it, so call again quoting their exact words \u2014 don't ask again. page_refused: ask them to say it once more. page_refused_twice: say plainly they'll need to type that one. not_heard and gone: say nothing. If you realise you got something wrong, fix it with a call straight away rather than just apologising.",
+      "When they ask to add another entry, like another job or school, or to go to the next page, call press_form_button with their words, then carry on with what appears. page_did_not_change means the form refused to move on: tell them what it asked for. There is no button for submitting: that one is always theirs.",
       "When they ask to remove, clear or undo an answer, call clear_fields with their words. Never pick another option, like a decline choice, as a way of clearing one. If it can't be emptied, tell them why.",
       "",
       // ── 5. Speaking, not writing ───────────────────────────────────────────────────
@@ -2278,7 +2349,7 @@
   function isOpen(field) {
     return field.value === null && !field.declined;
   }
-  function snapshot(read, ledger, title = "") {
+  function snapshot(read, ledger, title = "", buttons) {
     const fields = [];
     for (const spec of read.specs) {
       if (spec.suspectedHoneypot || spec.kind === "file") continue;
@@ -2303,6 +2374,8 @@
       title,
       fields,
       theirs,
+      actions: buttons?.actions ?? [],
+      ...buttons?.submitLabel ? { submitLabel: buttons.submitLabel } : {},
       progress: {
         filled: fields.filter((f) => f.value !== null).length,
         total: fields.length,
@@ -2397,10 +2470,14 @@
     const optional = inAskingOrder(open.filter((f) => !f.spec.required).map((f) => f.spec)).map(
       (spec) => factsOf(spec, specs)
     );
+    const next = state.actions.find((a) => a.kind === "next");
     if (optional.length > 0) {
-      return plan.optionalOffered ? { kind: "optional", fields: optional } : { kind: "offer_optional", fields: optional };
+      if (!plan.optionalOffered) return { kind: "offer_optional", fields: optional };
+      if (next) return { kind: "optional", fields: optional, next: next.label };
+      return state.submitLabel ? { kind: "optional", fields: optional, submit: state.submitLabel } : { kind: "optional", fields: optional };
     }
-    return { kind: "handover", theirs: state.theirs };
+    if (next) return { kind: "next_page", label: next.label };
+    return state.submitLabel ? { kind: "handover", theirs: state.theirs, submit: state.submitLabel } : { kind: "handover", theirs: state.theirs };
   }
   var SOURCE_WORDS = {
     spoken: "they said it",
@@ -2442,9 +2519,13 @@
       case "offer_optional":
         return `Every required field is in. Say so, and ask if they want to do the ${move.fields.length} optional ones or hear what they are: ${move.fields.map((f) => f.question).join("; ")}.`;
       case "optional":
-        return `If they wanted the optional ones, ask for ${describe(move.fields[0])}. If they didn't, hand over: everything they told you is in, and they should look it over and send it themselves.`;
-      case "handover":
-        return move.theirs.length > 0 ? `Nothing left for you. Say everything they told you is in, that ${move.theirs.join(" and ")} is theirs to do by hand, and that they should look it over and send it themselves.` : `Nothing left for you. Say everything they told you is in, and that they should look it over and send it themselves.`;
+        return move.next ? `If they wanted the optional ones, ask for ${describe(move.fields[0])}. If they didn't, ask if they're ready for the next page, and press "${move.next}" with press_form_button only on their yes.` : `If they wanted the optional ones, ask for ${describe(move.fields[0])}. If they didn't, hand over: everything they told you is in, and they should ${move.submit ? `look it over and press "${move.submit}" themselves` : "look it over and send it themselves"}.`;
+      case "next_page":
+        return `Everything needed on this page is in. Ask if they're ready for the next page, and press "${move.label}" with press_form_button only on their yes.`;
+      case "handover": {
+        const send = move.submit ? `look it over and press "${move.submit}" themselves` : "look it over and send it themselves";
+        return move.theirs.length > 0 ? `Nothing left for you. Say everything they told you is in, that ${move.theirs.join(" and ")} is theirs to do by hand, and that they should ${send}.` : `Nothing left for you. Say everything they told you is in, and that they should ${send}.`;
+      }
     }
   }
   function brief(state, move) {
@@ -2481,8 +2562,64 @@
       lines.push(`The form rejects: ${factsOf(f.spec, specs).question} = "${shown(f.value)}" \u2014 "${f.error}"`);
     }
     if (state.theirs.length > 0) lines.push(`Theirs to do by hand: ${state.theirs.join(", ")}`);
+    if (state.actions.length > 0) {
+      lines.push(`Buttons you can press when they ask: ${state.actions.map((a) => `"${a.label}"`).join(", ")}`);
+    }
+    if (state.submitLabel) lines.push(`"${state.submitLabel}" sends the form \u2014 only they press it, never you.`);
     lines.push("", `DO NEXT: ${doNext(move)}`);
     return lines.join("\n");
+  }
+
+  // core/src/actions.ts
+  var BUTTONS = "button, input[type='submit'], input[type='button'], [role='button'], a[role='button']";
+  var SUBMIT = /\b(submit|apply|send|finish|complete|pay|payment|checkout|place order|purchase|confirm|sign up|register|done)\b/i;
+  var NEXT = /^\s*(next|continue|save (and|&) continue|save & next|proceed|next (page|step|section))\b/i;
+  var ADD_ANOTHER = /(^\s*\+\s*add\b)|\b(add (another|more|one more|a new)|add (an? )?(education|experience|job|position|school|degree|reference|link|entry|employer|language|certification|project))/i;
+  function wordsOf(el) {
+    const own = el.tagName.toLowerCase() === "input" ? el.value : el.innerText ?? el.textContent ?? "";
+    return (own || el.getAttribute("aria-label") || el.getAttribute("title") || "").replace(/\s+/g, " ").trim();
+  }
+  function classify(words3) {
+    if (!words3) return null;
+    if (SUBMIT.test(words3)) return "submit";
+    if (NEXT.test(words3)) return "next";
+    if (ADD_ANOTHER.test(words3)) return "add-another";
+    return null;
+  }
+  function slug2(raw) {
+    return raw.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 40);
+  }
+  function readActions(root, ignore = "[data-longtake-ignore]") {
+    const actions = [];
+    const handles = /* @__PURE__ */ new Map();
+    let submitLabel;
+    for (const node of deepQueryAll(root, BUTTONS)) {
+      const el = node;
+      if (ignore && el.closest(ignore)) continue;
+      if (el.disabled && classify(wordsOf(el)) !== "submit") continue;
+      if (!isVisible(el)) continue;
+      const words3 = wordsOf(el);
+      const kind = classify(words3);
+      if (kind === "submit") {
+        submitLabel ?? (submitLabel = words3);
+        continue;
+      }
+      if (!kind) continue;
+      let id = slug2(`${kind === "next" ? "next" : "add"} ${words3}`) || kind;
+      for (let n = 2; handles.has(id); n++) id = `${slug2(`${kind} ${words3}`)}_${n}`;
+      actions.push({ id, kind, label: words3 });
+      handles.set(id, el);
+    }
+    return { actions, handles, ...submitLabel ? { submitLabel } : {} };
+  }
+  function pressAction(el) {
+    if (!el.isConnected) return { pressed: false, reason: "That button is no longer on the page." };
+    const kind = classify(wordsOf(el));
+    if (kind === "submit") return { pressed: false, reason: "That button submits the form. Only the person presses that." };
+    if (!kind) return { pressed: false, reason: "That button is not one Longtake presses." };
+    el.scrollIntoView({ block: "nearest" });
+    el.click();
+    return { pressed: true };
   }
 
   // core/src/session.ts
@@ -2508,9 +2645,9 @@
     /** The form as it is right now. The only answer to "what is filled" anywhere in the product. */
     state() {
       if (!this.current) {
-        return { title: "", fields: [], theirs: [], progress: { filled: 0, total: 0, requiredLeft: 0, optionalLeft: 0 } };
+        return { title: "", fields: [], theirs: [], actions: [], progress: { filled: 0, total: 0, requiredLeft: 0, optionalLeft: 0 } };
       }
-      return snapshot(this.current, this.ledger, this.title);
+      return snapshot(this.current, this.ledger, this.title, this.buttons());
     }
     /** What to do next. Offering the optional fields is a one-time move, so it is recorded. */
     move() {
@@ -2524,7 +2661,57 @@
     }
     tools() {
       const specs = this.current?.specs ?? [];
-      return [buildFillTool(specs), buildClearTool(specs)];
+      const press2 = this.current ? buildPressTool(this.buttons().actions) : null;
+      return press2 ? [buildFillTool(specs), buildClearTool(specs), press2] : [buildFillTool(specs), buildClearTool(specs)];
+    }
+    /** The form's buttons as they are right now — read fresh, since a page can rename them. */
+    buttons() {
+      return readActions(this.scope(), this.options.ignore);
+    }
+    /**
+     * The `press_form_button` tool: "Add another", or "Next" — never a submit button.
+     *
+     * Needs the person's words like everything else. After a Next the form is a new page: the
+     * optional offer is owed again, and the agent gets new tools and a new brief straight away.
+     */
+    async press(args, heard) {
+      const id = typeof args.action === "string" ? args.action : "";
+      const evidence = typeof args.evidence === "string" ? args.evidence : "";
+      if (!checkEvidence(heard, evidence).ok) {
+        return { result: { not_pressed: "quote_not_found", submitted: false }, outcomes: [], spoken: [] };
+      }
+      const buttons = this.buttons();
+      const action = buttons.actions.find((a) => a.id === id);
+      const el = buttons.handles.get(id);
+      if (!action || !el) {
+        return { result: { not_pressed: "That button is not on the page.", submitted: false }, outcomes: [], spoken: [] };
+      }
+      this.writing = true;
+      let pressed;
+      try {
+        pressed = await exclusively(async () => pressAction(el));
+      } finally {
+        this.writing = false;
+      }
+      if (!pressed.pressed) {
+        return { result: { not_pressed: pressed.reason, submitted: false }, outcomes: [], spoken: [] };
+      }
+      const reshaped = await this.pageChanged();
+      this.options.onReshape?.();
+      const stayed = action.kind === "next" && !reshaped;
+      if (action.kind === "next" && !stayed) this.plan = { optionalOffered: false };
+      const state = this.state();
+      const says = state.fields.filter((f) => f.error).map((f) => ({ question: f.spec.label, form_says: f.error }));
+      const result = {
+        pressed: action.label,
+        ...stayed ? { page_did_not_change: true, ...says.length ? { the_form_says: says } : {} } : {},
+        ...reshaped ? { form_changed: this.changeFacts(reshaped) } : {},
+        progress: state.progress,
+        do_next: doNext(this.move()),
+        submitted: false
+      };
+      this.options.onChange?.();
+      return { result, outcomes: [], spoken: [] };
     }
     /** Problems with the tools, checked before they are ever sent — the API accepts bad ones silently. */
     toolProblems() {
@@ -2999,6 +3186,10 @@
     LongtakeSession,
     clipFor,
     readError,
+    classify,
+    readActions,
+    pressAction,
+    buildPressTool,
     inspect: () => {
       const read = readForm();
       window.__longtake.last = read;

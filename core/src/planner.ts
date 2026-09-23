@@ -26,10 +26,12 @@ export type Move =
   | { kind: "ask"; fields: FieldFacts[] }
   /** The required part is done. Offer the optional part, once. */
   | { kind: "offer_optional"; fields: FieldFacts[] }
-  /** The offer has been made: go through these if they wanted them, hand over if not. */
-  | { kind: "optional"; fields: FieldFacts[] }
+  /** The offer has been made: go through these if they wanted them, move on if not. */
+  | { kind: "optional"; fields: FieldFacts[]; next?: string; submit?: string }
+  /** This page is done and the form has another. Ask, and press Next only on their yes. */
+  | { kind: "next_page"; label: string }
   /** Nothing left that is ours to do. */
-  | { kind: "handover"; theirs: string[] };
+  | { kind: "handover"; theirs: string[]; submit?: string };
 
 /** What the planner has to remember between moves. Tiny on purpose — the form is the rest. */
 export type Plan = { optionalOffered: boolean };
@@ -74,11 +76,19 @@ export function nextMove(state: FormState, plan: Plan): Move {
   const optional = inAskingOrder(open.filter((f) => !f.spec.required).map((f) => f.spec)).map((spec) =>
     factsOf(spec, specs),
   );
+  const next = state.actions.find((a) => a.kind === "next");
   if (optional.length > 0) {
-    return plan.optionalOffered ? { kind: "optional", fields: optional } : { kind: "offer_optional", fields: optional };
+    if (!plan.optionalOffered) return { kind: "offer_optional", fields: optional };
+    if (next) return { kind: "optional", fields: optional, next: next.label };
+    return state.submitLabel
+      ? { kind: "optional", fields: optional, submit: state.submitLabel }
+      : { kind: "optional", fields: optional };
   }
+  if (next) return { kind: "next_page", label: next.label };
 
-  return { kind: "handover", theirs: state.theirs };
+  return state.submitLabel
+    ? { kind: "handover", theirs: state.theirs, submit: state.submitLabel }
+    : { kind: "handover", theirs: state.theirs };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════════════
@@ -132,11 +142,17 @@ export function doNext(move: Move): string {
     case "offer_optional":
       return `Every required field is in. Say so, and ask if they want to do the ${move.fields.length} optional ones or hear what they are: ${move.fields.map((f) => f.question).join("; ")}.`;
     case "optional":
-      return `If they wanted the optional ones, ask for ${describe(move.fields[0]!)}. If they didn't, hand over: everything they told you is in, and they should look it over and send it themselves.`;
-    case "handover":
+      return move.next
+        ? `If they wanted the optional ones, ask for ${describe(move.fields[0]!)}. If they didn't, ask if they're ready for the next page, and press "${move.next}" with press_form_button only on their yes.`
+        : `If they wanted the optional ones, ask for ${describe(move.fields[0]!)}. If they didn't, hand over: everything they told you is in, and they should ${move.submit ? `look it over and press "${move.submit}" themselves` : "look it over and send it themselves"}.`;
+    case "next_page":
+      return `Everything needed on this page is in. Ask if they're ready for the next page, and press "${move.label}" with press_form_button only on their yes.`;
+    case "handover": {
+      const send = move.submit ? `look it over and press "${move.submit}" themselves` : "look it over and send it themselves";
       return move.theirs.length > 0
-        ? `Nothing left for you. Say everything they told you is in, that ${move.theirs.join(" and ")} is theirs to do by hand, and that they should look it over and send it themselves.`
-        : `Nothing left for you. Say everything they told you is in, and that they should look it over and send it themselves.`;
+        ? `Nothing left for you. Say everything they told you is in, that ${move.theirs.join(" and ")} is theirs to do by hand, and that they should ${send}.`
+        : `Nothing left for you. Say everything they told you is in, and that they should ${send}.`;
+    }
   }
 }
 
@@ -187,6 +203,10 @@ export function brief(state: FormState, move: Move): string {
   }
 
   if (state.theirs.length > 0) lines.push(`Theirs to do by hand: ${state.theirs.join(", ")}`);
+  if (state.actions.length > 0) {
+    lines.push(`Buttons you can press when they ask: ${state.actions.map((a) => `"${a.label}"`).join(", ")}`);
+  }
+  if (state.submitLabel) lines.push(`"${state.submitLabel}" sends the form — only they press it, never you.`);
 
   lines.push("", `DO NEXT: ${doNext(move)}`);
   return lines.join("\n");

@@ -19,13 +19,13 @@ import { useEffect, useRef, useState } from "react";
  */
 
 /** Where the menu sits right now, in viewport coordinates. */
-type Place = { top: number; left: number; width: number; maxHeight: number };
+export type Place = { top: number; left: number; width: number; maxHeight: number };
 
 /** Never let the menu run off the bottom of the window, and flip it up if it would. */
 const GAP = 4;
 const LEAST_ROOM = 160;
 
-function placeUnder(box: DOMRect): Place {
+export function placeUnder(box: DOMRect): Place {
   const below = window.innerHeight - box.bottom - GAP * 2;
   const above = box.top - GAP * 2;
   const flip = below < LEAST_ROOM && above > below;

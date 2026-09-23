@@ -136,9 +136,13 @@ export class FieldRegistry {
       const ids = this.idsBySignature.get(signature(spec)) ?? [];
       if (!ids.includes(id)) this.idsBySignature.set(signature(spec), [...ids, id]);
 
-      // Options learned by opening a dropdown are kept, so a re-read never has to open it again.
+      // Everything learned by opening a dropdown is kept, so a re-read never has to open it again:
+      // its options, that it searches as you type, and that it takes several answers. Losing the
+      // middle one turned School back into "100 options, look at the list" after "Add another".
       const old = before.get(id);
       if (!spec.options?.length && old?.options?.length) spec.options = old.options;
+      if (old?.searchable) spec.searchable = true;
+      if (old?.kind === "multiselect" && spec.kind === "select") spec.kind = "multiselect";
     }
 
     const read: FormRead = { ...next, handles };

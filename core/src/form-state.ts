@@ -14,6 +14,7 @@
  * number on screen and every word the agent is told comes from one `snapshot`.
  */
 
+import type { ActionsRead, FormAction } from "./actions";
 import { readError } from "./errors";
 import type { Ledger, Pending } from "./ledger";
 import type { FieldSpec, FormRead } from "./types";
@@ -47,6 +48,10 @@ export type FormState = {
   fields: FieldState[];
   /** Things on the page only the person can do: file uploads, signatures. */
   theirs: string[];
+  /** Buttons Longtake may press when asked — "Add another", "Next". Never a submit button. */
+  actions: FormAction[];
+  /** The form's own submit button, by its words. Theirs to press, always. */
+  submitLabel?: string;
   progress: {
     filled: number;
     total: number;
@@ -72,7 +77,7 @@ export function isOpen(field: FieldState): boolean {
   return field.value === null && !field.declined;
 }
 
-export function snapshot(read: FormRead, ledger: Ledger, title = ""): FormState {
+export function snapshot(read: FormRead, ledger: Ledger, title = "", buttons?: ActionsRead): FormState {
   const fields: FieldState[] = [];
 
   for (const spec of read.specs) {
@@ -105,6 +110,8 @@ export function snapshot(read: FormRead, ledger: Ledger, title = ""): FormState 
     title,
     fields,
     theirs,
+    actions: buttons?.actions ?? [],
+    ...(buttons?.submitLabel ? { submitLabel: buttons.submitLabel } : {}),
     progress: {
       filled: fields.filter((f) => f.value !== null).length,
       total: fields.length,

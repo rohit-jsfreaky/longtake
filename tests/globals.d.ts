@@ -49,6 +49,10 @@ import type {
   LongtakeSession,
   clipFor,
   readError,
+  classify,
+  readActions,
+  pressAction,
+  buildPressTool,
 } from "@longtake/core";
 
 declare global {
@@ -104,6 +108,10 @@ declare global {
       LongtakeSession: typeof LongtakeSession;
       clipFor: typeof clipFor;
       readError: typeof readError;
+      classify: typeof classify;
+      readActions: typeof readActions;
+      pressAction: typeof pressAction;
+      buildPressTool: typeof buildPressTool;
       inspect: () => unknown;
       inspectDeep: () => Promise<unknown>;
       last?: ReturnType<typeof readForm>;

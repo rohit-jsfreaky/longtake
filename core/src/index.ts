@@ -25,6 +25,7 @@ export * from "./planner";
 export * from "./session";
 export * from "./clip";
 export * from "./errors";
+export * from "./actions";
 
 /** Bumped when the shape of a `FieldSpec` changes, so stored answers can be migrated. */
 export const CORE_VERSION = "0.9.0";

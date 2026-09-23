@@ -110,6 +110,15 @@ function valueSchema(spec: FieldSpec): JsonSchema {
       // The page's own wording, because that is what the person will say out loud. `enum` is the
       // single strongest accuracy hint the API offers, and it removes the "model invented a
       // category" failure entirely.
+      // A searchable list is never an enum: what is on show when it opens may be a first page, and
+      // an enum would make the rest impossible to say.
+      if (spec.searchable) {
+        return {
+          type: "string",
+          description:
+            "A list that searches as you type (a place, a school). Put what the person said, as they said it; it is searched for, and only a clear match goes in.",
+        };
+      }
       if (options.length > 0) {
         return {
           type: "string",
@@ -251,6 +260,40 @@ export function buildClearTool(specs: FieldSpec[]): VoiceAgentTool {
         },
       },
       required: ["fields", "evidence"],
+      additionalProperties: false,
+    },
+    execution_mode: EXECUTION_MODE,
+    timeout_seconds: TIMEOUT_SECONDS,
+  };
+}
+
+export const PRESS_TOOL_NAME = "press_form_button";
+
+/**
+ * Pressing the buttons that are not answers: "Add another" and "Next".
+ *
+ * Only those — the enum is built from `readActions`, which never lists a submit button, so "submit
+ * it for me" is not a thing the agent can express. `null` when the form has none, because a tool
+ * with an empty enum is a malformed tool.
+ */
+export function buildPressTool(actions: { id: string; kind: string; label: string }[]): VoiceAgentTool | null {
+  if (actions.length === 0) return null;
+  return {
+    type: "function",
+    name: PRESS_TOOL_NAME,
+    description:
+      "Press a button on the form when the person asks: add another entry to a section, or go to the next page. Only when they ask for it. There is no submit button here — the person always submits themselves.",
+    parameters: {
+      type: "object",
+      properties: {
+        action: {
+          type: "string",
+          enum: actions.map((a) => a.id),
+          description: `Which button: ${actions.map((a) => `${a.id} = "${a.label}"`).join("; ")}.`,
+        },
+        evidence: { type: "string", description: "The person's own words asking for it, quoted exactly." },
+      },
+      required: ["action", "evidence"],
       additionalProperties: false,
     },
     execution_mode: EXECUTION_MODE,

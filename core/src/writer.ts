@@ -32,7 +32,7 @@
  * difference between a demo that looks like it works and a form that is actually filled in.
  */
 
-import { closeWidget, exclusively, openWidget, optionNodes, ownsOptions, pressOption } from "./dom-path";
+import { closeWidget, deepQueryAll, exclusively, openWidget, optionNodes, ownsOptions, pressOption } from "./dom-path";
 import type { FieldHandles, FieldSpec, SpokenValue } from "./types";
 
 export type WriteOutcome =
@@ -389,7 +389,9 @@ export function readValue(spec: FieldSpec, el: HTMLElement): FieldValue {
     if (onShow.length > 0) return spec.kind === "multiselect" ? onShow : onShow[0]!;
 
     // Showing text that is none of its options: a placeholder, or a label from further up.
-    if (PLACEHOLDER.test(shown) || choices.length > 0) return null;
+    // A searchable list's options are only what it showed when opened; a pick from a search
+    // is none of them and is still an answer.
+    if (PLACEHOLDER.test(shown) || (choices.length > 0 && !spec.searchable)) return null;
     return shown;
   }
 
@@ -491,6 +493,28 @@ async function pickFromWidget(
 /** How long a search-as-you-type list gets to answer a query before we stop waiting. */
 const SEARCH_WAIT_MS = 2000;
 
+/** Words that say what kind of place something is, not which one. Never searched on their own. */
+const GENERIC_WORD = /^(university|college|institute|school|academy|technology|the|and|of|in|at|for|city)$/i;
+
+/** The two longest words of an answer that could pick it out — "Kharagpur" from "IIT Kharagpur". */
+function distinctiveWords(spoken: string): string[] {
+  return spoken
+    .split(/[\s,]+/)
+    .filter((word) => word.length >= 4 && !GENERIC_WORD.test(word))
+    .sort((a, b) => b.length - a.length)
+    .slice(0, 2);
+}
+
+/** The one result containing every word they said — "IIT" inside "(IITKGP)" counts. */
+function everyWordIn(candidates: string[], spoken: string): number | null {
+  const words = normalise(spoken).split(" ").filter(Boolean);
+  if (words.length === 0) return null;
+  const hits = candidates
+    .map((candidate, index) => ({ text: normalise(candidate), index }))
+    .filter(({ text }) => words.every((word) => text.includes(word)));
+  return hits.length === 1 ? hits[0]!.index : null;
+}
+
 /**
  * A dropdown that searches as you type — a location, a college.
  *
@@ -499,13 +523,19 @@ const SEARCH_WAIT_MS = 2000;
  * choice — exactly one must clearly be what they said. Several results that fit ("Kolkata" and
  * "Kolkata Airport") come back as choices for the person to pick between; none at all is reported.
  * If the full answer finds nothing, the part before the first comma is tried, because people say
- * "Kolkata, India" and a city search wants "Kolkata".
+ * "Kolkata, India" and a city search wants "Kolkata". Then its most distinctive words, one at a
+ * time: Greenhouse's School search matches the whole string, so "IIT Kharagpur" finds nothing and
+ * "Kharagpur" finds "Indian Institute of Technology Kharagpur (IITKGP)". A result found that way
+ * is only taken when every word they said is in it — never on the searched word alone, or "Delhi
+ * Public School" searched as "Public" could land on any school with Public in its name.
  */
 async function typeAndPick(spec: FieldSpec, el: HTMLElement, spoken: string): Promise<WriteOutcome> {
   const input = (el.tagName.toLowerCase() === "input" ? el : el.querySelector("input")) as HTMLInputElement | null;
   if (!input) return pickFromWidget(spec, el, null, spoken);
 
-  const queries = [spoken.trim(), spoken.split(",")[0]!.trim()].filter((q, i, all) => q && all.indexOf(q) === i);
+  const queries = [spoken.trim(), spoken.split(",")[0]!.trim(), ...distinctiveWords(spoken)].filter(
+    (q, i, all) => q && all.indexOf(q) === i,
+  );
   let lastLabels: string[] = [];
 
   for (const query of queries) {
@@ -528,7 +558,8 @@ async function typeAndPick(spec: FieldSpec, el: HTMLElement, spoken: string): Pr
     }
 
     const labels = candidates.map((o) => (o.innerText ?? "").trim());
-    const index = matchAmong(labels, spoken) ?? matchAmong(labels, query);
+    const whole = query === spoken.trim() || query === spoken.split(",")[0]!.trim();
+    const index = matchAmong(labels, spoken) ?? (whole ? matchAmong(labels, query) : null) ?? everyWordIn(labels, spoken);
     if (index !== null) {
       const chosen = labels[index]!;
       pressOption(candidates[index]!);
@@ -653,7 +684,12 @@ async function writeOne(
     const wanted = String(Array.isArray(spoken.value) ? spoken.value[0] : spoken.value);
 
     // A list that fills in as you type has nothing to match against until something is typed.
-    if (spec.searchable) return typeAndPick(spec, el, wanted);
+    // When it did show choices on opening and the search finds nothing, the refusal below still
+    // names them — "Kolkata" typed into a Country search is still a city, not a country.
+    if (spec.searchable) {
+      const searched = await typeAndPick(spec, el, wanted);
+      if (searched.status !== "rejected-by-page" || !spec.options?.length || searched.wrote !== wanted) return searched;
+    }
 
     const want = matchOption(spec, wanted) ?? optionNamedIn(spec, spoken.evidence);
 
@@ -729,6 +765,24 @@ async function writeOne(
         picked.push(option.label);
       }
       return { fieldId: id, status: "written", wrote: picked.join(", ") };
+    }
+
+    // An ARIA radio group — Google Forms builds every choice question this way. Its answers are
+    // already on the page, so it is pressed like one, not opened like a dropdown: opening it found
+    // no menu, and every choice question on a Google Form came back refused.
+    if (spec.kind === "radio" && el.getAttribute("role") === "radiogroup") {
+      const want = normalise(chosen[0]!.label);
+      const target = deepQueryAll(el, "[role='radio']").find(
+        (radio) =>
+          normalise(radio.getAttribute("aria-label") ?? radio.textContent ?? "") === want ||
+          radio.getAttribute("data-value") === chosen[0]!.value,
+      ) as HTMLElement | undefined;
+      if (!target) return { fieldId: id, status: "refused", reason: "That option is no longer on the page." };
+      if (target.getAttribute("aria-checked") !== "true") target.click();
+      await sleep(30);
+      return target.getAttribute("aria-checked") === "true"
+        ? { fieldId: id, status: "written", wrote: chosen[0]!.label }
+        : { fieldId: id, status: "rejected-by-page", wrote: chosen[0]!.label, found: "" };
     }
 
     if (spec.custom) return pickFromWidget(spec, el, chosen[0]!, wanted.join(", "));

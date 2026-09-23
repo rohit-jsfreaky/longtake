@@ -10,13 +10,18 @@ import { Waveform } from "@/components/Waveform";
 import { useLongtake } from "@/lib/use-longtake";
 import { BrowserChrome } from "./BrowserChrome";
 import { ActsafeMembership } from "./ActsafeMembership";
+import { DiscordApplication } from "./DiscordApplication";
 import { GleanApplication } from "./GleanApplication";
+import { GoogleFormVolunteer } from "./GoogleFormVolunteer";
 
 /**
- * The two real forms on the page, and why each one is here.
+ * The real forms on the page, and why each one is here.
  *
  * Greenhouse is the everyday case: a long job application with component dropdowns whose options
- * do not exist until opened. Jotform is the hard one: a form that shows one question and grows
+ * do not exist until opened. The Discord posting is Greenhouse's harder side: pickers that search
+ * as you type, a phone number with its own country picker, and an Education block with "Add
+ * another". The Google Form has three pages with Next between them, and a Submit that only the
+ * person presses. Jotform is the hard one: a form that shows one question and grows
  * twenty more depending on the answer, with a different set for each answer.
  */
 const FORMS = {
@@ -25,6 +30,18 @@ const FORMS = {
     source: "Greenhouse",
     url: "job-boards.greenhouse.io/gleanwork/jobs/4006731005",
     Form: GleanApplication,
+  },
+  discord: {
+    tab: "Search + add another",
+    source: "Greenhouse · searches as you type",
+    url: "job-boards.greenhouse.io/discord/jobs/8571766002",
+    Form: DiscordApplication,
+  },
+  google: {
+    tab: "Google Form, 3 pages",
+    source: "Google Forms · Next between pages",
+    url: "docs.google.com/forms/d/e/1FAIpQLSe9YP7zfEu01jKJ8IxIa_tjd0GaCoHv9B-nDlX351D-JRnQ9g/viewform",
+    Form: GoogleFormVolunteer,
   },
   actsafe: {
     tab: "Membership form",

@@ -16,9 +16,10 @@
  * test harness.
  */
 
-import { buildClearTool, buildFillTool, validateTool, type VoiceAgentTool } from "./binder";
+import { pressAction, readActions, type ActionsRead } from "./actions";
+import { buildClearTool, buildFillTool, buildPressTool, validateTool, type VoiceAgentTool } from "./binder";
 import { openingLine, phoneFields, summarise, type FormReshape } from "./conversation";
-import { whenSettled } from "./dom-path";
+import { exclusively, whenSettled } from "./dom-path";
 import { checkEvidence, keepOnlyWhatWasSaid } from "./evidence";
 import { snapshot, type FormState } from "./form-state";
 import { gate } from "./gate";
@@ -81,9 +82,9 @@ export class LongtakeSession {
   /** The form as it is right now. The only answer to "what is filled" anywhere in the product. */
   state(): FormState {
     if (!this.current) {
-      return { title: "", fields: [], theirs: [], progress: { filled: 0, total: 0, requiredLeft: 0, optionalLeft: 0 } };
+      return { title: "", fields: [], theirs: [], actions: [], progress: { filled: 0, total: 0, requiredLeft: 0, optionalLeft: 0 } };
     }
-    return snapshot(this.current, this.ledger, this.title);
+    return snapshot(this.current, this.ledger, this.title, this.buttons());
   }
 
   /** What to do next. Offering the optional fields is a one-time move, so it is recorded. */
@@ -100,7 +101,69 @@ export class LongtakeSession {
 
   tools(): VoiceAgentTool[] {
     const specs = this.current?.specs ?? [];
-    return [buildFillTool(specs), buildClearTool(specs)];
+    const press = this.current ? buildPressTool(this.buttons().actions) : null;
+    return press ? [buildFillTool(specs), buildClearTool(specs), press] : [buildFillTool(specs), buildClearTool(specs)];
+  }
+
+  /** The form's buttons as they are right now — read fresh, since a page can rename them. */
+  private buttons(): ActionsRead {
+    return readActions(this.scope(), this.options.ignore);
+  }
+
+  /**
+   * The `press_form_button` tool: "Add another", or "Next" — never a submit button.
+   *
+   * Needs the person's words like everything else. After a Next the form is a new page: the
+   * optional offer is owed again, and the agent gets new tools and a new brief straight away.
+   */
+  async press(args: Record<string, unknown>, heard: string): Promise<Done<Record<string, unknown>>> {
+    const id = typeof args.action === "string" ? args.action : "";
+    const evidence = typeof args.evidence === "string" ? args.evidence : "";
+    if (!checkEvidence(heard, evidence).ok) {
+      return { result: { not_pressed: "quote_not_found", submitted: false }, outcomes: [], spoken: [] };
+    }
+
+    const buttons = this.buttons();
+    const action = buttons.actions.find((a) => a.id === id);
+    const el = buttons.handles.get(id);
+    if (!action || !el) {
+      return { result: { not_pressed: "That button is not on the page.", submitted: false }, outcomes: [], spoken: [] };
+    }
+
+    this.writing = true;
+    let pressed: ReturnType<typeof pressAction>;
+    try {
+      pressed = await exclusively(async () => pressAction(el));
+    } finally {
+      this.writing = false;
+    }
+    if (!pressed.pressed) {
+      return { result: { not_pressed: pressed.reason, submitted: false }, outcomes: [], spoken: [] };
+    }
+
+    const reshaped = await this.pageChanged();
+    // Buttons change even when fields do not — a Next that became Submit on the last page.
+    this.options.onReshape?.();
+
+    // A Next the form refused. Google Forms stays put when a required question is empty and says
+    // so under it; reporting "pressed" there let the agent announce a page that never came.
+    const stayed = action.kind === "next" && !reshaped;
+    if (action.kind === "next" && !stayed) this.plan = { optionalOffered: false };
+
+    const state = this.state();
+    const says = state.fields
+      .filter((f) => f.error)
+      .map((f) => ({ question: f.spec.label, form_says: f.error }));
+    const result = {
+      pressed: action.label,
+      ...(stayed ? { page_did_not_change: true, ...(says.length ? { the_form_says: says } : {}) } : {}),
+      ...(reshaped ? { form_changed: this.changeFacts(reshaped) } : {}),
+      progress: state.progress,
+      do_next: doNext(this.move()),
+      submitted: false,
+    };
+    this.options.onChange?.();
+    return { result, outcomes: [], spoken: [] };
   }
 
   /** Problems with the tools, checked before they are ever sent — the API accepts bad ones silently. */

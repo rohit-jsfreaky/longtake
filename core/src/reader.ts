@@ -95,6 +95,9 @@ const TRAP_NAME = /honey ?pot|\bhp\b|bot ?(field|check|trap)|leave (this )?blank
  */
 const LONG_FORM_MIN_MAXLENGTH = 1000;
 
+/** A typeable dropdown with at least this many choices is searched, not picked from. */
+const SEARCH_NOT_SCROLL = 50;
+
 function textOf(el: Element | null | undefined): string {
   if (!el) return "";
   return ((el as HTMLElement).innerText ?? el.textContent ?? "").replace(/\s+/g, " ").trim();
@@ -155,6 +158,14 @@ function labelOf(el: Element): string {
       .map((id) => textOf(root.querySelector(`#${CSS.escape(id)}`) ?? doc?.getElementById(id)))
       .filter(Boolean)
       .join(" ");
+    // A label that names only a part — Google Forms labels its date box "Date" and puts "Date of
+    // Birth" on the group around it. Two date questions would both be "Date", and neither is
+    // what the person is being asked. The group's name is the question.
+    if (text && PART_ONLY.test(cleanLabel(text))) {
+      const group = el.parentElement?.closest("[aria-labelledby], [aria-label], fieldset");
+      const outer = group ? labelOf(group) : "";
+      if (outer) return outer;
+    }
     if (text) return text;
   }
 
@@ -208,6 +219,12 @@ function labelOf(el: Element): string {
 
   return "";
 }
+
+/** A label that names a piece of an answer rather than the question. */
+const PART_ONLY = /^(date|time|day|month|year|hour|minute|dd|mm|yyyy|hh)$/i;
+
+/** A label ending in an asterisk marks a required question — the web's near-universal convention. */
+const STARRED = /[*✱]\s*$/;
 
 /** `Country*` and `Are you a veteran? *` are the same question. Drop the required marker. */
 function cleanLabel(raw: string): string {
@@ -400,6 +417,12 @@ export function readForm(
   candidates.forEach((el, index) => {
     const tag = el.tagName.toLowerCase();
 
+    // The text box of an "Other:" choice lives inside its radio group. It is part of that answer,
+    // not a question of its own — read as one, the agent asked for "Other response" by name.
+    // Only a text box: native radios inside a role="radiogroup" wrapper are the answers themselves.
+    const typed = tag === "textarea" || (tag === "input" && !/^(radio|checkbox)$/i.test((el as HTMLInputElement).type));
+    if (typed && el.parentElement?.closest("[role='radiogroup']")) return;
+
     if (tag === "input") {
       const type = ((el as HTMLInputElement).type || "text").toLowerCase();
       if (NON_ANSWER_TYPES.has(type)) return;
@@ -413,7 +436,11 @@ export function readForm(
 
     const visible = isVisible(el);
     const kind = kindOf(el);
-    const label = cleanLabel(labelOf(el));
+    const rawLabel = labelOf(el);
+    const label = cleanLabel(rawLabel);
+    // Google Forms sets no `required` and no `aria-required` on a text answer: the only mark is
+    // the asterisk on its question. Read as optional, a required question was never asked.
+    const starred = STARRED.test(rawLabel);
     const name = el.getAttribute("name") ?? "";
 
     // ── Kept out of the schema entirely, rather than flagged inside it ──────────────
@@ -493,7 +520,8 @@ export function readForm(
       id,
       label,
       kind,
-      required: Boolean((el as HTMLInputElement).required) || el.getAttribute("aria-required") === "true",
+      required:
+        Boolean((el as HTMLInputElement).required) || el.getAttribute("aria-required") === "true" || starred,
     };
 
     const selector = uniqueSelector(el, ownerDocumentOf(root));
@@ -729,11 +757,16 @@ async function harvestAll(read: FormRead, settleMs: number): Promise<FormRead> {
 
       // Opened, and nothing to read: a list that fills in as you type — a location, a college.
       // Its answers cannot be offered in advance; they are searched for when written.
+      //
+      // Opened, and a very long list you can type into: searched too. Greenhouse's School picker
+      // opens on the first hundred schools alphabetically, and "IIT Kharagpur" is not among them —
+      // it appears only when typed. Nobody scrolls fifty options by voice, and a list that long in
+      // a box that takes typing may well be one page of a bigger one.
       const typesToSearch =
         el.tagName.toLowerCase() === "input" ||
         Boolean(el.getAttribute("aria-autocomplete")) ||
         Boolean(el.querySelector("input"));
-      if (options.length === 0 && typesToSearch) spec.searchable = true;
+      if (typesToSearch && (options.length === 0 || options.length >= SEARCH_NOT_SCROLL)) spec.searchable = true;
     } catch {
       // A widget that refuses to open is not a crash. The field keeps no options, the binder
       // leaves it as free text, and the agent asks about it out loud instead.

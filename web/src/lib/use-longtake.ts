@@ -22,6 +22,7 @@ import {
   configForField,
   fieldsWorthShaping,
   FILL_TOOL_NAME,
+  PRESS_TOOL_NAME,
   LongtakeSession,
   readHesitation,
   shapeResult,
@@ -88,6 +89,7 @@ const EMPTY_FORM: FormState = {
   title: "",
   fields: [],
   theirs: [],
+  actions: [],
   progress: { filled: 0, total: 0, requiredLeft: 0, optionalLeft: 0 },
 };
 
@@ -396,6 +398,8 @@ export function useLongtake({
         }
         return done.result;
       }
+
+      if (name === PRESS_TOOL_NAME) return (await current.press(args, heard())).result;
 
       return { error: `Unknown tool "${name}".` };
     },
