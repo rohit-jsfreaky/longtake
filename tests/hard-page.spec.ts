@@ -133,9 +133,15 @@ test.describe("the hard page, read", () => {
 
   // The page's clock is held, so "before the field arrives" is a fact of the test and not a race
   // with the machine: on a slow CI runner the 350 ms timer had already fired by the first read.
+  // `clock.install()` alone keeps time running — only `pauseAt` stops it, and only at a time still
+  // ahead of the running clock (so a second ahead: the page has no timers yet to skip). The
+  // one-second real wait is a slow runner, on purpose: the field must still not be there.
   test("4. a field that arrives late is missed by an immediate read", async ({ page }) => {
-    await page.clock.install();
+    const start = new Date("2026-01-01T00:00:00Z");
+    await page.clock.install({ time: start });
+    await page.clock.pauseAt(new Date(start.getTime() + 1000));
     await load(page, HARD);
+    await page.waitForTimeout(1000);
     const current = async () => (await read(page)).specs.some((s) => s.label === "Current employer");
     expect(await current()).toBe(false);
     await page.clock.runFor(400);
