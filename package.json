@@ -11,12 +11,18 @@
     "dev": "npm run dev --workspace web",
     "build": "npm run build --workspace web",
     "lint": "npm run lint --workspace web",
-    "typecheck": "tsc --noEmit -p core && tsc --noEmit -p web && tsc --noEmit -p extension",
+    "typecheck": "tsc --noEmit -p core && tsc --noEmit -p web && tsc --noEmit -p extension && tsc --noEmit -p tools",
     "build:probe": "esbuild tools/probe.ts --bundle --format=iife --target=es2020 --outfile=web/public/probe.js",
-    "test": "npm run build:probe && npm run build:extension && playwright test",
+    "test": "npm run build:probe && npm run build:extension && playwright test --project chrome",
     "test:ui": "npm run build:probe && playwright test --ui",
     "probe:agent": "esbuild tools/agent-probe.ts --bundle --format=esm --platform=node --outfile=.probe/agent-probe.mjs && node .probe/agent-probe.mjs",
-    "build:extension": "node tools/build-extension.mjs"
+    "build:extension": "node tools/build-extension.mjs",
+    "corpus:build": "esbuild tools/corpus/cli.ts --bundle --format=esm --platform=node --packages=external --outfile=.probe/corpus.mjs",
+    "corpus:capture": "npm run corpus:build --silent && node .probe/corpus.mjs capture",
+    "corpus:seed": "npm run corpus:build --silent && node .probe/corpus.mjs seed",
+    "corpus:check": "npm run corpus:build --silent && node .probe/corpus.mjs check",
+    "corpus": "npm run build:probe && playwright test --project corpus",
+    "corpus:review": "npm run corpus:build --silent && node .probe/corpus.mjs review"
   },
   "devDependencies": {
     "@playwright/test": "^1.63.0",

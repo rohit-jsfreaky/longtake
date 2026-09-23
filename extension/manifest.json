@@ -3,6 +3,19 @@
   "name": "Longtake — the whole form, in one take",
   "version": "0.2.0",
   "description": "Speak once, like telling a friend, and the whole form fills. It asks out loud only for what you did not cover.",
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+  "action": {
+    "default_title": "Longtake — fill this form by voice",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png"
+    }
+  },
   "permissions": [
     "activeTab",
     "scripting",
@@ -16,6 +29,10 @@
   ],
   "background": {
     "service_worker": "background.js"
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
   },
   "content_scripts": [
     {

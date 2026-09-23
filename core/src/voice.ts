@@ -21,42 +21,28 @@ const TARGET_SAMPLE_RATE = 24000;
 /** The API wants ~50 ms per `input.audio` frame. A raw worklet quantum is ~2.7 ms, so we batch. */
 const SAMPLES_PER_CHUNK = TARGET_SAMPLE_RATE / 20; // 1200 samples = 50 ms
 
-export type TurnDetection = {
-  vad_threshold: number;
-  min_silence: number;
-  max_silence: number;
-  interrupt_response: boolean;
-};
+/**
+ * How patient the agent is before deciding a turn is over — the one knob AssemblyAI says to reach
+ * for (docs: voice-agent-api/turn-detection-and-interruptions, "Transcription mode").
+ *
+ * We used to set the raw VAD thresholds instead (3.5 s of silence, a 0.5 threshold) and switch
+ * them mid-call. The docs call those a last resort, and say to leave turn detection on its
+ * default: semantic end-of-turn, and semantic barge-in — "wait, stop" interrupts, "uh-huh" does
+ * not. Overriding it is why stopping the agent mid-sentence did not work well: live, a person
+ * could not cut in to say something.
+ */
+export type TranscriptionMode = "min_latency" | "balanced" | "max_accuracy";
 
 /**
- * Longtake is dictation, not chit-chat: one long breath with real pauses inside it.
- * AssemblyAI's guidance is 1800–2200 ms for this kind of speech, against a 1400 ms
- * conversational baseline.
- *
- * We run higher than their range, and it is measured rather than guessed. In the first live
- * test a single sentence — English, then a ~3.0 s pause, then Hindi — was split into two turns
- * at 2000 ms, and the agent began replying while the speaker was still mid-thought. A person
- * recalling their own address or last employer pauses for longer than a person chatting.
+ * While the person gives their one long take: the most patient mode. A person recalling their
+ * last employer pauses longer than a person chatting, and "waits longest to confirm the end of a
+ * turn" is exactly that.
  */
-export const LONG_TAKE_TURN_DETECTION: TurnDetection = {
-  vad_threshold: 0.5,
-  min_silence: 3500,
-  max_silence: 6000,
-  interrupt_response: true,
-};
+export const LONG_TAKE_MODE: TranscriptionMode = "max_accuracy";
 
-/**
- * The other mode: an ordinary back-and-forth, for the questions after the long take.
- *
- * AssemblyAI's own recommended baseline. Once the agent is asking one short question at a time,
- * a three-and-a-half-second wait stops reading as thinking room and starts reading as a hang.
- */
-export const CONVERSATION_TURN_DETECTION: TurnDetection = {
-  vad_threshold: 0.5,
-  min_silence: 1400,
-  max_silence: 4000,
-  interrupt_response: true,
-};
+/** Once the questions are short: the default middle ground, so answers come back quickly. */
+export const CONVERSATION_MODE: TranscriptionMode = "balanced";
+
 
 /**
  * Hinglish is the demo, so we steer speech-to-text toward English and Hindi.
@@ -140,7 +126,8 @@ export type VoiceSessionOptions = {
   systemPrompt: string;
   greeting: string;
   voice?: string;
-  turnDetection?: TurnDetection;
+  /** How patient to be before a turn ends. Defaults to the long-take mode. */
+  transcriptionMode?: TranscriptionMode;
   /** Languages to steer transcription toward. Omit for automatic detection across all 18. */
   languageCodes?: string[];
   /** Tools the agent may call, built at runtime by `binder.ts` from the form on screen. */
@@ -190,8 +177,8 @@ export type VoiceSessionOptions = {
 export type VoiceSession = {
   /** Sends `session.end` first so we don't pay for the 30-second resume grace window. */
   stop: () => Promise<void>;
-  /** Switch turn detection mid-call (`input.turn_detection` is mutable). */
-  setTurnDetection: (turnDetection: TurnDetection) => void;
+  /** Switch how patient the agent is, mid-call (`input.transcription_mode` is mutable). */
+  setTranscriptionMode: (mode: TranscriptionMode) => void;
   /** Replace the tool list — `session.tools` replaces, it does not merge. */
   setTools: (tools: unknown[]) => void;
   /** Replace the system prompt mid-call. */
@@ -264,7 +251,7 @@ export async function startVoiceSession(options: VoiceSessionOptions): Promise<V
     onResultsSent,
     onToolCall,
   } = options;
-  let turnDetection = options.turnDetection ?? LONG_TAKE_TURN_DETECTION;
+  let transcriptionMode = options.transcriptionMode ?? LONG_TAKE_MODE;
 
   // No `mediaDevices` at all: either a page served over plain http (browsers hide it there) or a
   // browser that cannot record. Said before anything is opened.
@@ -518,7 +505,8 @@ export async function startVoiceSession(options: VoiceSessionOptions): Promise<V
     greeting: config.greeting,
     input: {
       format: { encoding: "audio/pcm" },
-      turn_detection: turnDetection,
+      // No `turn_detection`: its defaults are the semantic end-of-turn and barge-in.
+      transcription_mode: transcriptionMode,
       ...(languageCodes.length > 0 ? { language_codes: languageCodes } : {}),
     },
     output: { voice, format: { encoding: "audio/pcm" }, volume: 100 },
@@ -707,9 +695,9 @@ export async function startVoiceSession(options: VoiceSessionOptions): Promise<V
   await connect("first", token);
 
   return {
-    setTurnDetection: (next: TurnDetection) => {
-      turnDetection = next; // remembered, so a new session after a drop keeps the same timing
-      send({ type: "session.update", session: { input: { turn_detection: next } } });
+    setTranscriptionMode: (next: TranscriptionMode) => {
+      transcriptionMode = next; // remembered, so a new session after a drop keeps the same pace
+      send({ type: "session.update", session: { input: { transcription_mode: next } } });
     },
     setTools: (next: unknown[]) => {
       send({ type: "session.update", session: { tools: next } });

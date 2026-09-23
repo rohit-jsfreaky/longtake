@@ -1,0 +1,350 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Corpus review</title>
+<link rel="icon" href="data:,">
+<style>
+  :root {
+    --bg: #f6f6f4;
+    --panel: #ffffff;
+    --ink: #1d1d1b;
+    --muted: #6b6b66;
+    --line: #e3e2dd;
+    --accent: #2f5bd3;
+    --accent-soft: #e8eefc;
+    --warn: #a86a00;
+    --warn-soft: #fdf3dc;
+    --ok: #1f7a4d;
+    --ok-soft: #e3f4ea;
+    --radius: 8px;
+    --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+    font: 13px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    color: var(--ink);
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); }
+
+  header {
+    position: sticky; top: 0; z-index: 5;
+    display: flex; align-items: center; gap: 12px;
+    padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--line);
+  }
+  header h1 { font-size: 15px; margin: 0; font-weight: 600; }
+  header a { color: var(--muted); font-size: 12px; text-decoration: none; max-width: 36ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  header a:hover { color: var(--accent); }
+  .chip { font-size: 11px; padding: 2px 8px; border-radius: 99px; background: var(--bg); color: var(--muted); white-space: nowrap; }
+  .chip.ok { background: var(--ok-soft); color: var(--ok); }
+  .chip.warn { background: var(--warn-soft); color: var(--warn); }
+  .spacer { flex: 1; }
+  #status { color: var(--muted); font-size: 12px; }
+  button {
+    font: inherit; border: 1px solid var(--line); background: var(--panel); color: var(--ink);
+    padding: 6px 12px; border-radius: 6px; cursor: pointer;
+    transition: transform 160ms var(--ease-out), background-color 160ms ease;
+  }
+  button:hover { background: var(--bg); }
+  button:active { transform: scale(0.97); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.primary:hover { background: #2549b0; }
+  button.quiet { border-color: transparent; color: var(--muted); padding: 4px 8px; white-space: nowrap; }
+
+  main { display: grid; grid-template-columns: minmax(320px, 44%) 1fr; gap: 0; }
+  #shot-pane { position: sticky; top: 49px; height: calc(100vh - 49px); overflow: auto; border-right: 1px solid var(--line); background: #fff; }
+  #shot { position: relative; }
+  #shot img { display: block; width: 100%; }
+  .box {
+    position: absolute; border: 2px solid var(--accent); border-radius: 3px; cursor: pointer;
+    background: rgba(47, 91, 211, 0.06);
+    transition: background-color 150ms ease, border-color 150ms ease;
+  }
+  /* Inside, at the right end: the empty end of the input, never the label a person reads. */
+  .box span {
+    position: absolute; right: 2px; top: 50%; transform: translateY(-50%); font: 600 10px/16px ui-monospace, monospace;
+    background: var(--accent); color: #fff; padding: 0 5px; border-radius: 3px;
+  }
+  .box.hot { background: rgba(47, 91, 211, 0.22); }
+  .box.hidden-field { border-style: dashed; border-color: var(--warn); }
+  .box.hidden-field span { background: var(--warn); }
+
+  #fields { padding: 16px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+  #problems { display: none; border: 1px solid #e9d08f; background: var(--warn-soft); color: #5c3b00; border-radius: var(--radius); padding: 10px 14px; }
+  #problems.show { display: block; }
+  #problems ul { margin: 4px 0 0; padding-left: 18px; }
+
+  .card {
+    background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 12px;
+    display: flex; flex-direction: column; gap: 8px;
+    transition: border-color 150ms ease, box-shadow 200ms var(--ease-out);
+  }
+  .card.hot { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  .row { display: flex; align-items: center; gap: 8px; }
+  .num { font: 600 11px/20px ui-monospace, monospace; min-width: 26px; text-align: center; background: var(--accent); color: #fff; border-radius: 4px; }
+  .key { font: 11px ui-monospace, monospace; color: var(--muted); }
+  .ax { color: var(--muted); font-size: 11.5px; overflow-wrap: anywhere; }
+  .grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+  label.f { display: flex; flex-direction: column; gap: 2px; font-size: 11px; color: var(--muted); min-width: 0; }
+  label.c { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--ink); white-space: nowrap; }
+  input[type=text], select, textarea {
+    font: inherit; color: var(--ink); background: #fff; border: 1px solid var(--line); border-radius: 6px; padding: 5px 7px; width: 100%; min-width: 0;
+  }
+  input[type=text]:focus, select:focus, textarea:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
+  .question { font-size: 14px; font-weight: 500; }
+  textarea { resize: vertical; font: 12px/1.4 ui-monospace, monospace; }
+  .checks { display: flex; flex-wrap: wrap; gap: 14px; }
+  h2 { font-size: 13px; margin: 14px 0 0; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+
+  @media (max-width: 900px) {
+    main { grid-template-columns: 1fr; }
+    #shot-pane { position: static; height: 50vh; }
+    .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title">…</h1>
+  <a id="url" target="_blank" rel="noreferrer"></a>
+  <span id="chips"></span>
+  <span class="spacer"></span>
+  <span id="status"></span>
+  <button id="save">Save</button>
+  <button id="verify" class="primary">Mark verified</button>
+</header>
+<main>
+  <div id="shot-pane"><div id="shot"><img id="img" src="/shot.png" alt="The form as captured"></div></div>
+  <div id="fields">
+    <div id="problems"></div>
+    <div id="cards"></div>
+    <h2>This page</h2>
+    <div class="card">
+      <label class="f">The submit button (never pressed)<input type="text" id="submit"></label>
+      <label class="f">Other buttons — one per line, <code>label | next</code> or <code>label | add-another</code><textarea id="actions" rows="3"></textarea></label>
+      <label class="f">Page context must contain — one phrase per line<textarea id="context" rows="3"></textarea></label>
+      <label class="f">Fill plan (JSON)<textarea id="plan" rows="6"></textarea></label>
+    </div>
+  </div>
+</main>
+<script>
+const KINDS = ["text", "textarea", "email", "tel", "url", "number", "date", "select", "radio", "checkbox", "multiselect", "file"];
+const SUBJECTS = ["self", "other_person", "organization", "none"];
+const SCOPES = ["remember", "this_form", "sensitive", "never"];
+const CHOICE_KINDS = ["select", "radio", "multiselect"];
+
+let data, truth, dirty = false;
+const $ = (id) => document.getElementById(id);
+const el = (tag, props = {}, ...children) => {
+  const node = Object.assign(document.createElement(tag), props);
+  for (const child of children) if (child != null) node.append(child);
+  return node;
+};
+const where = (locator) => [...locator.frames, ...locator.path].join(" | ");
+
+function setDirty(value) {
+  dirty = value;
+  $("status").textContent = value ? "Unsaved changes" : truth.verified ? "" : "Saved, not verified";
+}
+
+function chips() {
+  const { meta } = data;
+  const verified = truth.verified
+    ? el("span", { className: "chip ok", textContent: `verified by ${truth.verified.by}, ${truth.verified.at.slice(0, 10)}` })
+    : el("span", { className: "chip warn", textContent: "not verified" });
+  $("chips").replaceChildren(
+    el("span", { className: "chip", textContent: meta.category }), " ",
+    el("span", { className: "chip", textContent: meta.platform }), " ",
+    el("span", { className: meta.fillable ? "chip" : "chip warn", textContent: meta.fillable ? "replays offline" : "read-only: replay broken" }), " ",
+    verified,
+  );
+}
+
+/** The screenshot area a field covers — a whole radio group, not just its first choice. */
+function boxOf(field) {
+  const controls = data.ax.controls;
+  const control = controls.find((c) => where(c.locator) === where(field.locator));
+  if (!control || !control.box) return null;
+  let members = [control];
+  if (control.role === "radiogroup") {
+    const key = "rg:" + control.locator.path.join(" >> ");
+    members = members.concat(controls.filter((c) => c.group && c.group.key === key));
+  } else if (control.group) {
+    members = controls.filter((c) => c.group && c.group.key === control.group.key);
+  }
+  const boxes = members.map((c) => c.box).filter((b) => b && b.w > 0 && b.h > 0);
+  if (boxes.length === 0) return { ...control.box, hidden: true };
+  const x = Math.min(...boxes.map((b) => b.x)), y = Math.min(...boxes.map((b) => b.y));
+  const r = Math.max(...boxes.map((b) => b.x + b.w)), b = Math.max(...boxes.map((b) => b.y + b.h));
+  return { x, y, w: r - x, h: b - y };
+}
+
+function hot(key, on, scroll) {
+  const box = document.querySelector(`.box[data-key="${key}"]`);
+  const card = document.querySelector(`.card[data-key="${key}"]`);
+  box?.classList.toggle("hot", on);
+  card?.classList.toggle("hot", on);
+  if (on && scroll === "box" && box) box.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  if (on && scroll === "card" && card) card.scrollIntoView({ block: "center", behavior: "smooth" });
+}
+
+function drawBoxes() {
+  const img = $("img");
+  if (!truth || !img.naturalWidth) return; // whichever of the two arrives second draws them
+  const scaleX = 100 / img.naturalWidth, scaleY = 100 / img.naturalHeight;
+  const layer = $("shot");
+  layer.querySelectorAll(".box").forEach((b) => b.remove());
+  truth.pages[0].fields.forEach((field, i) => {
+    const box = boxOf(field);
+    if (!box) return;
+    const node = el("div", { className: "box" + (box.hidden || field.honeypot ? " hidden-field" : "") }, el("span", { textContent: i + 1 }));
+    node.dataset.key = field.key;
+    Object.assign(node.style, {
+      left: box.x * scaleX + "%", top: box.y * scaleY + "%",
+      width: Math.max(box.w, 12) * scaleX + "%", height: Math.max(box.h, 12) * scaleY + "%",
+    });
+    node.onmouseenter = () => hot(field.key, true);
+    node.onmouseleave = () => hot(field.key, false);
+    node.onclick = () => hot(field.key, true, "card");
+    layer.append(node);
+  });
+}
+
+function input(value, onChange, props = {}) {
+  const node = el("input", { type: "text", value: value ?? "", ...props });
+  node.oninput = () => { onChange(node.value); setDirty(true); };
+  return node;
+}
+function choose(options, value, onChange) {
+  const node = el("select", {}, ...options.map((o) => el("option", { value: o, textContent: o, selected: o === value })));
+  node.onchange = () => { onChange(node.value); setDirty(true); render(); };
+  return node;
+}
+function check(text, value, onChange) {
+  const box = el("input", { type: "checkbox", checked: !!value });
+  box.onchange = () => { onChange(box.checked); setDirty(true); drawBoxes(); };
+  return el("label", { className: "c" }, box, text);
+}
+const labelled = (text, control) => el("label", { className: "f" }, text, control);
+const optional = (field, name) => (value) => { if (value.trim()) field[name] = value.trim(); else delete field[name]; };
+
+function card(field, i) {
+  const node = el("div", { className: "card" });
+  node.dataset.key = field.key;
+  node.onmouseenter = () => hot(field.key, true, "box");
+  node.onmouseleave = () => hot(field.key, false);
+
+  const remove = el("button", { className: "quiet", textContent: "Not a field", title: "Remove it from the truth" });
+  remove.onclick = () => { truth.pages[0].fields.splice(i, 1); setDirty(true); render(); };
+  node.append(el("div", { className: "row" },
+    el("span", { className: "num", textContent: i + 1 }),
+    input(field.question, (v) => (field.question = v), { className: "question", placeholder: "The question a person reads" }),
+    el("span", { className: "key", textContent: field.key }),
+    remove,
+  ));
+
+  const via = field.axNameSource ? ` via ${field.axNameSource}` : "";
+  node.append(el("div", { className: "ax", textContent: `Chrome: ${field.axRole} “${field.axName || "(no name)"}”${via}` }));
+
+  node.append(el("div", { className: "grid" },
+    labelled("Kind", choose(KINDS, field.kind, (v) => (field.kind = v))),
+    labelled("Whose", choose(SUBJECTS, field.subject, (v) => (field.subject = v))),
+    labelled("Keep it", choose(SCOPES, field.scope, (v) => (field.scope = v))),
+    labelled("Concept", input(field.concept, (v) => (field.concept = v.trim()), { placeholder: "e.g. email, phone" })),
+    labelled("Part", input(field.part, optional(field, "part"), { placeholder: "e.g. country_code" })),
+    labelled("Role", input(field.role, optional(field, "role"), { placeholder: "e.g. emergency_contact" })),
+    labelled("Section", input(field.section, optional(field, "section"))),
+  ));
+
+  if (CHOICE_KINDS.includes(field.kind) || field.options) {
+    field.options ??= { labels: [], complete: true, searchable: false, multi: field.kind === "multiselect" };
+    const options = field.options;
+    const list = el("textarea", { rows: Math.min(8, Math.max(2, options.labels.length)), value: options.labels.join("\n") });
+    list.oninput = () => { options.labels = list.value.split("\n").map((s) => s.trim()).filter(Boolean); setDirty(true); };
+    node.append(labelled(`Choices (${options.labels.length}) — one per line, as the page words them`, list));
+    node.append(el("div", { className: "checks" },
+      check("That is every choice", options.complete, (v) => (options.complete = v)),
+      check("Choices appear as you type", options.searchable, (v) => (options.searchable = v)),
+      check("More than one allowed", options.multi, (v) => (options.multi = v)),
+    ));
+  }
+
+  node.append(el("div", { className: "checks" },
+    check("Required", field.required, (v) => (field.required = v)),
+    check("Long answer", field.longForm, (v) => (field.longForm = v)),
+    check("Honeypot — a person never sees it", field.honeypot, (v) => (field.honeypot = v)),
+  ));
+  return node;
+}
+
+function render() {
+  const page = truth.pages[0];
+  $("cards").replaceChildren(...page.fields.map(card));
+  drawBoxes();
+  chips();
+}
+
+function fillPageBox() {
+  const page = truth.pages[0];
+  $("submit").value = page.submit ?? "";
+  $("actions").value = page.actions.map((a) => `${a.label} | ${a.kind}`).join("\n");
+  $("context").value = (truth.pageContext?.mustContain ?? []).join("\n");
+  $("plan").value = JSON.stringify(truth.fillPlan, null, 2);
+  for (const id of ["submit", "actions", "context", "plan"]) $(id).oninput = () => setDirty(true);
+}
+
+function readPageBox() {
+  const page = truth.pages[0];
+  const submit = $("submit").value.trim();
+  if (submit) page.submit = submit; else delete page.submit;
+  page.actions = $("actions").value.split("\n").map((line) => line.split("|").map((s) => s.trim())).filter(([label]) => label)
+    .map(([label, kind]) => ({ label, kind: kind === "add-another" ? "add-another" : "next" }));
+  const phrases = $("context").value.split("\n").map((s) => s.trim()).filter(Boolean);
+  if (phrases.length) truth.pageContext = { mustContain: phrases }; else delete truth.pageContext;
+  truth.fillPlan = JSON.parse($("plan").value || "[]");
+}
+
+async function save(verify) {
+  const problems = $("problems");
+  try {
+    readPageBox();
+  } catch (e) {
+    problems.replaceChildren("The fill plan is not valid JSON: " + e.message);
+    problems.classList.add("show");
+    return;
+  }
+  const res = await fetch("/api/truth", { method: "PUT", body: JSON.stringify({ truth, verify }) });
+  const body = await res.json();
+  if (!res.ok) {
+    problems.replaceChildren(el("strong", { textContent: "Not saved:" }), el("ul", {}, ...body.problems.map((p) => el("li", { textContent: p }))));
+    problems.classList.add("show");
+    return;
+  }
+  problems.classList.remove("show");
+  truth = body.truth;
+  setDirty(false);
+  $("status").textContent = verify ? "Verified" : "Saved, not verified";
+  render();
+}
+
+$("save").onclick = () => save(false);
+$("verify").onclick = () => save(true);
+$("img").onload = drawBoxes;
+window.addEventListener("beforeunload", (event) => { if (dirty) event.preventDefault(); });
+window.addEventListener("keydown", (event) => {
+  if ((event.ctrlKey || event.metaKey) && event.key === "s") { event.preventDefault(); save(false); }
+});
+
+fetch("/api/form").then((r) => r.json()).then((got) => {
+  data = got;
+  truth = got.truth;
+  document.title = `Review · ${got.meta.id}`;
+  $("title").textContent = got.meta.id;
+  $("url").textContent = got.meta.url;
+  $("url").href = got.meta.url;
+  fillPageBox();
+  render();
+  setDirty(false);
+});
+</script>
+</body>
+</html>

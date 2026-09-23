@@ -58,7 +58,11 @@ import type {
   VoiceStartError,
   nextReconnect,
   resumeLine,
+  matchOption,
+  Conductor,
 } from "@longtake/core";
+import type { FakeVoice } from "../tools/replay/fake-voice";
+import type { runScript } from "../tools/replay/run-script";
 
 declare global {
   interface Window {
@@ -122,6 +126,10 @@ declare global {
       VoiceStartError: typeof VoiceStartError;
       nextReconnect: typeof nextReconnect;
       resumeLine: typeof resumeLine;
+      matchOption: typeof matchOption;
+      Conductor: typeof Conductor;
+      FakeVoice: typeof FakeVoice;
+      runScript: typeof runScript;
       inspect: () => unknown;
       inspectDeep: () => Promise<unknown>;
       last?: ReturnType<typeof readForm>;

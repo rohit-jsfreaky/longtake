@@ -39,6 +39,13 @@ hackathon.md
 # Useful locally, not ours to republish.
 /docs/assemblyai/
 
+# ───────────────────── the corpus lives in a private repo ─────────────────────
+# Captured copies of other organisations' forms (pages, their JavaScript, their
+# accessibility trees). They are cloned here from the private `longtake-corpus`
+# repo and must never be committed to this public one.
+/corpus/
+/corpus-results/
+
 # ───────────────────────── tooling scratch ─────────────────────────
 .playwright-mcp/
 

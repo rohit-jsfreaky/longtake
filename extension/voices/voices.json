@@ -1,0 +1,46 @@
+[
+  {
+    "id": "charles",
+    "accent": "British"
+  },
+  {
+    "id": "anna",
+    "accent": "British"
+  },
+  {
+    "id": "paul",
+    "accent": "British"
+  },
+  {
+    "id": "vera",
+    "accent": "British"
+  },
+  {
+    "id": "alba",
+    "accent": "American"
+  },
+  {
+    "id": "eve",
+    "accent": "American"
+  },
+  {
+    "id": "george",
+    "accent": "American"
+  },
+  {
+    "id": "jane",
+    "accent": "American"
+  },
+  {
+    "id": "jean",
+    "accent": "American"
+  },
+  {
+    "id": "mary",
+    "accent": "American"
+  },
+  {
+    "id": "michael",
+    "accent": "American"
+  }
+]

@@ -206,8 +206,22 @@ export function deepQueryAll(root: Document | ShadowRoot | Element, selector: st
  *
  * Deliberately strict. An input that a person cannot see is either decoration or a trap, and
  * Longtake must not type into either.
+ *
+ * One exception, and it is the standard accessible way to style a choice: the native checkbox or
+ * radio is shrunk to a 1-pixel, transparent, clipped box, and its `<label>` is drawn as the box a
+ * person sees and clicks. Jotform does this on every checkbox and radio. The control is on
+ * screen — through its label — so it is visible when that label is. A honeypot's label is hidden
+ * with it, or it has none. Only for checkables: a text box whose label shows still hides what you
+ * type into it.
  */
 export function isVisible(el: Element): boolean {
+  if (paintedOnScreen(el)) return true;
+  const input = el as HTMLInputElement;
+  if (el.localName !== "input" || (input.type !== "checkbox" && input.type !== "radio")) return false;
+  return Array.from(input.labels ?? []).some((label) => paintedOnScreen(label));
+}
+
+function paintedOnScreen(el: Element): boolean {
   const html = el as HTMLElement;
   if (!html.isConnected) return false;
 

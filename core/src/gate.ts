@@ -66,13 +66,16 @@ export function gate(spec: FieldSpec, claim: SpokenValue, held?: Pending): GateV
   const evidence = claim.evidence ?? "";
   const value = Array.isArray(claim.value) ? claim.value.join(", ") : String(claim.value);
 
-  // ── Their yes to something we were holding ──────────────────────────────────────
-  if (held) {
-    const agreed = MEANS_YES.test(evidence) && !MEANS_NO.test(evidence);
-    if (held.reason === "not_named" && agreed && sameText(value, held.suggestion)) return { write: true };
-    // A hedge is settled by any answer that is not itself hedged.
-    if (held.reason === "hedged" && !hedged(spec, evidence)) return { write: true };
-  }
+  // ── Something we were holding ──────────────────────────────────────
+  // A yes to an offered answer is NOT recognised here. It used to be, by a list of yes-words, and
+  // live it failed four times running: "do it", "do that", "kar do" were on no list, the answer
+  // never went in, and the agent was left insisting it was still waiting. What counts as agreeing
+  // is language, and language is the model's job: it hears the reply and calls `confirm_answer`
+  // (session.ts) with agreed true or false and the person's words. Code only checks those words
+  // were really said.
+  //
+  // A hedge is different: it is settled by any answer that is not itself hedged.
+  if (held?.reason === "hedged" && !hedged(spec, evidence)) return { write: true };
 
   // ── Choices: the person has to have named the option ─────────────────────────────
   if (isChoice(spec) && spec.options?.length) {
@@ -92,11 +95,18 @@ export function gate(spec: FieldSpec, claim: SpokenValue, held?: Pending): GateV
   }
 
   // ── Everything else: a hedged number waits ───────────────────────────────────────
-  if (hedged(spec, evidence) && /\d/.test(value)) {
+  // Not in a long answer. "I've used Discord for about five years" in a paragraph is a sentence,
+  // not an unsure number — and holding the whole answer for a yes left "why do you want to work
+  // here?" empty while the agent said "got it".
+  if (!isLongAnswer(spec) && hedged(spec, evidence) && /\d/.test(value)) {
     return { write: false, pending: { suggestion: value, heard: evidence, reason: "hedged" } };
   }
 
   return { write: true };
+}
+
+function isLongAnswer(spec: FieldSpec): boolean {
+  return Boolean(spec.longForm);
 }
 
 function hedged(spec: FieldSpec, evidence: string): boolean {

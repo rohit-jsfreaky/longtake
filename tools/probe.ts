@@ -64,8 +64,12 @@ import {
   VoiceStartError,
   nextReconnect,
   resumeLine,
+  matchOption,
+  Conductor,
   CORE_VERSION,
 } from "@longtake/core";
+import { FakeVoice } from "./replay/fake-voice";
+import { runScript } from "./replay/run-script";
 
 declare global {
   interface Window {
@@ -129,6 +133,10 @@ declare global {
       VoiceStartError: typeof VoiceStartError;
       nextReconnect: typeof nextReconnect;
       resumeLine: typeof resumeLine;
+      matchOption: typeof matchOption;
+      Conductor: typeof Conductor;
+      FakeVoice: typeof FakeVoice;
+      runScript: typeof runScript;
       /** Read, then open every dropdown to learn its real choices. */
       inspectDeep: () => Promise<unknown>;
       /** The live read, kept so a fill can reuse the same element handles. */
@@ -199,6 +207,10 @@ window.__longtake = {
   VoiceStartError,
   nextReconnect,
   resumeLine,
+  matchOption,
+  Conductor,
+  FakeVoice,
+  runScript,
   inspect: () => {
     const read = readForm();
     window.__longtake.last = read;

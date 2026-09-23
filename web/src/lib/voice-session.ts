@@ -13,12 +13,12 @@ import {
 } from "@longtake/core";
 
 export {
-  CONVERSATION_TURN_DETECTION,
+  CONVERSATION_MODE,
   HINGLISH_LANGUAGES,
-  LONG_TAKE_TURN_DETECTION,
+  LONG_TAKE_MODE,
   VoiceStartError,
   type AgentMessage,
-  type TurnDetection,
+  type TranscriptionMode,
   type VoiceSession,
 } from "@longtake/core";
 

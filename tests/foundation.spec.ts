@@ -107,11 +107,16 @@ async function snap(page: Page): Promise<Snap> {
   });
 }
 
-async function call(page: Page, tool: "fill" | "clear", args: unknown, heard: string) {
+async function call(page: Page, tool: "fill" | "clear" | "confirm", args: unknown, heard: string) {
   return page.evaluate(
     async ([t, a, h]) => {
       const s = (window as unknown as { __s: InstanceType<typeof window.__longtake.LongtakeSession> }).__s;
-      const done = t === "fill" ? await s.fill(a as never, h as string) : await s.clear(a as never, h as string);
+      const done =
+        t === "fill"
+          ? await s.fill(a as never, h as string)
+          : t === "confirm"
+            ? await s.confirm(a as never, h as string)
+            : await s.clear(a as never, h as string);
       return done.result as Record<string, unknown>;
     },
     [tool, args, heard] as const,
@@ -266,9 +271,12 @@ test.describe("the gate — nothing goes in that they did not clearly say", () =
     expect(v.pending).toMatchObject({ suggestion: "Social Media", reason: "not_named" });
   });
 
-  test("and goes in when they say yes", async ({ page }) => {
+  // A yes is not recognised by words any more — the model judges the reply and says so through
+  // confirm_answer (see live-run.spec.ts). Sending the same answer again, with a yes-word in it,
+  // keeps it waiting: live, "do it" four times over was on no list and nothing ever went in.
+  test("the same answer sent again, even with 'haan', still waits — the yes is confirm_answer's", async ({ page }) => {
     const held = { suggestion: "Social Media", heard: "I heard from Twitter", reason: "not_named" };
-    expect((await verdict(page, heard, { fieldId: "heard", value: "Social Media", evidence: "haan, that one" }, held)).write).toBe(true);
+    expect((await verdict(page, heard, { fieldId: "heard", value: "Social Media", evidence: "haan, that one" }, held)).write).toBe(false);
   });
 
   test("a no does not release it", async ({ page }) => {
@@ -329,7 +337,7 @@ test.describe("the session — the whole loop, through the foundation", () => {
   test("their yes puts it in", async ({ page }) => {
     await open(page);
     await call(page, "fill", { how_did_you_hear_about_glean: { value: "Social Media", evidence: "I heard from Twitter" } }, "I heard from Twitter");
-    const result = await call(page, "fill", { how_did_you_hear_about_glean: { value: "Social Media", evidence: "yes that one" } }, "I heard from Twitter\nyes that one");
+    const result = await call(page, "confirm", { field: "how_did_you_hear_about_glean", agreed: true, evidence: "haan wahi kar do" }, "I heard from Twitter\nhaan wahi kar do");
     expect(result.just_filled).toEqual([expect.objectContaining({ field: "how_did_you_hear_about_glean", value: "Social Media" })]);
     expect(await page.textContent("#heard")).toBe("Social Media");
   });
@@ -337,7 +345,8 @@ test.describe("the session — the whole loop, through the foundation", () => {
   test("a required field left empty is the next move, easy ones first", async ({ page }) => {
     await open(page);
     const s = await snap(page);
-    expect(s.brief).toMatch(/DO NEXT: Ask for First Name/);
+    // Several at once now, easy ones first — not one question per turn.
+    expect(s.brief).toMatch(/DO NEXT: Ask for these together[^\n]*First Name/);
   });
 
   test("the optional ones are offered once the required ones are in", async ({ page }) => {

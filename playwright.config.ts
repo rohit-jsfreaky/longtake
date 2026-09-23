@@ -42,5 +42,12 @@ export default defineConfig({
     trace: process.env.CI ? "retain-on-failure" : "off",
   },
 
-  projects: [{ name: "chrome" }],
+  projects: [
+    { name: "chrome", testIgnore: /corpus[\\/]/ },
+    /**
+     * Real forms, replayed offline from the private corpus. A site's own CSP would refuse the
+     * injected `core/` bundle; the extension is never subject to it, so the corpus is not either.
+     */
+    { name: "corpus", testMatch: /corpus[\\/].*\.spec\.ts$/, use: { bypassCSP: true } },
+  ],
 });

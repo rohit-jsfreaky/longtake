@@ -1,4 +1,9 @@
+"use strict";
 (() => {
+  var __defProp = Object.defineProperty;
+  var __defNormalProp = (obj, key, value) => key in obj ? __defProp(obj, key, { enumerable: true, configurable: true, writable: true, value }) : obj[key] = value;
+  var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "symbol" ? key + "" : key, value);
+
   // core/src/dom-path.ts
   var MAX_DEPTH = 15;
   var MIN_INTERACTIVE_PX = 10;
@@ -98,6 +103,12 @@
     return found;
   }
   function isVisible(el) {
+    if (paintedOnScreen(el)) return true;
+    const input = el;
+    if (el.localName !== "input" || input.type !== "checkbox" && input.type !== "radio") return false;
+    return Array.from(input.labels ?? []).some((label) => paintedOnScreen(label));
+  }
+  function paintedOnScreen(el) {
     const html = el;
     if (!html.isConnected) return false;
     const check = html.checkVisibility;
@@ -664,11 +675,27 @@
     if (MEANS_NO.test(text2)) return false;
     return MEANS_YES.test(text2);
   }
+  function bareName(label) {
+    return normalise(label.replace(/\s*\+\d[\d\s-]*$/, "").replace(/\s*\([^)]*\)\s*$/, ""));
+  }
+  function showsChoice(showing, chosen) {
+    const shown2 = normalise(showing);
+    const wanted = normalise(chosen);
+    if (!shown2) return false;
+    return shown2.includes(wanted) || shown2.length >= 2 && ` ${wanted} `.includes(` ${shown2} `);
+  }
   function matchAmong(candidates, spoken) {
     const want = normalise(spoken);
     if (!want) return null;
     const exact = candidates.findIndex((candidate) => normalise(candidate) === want);
     if (exact >= 0) return exact;
+    const plain = candidates.map(bareName);
+    if (plain.filter((text2) => text2 === want).length === 1) return plain.indexOf(want);
+    const whole = [];
+    candidates.forEach((candidate, index) => {
+      if (` ${normalise(candidate)} `.includes(` ${want} `)) whole.push(index);
+    });
+    if (whole.length === 1) return whole[0];
     const partial = [];
     candidates.forEach((candidate, index) => {
       const text2 = normalise(candidate);
@@ -680,8 +707,9 @@
     const heard = ` ${normalise(evidence ?? "")} `;
     if (!heard.trim()) return null;
     const named2 = (spec.options ?? []).filter((option) => option.value !== "").filter((option) => {
-      const label = normalise(option.label);
-      return label.length >= 2 && heard.includes(` ${label} `);
+      return [normalise(option.label), bareName(option.label)].some(
+        (label) => label.length >= 2 && heard.includes(` ${label} `)
+      );
     });
     return named2.length === 1 ? named2[0] : null;
   }
@@ -818,7 +846,7 @@
     pressOption(target);
     await sleep(200);
     const showing = renderedText(el);
-    const took = normalise(showing).includes(normalise(chosen)) && showing !== wasShowing;
+    const took = showsChoice(showing, chosen) && showing !== wasShowing;
     if (!took) {
       closeWidget(el);
       return { fieldId: spec.id, status: "rejected-by-page", wrote: chosen, found: showing };
@@ -867,7 +895,7 @@
         pressOption(candidates[index]);
         await sleep(200);
         const showing = renderedText(el);
-        if (normalise(showing).includes(normalise(chosen))) return { fieldId: spec.id, status: "written", wrote: chosen };
+        if (showsChoice(showing, chosen)) return { fieldId: spec.id, status: "written", wrote: chosen };
         closeWidget(el);
         return { fieldId: spec.id, status: "rejected-by-page", wrote: chosen, found: showing };
       }
@@ -1348,6 +1376,58 @@
           evidence: {
             type: "string",
             description: "The person's own words asking for this, quoted exactly."
+          }
+        },
+        required: ["fields", "evidence"],
+        additionalProperties: false
+      },
+      execution_mode: EXECUTION_MODE,
+      timeout_seconds: TIMEOUT_SECONDS
+    };
+  }
+  var CONFIRM_TOOL_NAME = "confirm_answer";
+  function buildConfirmTool(specs) {
+    const ids = specs.filter((spec) => !spec.suspectedHoneypot && spec.kind !== "file").map((spec) => spec.id);
+    return {
+      type: "function",
+      name: CONFIRM_TOOL_NAME,
+      description: "After you asked about an answer waiting for their yes, report their reply. agreed: true if they accepted it in any words or language, false if they said no or wanted something else. Only for fields waiting for their yes.",
+      parameters: {
+        type: "object",
+        properties: {
+          field: {
+            type: "string",
+            description: "The field that was waiting.",
+            ...ids.length > 0 ? { enum: ids } : {}
+          },
+          agreed: { type: "boolean", description: "Did they accept the answer you offered?" },
+          evidence: { type: "string", description: "Their reply, quoted exactly." }
+        },
+        required: ["field", "agreed", "evidence"],
+        additionalProperties: false
+      },
+      execution_mode: EXECUTION_MODE,
+      timeout_seconds: TIMEOUT_SECONDS
+    };
+  }
+  var LATER_TOOL_NAME = "skip_for_now";
+  function buildLaterTool(specs) {
+    const ids = specs.filter((spec) => !spec.suspectedHoneypot && spec.kind !== "file").map((spec) => spec.id);
+    return {
+      type: "function",
+      name: LATER_TOOL_NAME,
+      description: "Put fields off until the end when the person says skip it, later, come back to it, or do the rest first. Nothing is filled or cleared; they are asked again once everything else is done.",
+      parameters: {
+        type: "object",
+        properties: {
+          fields: {
+            type: "array",
+            description: "The fields to come back to.",
+            items: ids.length > 0 ? { type: "string", enum: ids } : { type: "string" }
+          },
+          evidence: {
+            type: "string",
+            description: "The person's own words asking to skip it, quoted exactly."
           }
         },
         required: ["fields", "evidence"],
@@ -1951,7 +2031,10 @@
         return key !== null && group.keys.includes(key);
       })
     })).filter((group) => group.fields.length > 0);
-    const alreadyIn = easyGroups.filter((group) => group.fields.every((spec) => done.has(spec.id)));
+    const alreadyIn = easyGroups.filter((group) => {
+      const needed = group.fields.filter((spec) => spec.required);
+      return (needed.length > 0 ? needed : group.fields).every((spec) => done.has(spec.id));
+    });
     const toSay = easyGroups.filter((group) => !alreadyIn.includes(group)).map((group) => group.say).slice(0, MOST_EASY_TO_NAME);
     const kept = alreadyIn.length ? ` I've already put in ${spokenList(alreadyIn.map((group) => group.say).slice(0, MOST_EASY_TO_NAME))}${remembered ? " from last time" : ""} \u2014 give ${alreadyIn.length === 1 ? "it" : "them"} a quick look.` : "";
     if (toSay.length > 0) {
@@ -2220,12 +2303,17 @@
       "You never submit anything and never say you have. You type into a form they are looking at; they read it and send it themselves. Never say submitted, sent, applied or filed.",
       "",
       // ── 2. Tone ────────────────────────────────────────────────────────────────────
-      "You lead. Every reply that isn't the last one ends by asking for the next thing \u2014 never hand the conversation back with nothing to answer. You're not a form reading itself aloud. Say what's done before you ask for what's missing. You can be dry, and a little funny now and then \u2014 never about their answers. Match their length: clipped when they're clipped, warmer when they chat. Once you know their first name, use it now and then, not every line. Never call them sir or ma'am.",
+      "You lead. Every reply that isn't the last one ends by asking for the next thing \u2014 never hand the conversation back with nothing to answer. Say what's done before you ask for what's missing. You can be dry, and a little funny now and then \u2014 never about their answers. Match their length: clipped when they're clipped, warmer when they chat. Once you know their first name, use it now and then, not every line. Never call them sir or ma'am.",
       `Never say: ${BANNED_PHRASES.map((phrase) => `"${phrase}"`).join(", ")}.`,
       "",
-      "When they give an answer the form doesn't offer:",
-      '  Bad: "How did you hear about Glean?" \u2014 the same question again.',
-      `  Good: "Twitter's not on their list \u2014 Social Media's closest. That one?"`,
+      // Live: this example once read "Twitter's not on their list — Social Media's closest", and on a
+      // form where "How did you hear about this job?" was a plain text box, the agent said exactly
+      // that to someone who said Twitter, and tried to put Social Media in. It was copying the
+      // example, not reading the form. So the example is tied to the result that justifies it.
+      "Only when a result says not_an_option (a fixed list without their answer):",
+      "  Bad: asking the same question again.",
+      `  Good: "BTech isn't on their list \u2014 Bachelor's Degree is closest. That one?"`,
+      "A box they type into takes their words as they said them. If they say Twitter, Twitter goes in. Never swap their answer for another.",
       "When several answers land at once:",
       '  Bad: "I have filled your first name, last name, email and phone number."',
       '  Good: "Got all four. LinkedIn?"',
@@ -2236,10 +2324,12 @@
       "",
       // ── 4. The form, the plan, and the tools ───────────────────────────────────────
       "FORM NOW, at the end of this prompt, is the form exactly as it is at this moment \u2014 updated after everything you do. Trust it over your memory of the conversation: if it says a field is answered, it is. DO NEXT is what to do next; do that, in your own words.",
+      "When DO NEXT lists several questions, ask them together in one short sentence \u2014 people answer a short list in one go.",
       "Call fill_fields the moment you hear an answer, and again whenever you hear more \u2014 several answers in one call. Fill only what they actually said, even for required fields; never work one answer out from another.",
       "Every answer's evidence is their own words, copied exactly, in the language they said them. They may mix English and Hindi; the value goes in English, in the Latin alphabet, never Devanagari. Evidence that isn't in what they said is thrown away.",
-      "Each result says what went in, what didn't and why. Acknowledge what went in in a few words, not a readback. waiting_for_yes: nothing went in yet \u2014 it's in DO NEXT. not_an_option: tried is what you sent; check the choices before saying anything is missing. quote_not_found: they did say it, so call again quoting their exact words \u2014 don't ask again. page_refused: ask them to say it once more. page_refused_twice: say plainly they'll need to type that one. not_heard and gone: say nothing. If you realise you got something wrong, fix it with a call straight away rather than just apologising.",
+      "Each result says what went in, what didn't and why. Acknowledge what went in in a few words, not a readback. waiting_for_yes: nothing went in yet \u2014 ask, then report their reply with confirm_answer; you decide whether it was a yes. Never say everything is in while FORM NOW lists anything waiting for their yes. not_an_option: tried is what you sent; check the choices before saying anything is missing. quote_not_found: they did say it, so call again quoting their exact words \u2014 don't ask again. page_refused: ask them to say it once more. page_refused_twice: say plainly they'll need to type that one. not_heard: you sent none of their words, so nothing went in \u2014 say so and ask again. gone: say nothing. If you realise you got something wrong, fix it with a call straight away rather than just apologising.",
       "When they ask to add another entry, like another job or school, or to go to the next page, call press_form_button with their words, then carry on with what appears. page_did_not_change means the form refused to move on: tell them what it asked for. There is no button for submitting: that one is always theirs.",
+      "When they say skip it, later, or do the rest first, call skip_for_now with their words and move on. Any field can wait; never tell them the form makes them answer in order.",
       "When they ask to remove, clear or undo an answer, call clear_fields with their words. Never pick another option, like a decline choice, as a way of clearing one. If it can't be emptied, tell them why.",
       "",
       // ── 5. Speaking, not writing ───────────────────────────────────────────────────
@@ -2257,6 +2347,8 @@
     constructor() {
       this.written = /* @__PURE__ */ new Map();
       this.declined = /* @__PURE__ */ new Set();
+      /** Put off by the person: asked again only once everything else is done. */
+      this.later = /* @__PURE__ */ new Set();
       this.pending = /* @__PURE__ */ new Map();
       /** Fields that already had something in them when the session opened. */
       this.atOpen = /* @__PURE__ */ new Set();
@@ -2282,6 +2374,16 @@
     }
     isDeclined(id) {
       return this.declined.has(id);
+    }
+    /**
+     * "Skip this, we'll do it at the end." Not declined — it will be asked again — just not now.
+     * Nothing is written or cleared; the field keeps whatever it has.
+     */
+    setAside(id) {
+      this.later.add(id);
+    }
+    isSetAside(id) {
+      return this.later.has(id);
     }
     hold(id, pending) {
       this.pending.set(id, pending);
@@ -2344,7 +2446,7 @@
     if (typeof onPage === "boolean") return onPage === Boolean(written);
     const a = flat(written);
     const b = flat(onPage);
-    return a === b || a.length > 0 && (b.startsWith(a) || a.startsWith(b));
+    return a === b || a.length > 0 && (b.startsWith(a) || a.startsWith(b) || b.length >= 2 && a.endsWith(b));
   }
   function isOpen(field) {
     return field.value === null && !field.declined;
@@ -2362,6 +2464,7 @@
       else if (!entry && ledger.wasThereAtOpen(spec.id)) source = "page";
       else source = "typed";
       const state = { spec, value, source, declined: ledger.isDeclined(spec.id) };
+      if (ledger.isSetAside(spec.id)) state.later = true;
       if ((source === "spoken" || source === "memory") && entry) state.evidence = entry.evidence;
       const pending = ledger.pendingFor(spec.id);
       if (pending && value === null) state.pending = pending;
@@ -2411,11 +2514,7 @@
   function gate(spec, claim, held) {
     const evidence = claim.evidence ?? "";
     const value = Array.isArray(claim.value) ? claim.value.join(", ") : String(claim.value);
-    if (held) {
-      const agreed = MEANS_YES.test(evidence) && !MEANS_NO.test(evidence);
-      if (held.reason === "not_named" && agreed && sameText(value, held.suggestion)) return { write: true };
-      if (held.reason === "hedged" && !hedged(spec, evidence)) return { write: true };
-    }
+    if (held?.reason === "hedged" && !hedged(spec, evidence)) return { write: true };
     if (isChoice2(spec) && spec.options?.length) {
       const want = matchOption(spec, value);
       const said = named(spec, evidence);
@@ -2426,10 +2525,13 @@
       if (said === want.label || sameText(evidence, want.label)) return { write: true };
       return { write: false, pending: { suggestion: want.label, heard: evidence, reason: "not_named" } };
     }
-    if (hedged(spec, evidence) && /\d/.test(value)) {
+    if (!isLongAnswer(spec) && hedged(spec, evidence) && /\d/.test(value)) {
       return { write: false, pending: { suggestion: value, heard: evidence, reason: "hedged" } };
     }
     return { write: true };
+  }
+  function isLongAnswer(spec) {
+    return Boolean(spec.longForm);
   }
   function hedged(spec, evidence) {
     if (NUMBER_RANGE.test(evidence) || ABOUT_A_NUMBER.test(evidence)) return true;
@@ -2441,6 +2543,21 @@
   }
 
   // core/src/planner.ts
+  var ASK_AT_ONCE = 4;
+  function batch(facts) {
+    const [first] = facts;
+    if (!first) return [];
+    if (alone(first)) return [first];
+    const out = [];
+    for (const f of facts) {
+      if (out.length >= ASK_AT_ONCE || alone(f)) break;
+      out.push(f);
+    }
+    return out;
+  }
+  function alone(facts) {
+    return facts.answer_type === "long answer" || facts.choice_count !== void 0;
+  }
   function nextMove(state, plan) {
     const specs = state.fields.map((f) => f.spec);
     const waiting = state.fields.find((f) => f.pending);
@@ -2458,16 +2575,21 @@
       return { kind: "resolve", field: factsOf(wrong.spec, specs), problem: wrong.error, value: shown(wrong.value) };
     }
     const open = state.fields.filter(isOpen);
-    const required = inAskingOrder(open.filter((f) => f.spec.required).map((f) => f.spec));
+    const later = new Set(open.filter((f) => f.later).map((f) => f.spec.id));
+    const lastIfLater = (specs2) => [
+      ...specs2.filter((spec) => !later.has(spec.id)),
+      ...specs2.filter((spec) => later.has(spec.id))
+    ];
+    const required = lastIfLater(inAskingOrder(open.filter((f) => f.spec.required).map((f) => f.spec)));
     if (required.length > 0) {
       const first = factsOf(required[0], specs);
       if (first.group) {
-        const together = open.map((f) => factsOf(f.spec, specs)).filter((facts) => facts.group === first.group && facts.section === first.section);
+        const together = open.filter((f) => later.has(first.field) || !later.has(f.spec.id)).map((f) => factsOf(f.spec, specs)).filter((facts) => facts.group === first.group && facts.section === first.section);
         return { kind: "ask", fields: together };
       }
-      return { kind: "ask", fields: [first] };
+      return { kind: "ask", fields: batch(required.map((spec) => factsOf(spec, specs)).filter((f) => !f.group || f.field === first.field)) };
     }
-    const optional = inAskingOrder(open.filter((f) => !f.spec.required).map((f) => f.spec)).map(
+    const optional = lastIfLater(inAskingOrder(open.filter((f) => !f.spec.required).map((f) => f.spec))).map(
       (spec) => factsOf(spec, specs)
     );
     const next = state.actions.find((a) => a.kind === "next");
@@ -2500,10 +2622,18 @@
     if (facts.answer_type === "long answer") return `${facts.question}${where} \u2014 a longer answer`;
     return `${facts.question}${where}`;
   }
+  function waitingCount(state) {
+    const n = state.fields.filter((f) => f.pending).length;
+    return n > 0 ? `, ${n} waiting for their yes` : "";
+  }
+  function askFor(fields) {
+    const now = batch(fields);
+    return now.length > 1 ? `these together, in one question: ${now.map(describe).join("; ")}` : describe(now[0]);
+  }
   function doNext(move) {
     switch (move.kind) {
       case "confirm":
-        return move.reason === "hedged" ? `They weren't sure for "${move.field.question}" (they said: "${move.heard}"). Ask which it is before anything goes in.` : `"${move.field.question}" is waiting for their yes: they said "${move.heard}", and the closest the form offers is "${move.suggestion}". Ask if that's right. If they say yes, call fill_fields with "${move.suggestion}" and their yes as evidence. If not, offer the other choices.`;
+        return move.reason === "hedged" ? `They weren't sure for "${move.field.question}" (they said: "${move.heard}"). Ask which it is before anything goes in.` : `"${move.field.question}" is waiting for their yes: they said "${move.heard}", and the closest the form offers is "${move.suggestion}". Ask if that's right, then call confirm_answer for ${move.field.field} with agreed true or false \u2014 you judge their reply, in whatever words. If not, offer the other choices.`;
       case "resolve":
         return `The form won't accept "${move.value}" for "${move.field.question}" \u2014 it says: "${move.problem}". Tell them in a few words and ask for it again.`;
       case "ask": {
@@ -2514,12 +2644,15 @@
         if (move.fields.length > 1 && move.fields.every((f) => f.group === "phone")) {
           return `Ask for their phone number, with its country code, as one question.`;
         }
+        if (move.fields.length > 1) {
+          return `Ask for these together in one short question \u2014 they can answer them all at once: ${move.fields.map(describe).join("; ")}.`;
+        }
         return `Ask for ${describe(move.fields[0])}.`;
       }
       case "offer_optional":
         return `Every required field is in. Say so, and ask if they want to do the ${move.fields.length} optional ones or hear what they are: ${move.fields.map((f) => f.question).join("; ")}.`;
       case "optional":
-        return move.next ? `If they wanted the optional ones, ask for ${describe(move.fields[0])}. If they didn't, ask if they're ready for the next page, and press "${move.next}" with press_form_button only on their yes.` : `If they wanted the optional ones, ask for ${describe(move.fields[0])}. If they didn't, hand over: everything they told you is in, and they should ${move.submit ? `look it over and press "${move.submit}" themselves` : "look it over and send it themselves"}.`;
+        return move.next ? `If they wanted the optional ones, ask for ${askFor(move.fields)}. If they didn't, ask if they're ready for the next page, and press "${move.next}" with press_form_button only on their yes.` : `If they wanted the optional ones, ask for ${askFor(move.fields)}. If they didn't, hand over: everything they told you is in, and they should ${move.submit ? `look it over and press "${move.submit}" themselves` : "look it over and send it themselves"}.`;
       case "next_page":
         return `Everything needed on this page is in. Ask if they're ready for the next page, and press "${move.label}" with press_form_button only on their yes.`;
       case "handover": {
@@ -2533,7 +2666,7 @@
     const specs = state.fields.map((f) => f.spec);
     const lines = [];
     lines.push(
-      `FORM NOW${state.title ? ` \u2014 ${state.title}` : ""}: ${progress.filled} of ${progress.total} answered, ${progress.requiredLeft} required left, ${progress.optionalLeft} optional left.`
+      `FORM NOW${state.title ? ` \u2014 ${state.title}` : ""}: ${progress.filled} of ${progress.total} answered, ${progress.requiredLeft} required left, ${progress.optionalLeft} optional left${waitingCount(state)}.`
     );
     const answered = state.fields.filter((f) => f.value !== null);
     if (answered.length > 0) {
@@ -2542,12 +2675,18 @@
         lines.push(`  ${factsOf(f.spec, specs).question}: ${shown(f.value)} (${SOURCE_WORDS[f.source]})`);
       }
     }
-    const left = state.fields.filter((f) => isOpen(f) && !f.pending);
+    const left = state.fields.filter((f) => isOpen(f) && !f.pending && !f.later);
     if (left.length > 0) {
       lines.push("Still empty:");
       for (const f of left) {
         lines.push(`  ${describe(factsOf(f.spec, specs))}${f.spec.required ? " [required]" : ""}`);
       }
+    }
+    const putOff = state.fields.filter((f) => isOpen(f) && f.later);
+    if (putOff.length > 0) {
+      lines.push(
+        `Set aside for later, at their request \u2014 ask again only once everything else is done: ${putOff.map((f) => factsOf(f.spec, specs).question).join(", ")}`
+      );
     }
     const declined = state.fields.filter((f) => f.declined && f.value === null);
     if (declined.length > 0) {
@@ -2579,7 +2718,7 @@
         return `${where}. The form won't take ${move.value} for ${move.field.question} \u2014 can you say it again?`;
       case "ask": {
         const [first] = move.fields;
-        const what = move.fields.length > 1 && first?.group === "address" ? "your address" : move.fields.length > 1 && first?.group === "phone" ? "your phone number" : first?.question ?? "the next one";
+        const what = move.fields.length > 1 && first?.group === "address" ? "your address" : move.fields.length > 1 && first?.group === "phone" ? "your phone number" : move.fields.length > 1 ? move.fields.map((f) => f.question).join(", ") : first?.question ?? "the next one";
         return `${where}. Next up: ${what}.`;
       }
       case "offer_optional":
@@ -2685,7 +2824,80 @@
     tools() {
       const specs = this.current?.specs ?? [];
       const press2 = this.current ? buildPressTool(this.buttons().actions) : null;
-      return press2 ? [buildFillTool(specs), buildClearTool(specs), press2] : [buildFillTool(specs), buildClearTool(specs)];
+      const always = [buildFillTool(specs), buildConfirmTool(specs), buildClearTool(specs), buildLaterTool(specs)];
+      return press2 ? [...always, press2] : always;
+    }
+    /**
+     * The `confirm_answer` tool: their reply to "is that right?", as the agent understood it.
+     *
+     * Agreed: the answer that was waiting goes in, through the same write, record and re-read as a
+     * fill — its evidence is their original words plus their yes. Not agreed: it stops waiting, and
+     * the plan goes back to asking the question.
+     */
+    async confirm(args, heard) {
+      const read = this.current;
+      if (!read) return { result: { error: "The form has not been read yet." }, outcomes: [], spoken: [] };
+      const id = typeof args.field === "string" ? args.field : "";
+      const agreed = args.agreed === true;
+      const evidence = typeof args.evidence === "string" ? args.evidence : "";
+      const spec = read.specs.find((s) => s.id === id);
+      const pending = this.ledger.pendingFor(id);
+      if (!spec || !pending) {
+        return { result: { error: `Nothing is waiting for a yes on "${id}".`, do_next: doNext(this.move()), submitted: false }, outcomes: [], spoken: [] };
+      }
+      if (!checkEvidence(heard, evidence).ok) {
+        return { result: { confirmed: false, why: "quote_not_found", submitted: false }, outcomes: [], spoken: [] };
+      }
+      const question = (spec.label || id).replace(/\s*\*\s*$/, "").trim();
+      if (!agreed) {
+        this.ledger.release(id);
+        const state = this.state();
+        this.options.onChange?.();
+        return {
+          result: { not_confirmed: { field: id, question }, progress: state.progress, do_next: doNext(this.move()), submitted: false },
+          outcomes: [],
+          spoken: []
+        };
+      }
+      const claim = { fieldId: id, value: pending.suggestion, evidence: `${pending.heard} \u2014 ${evidence}` };
+      this.writing = true;
+      this.movedWhileWriting = false;
+      let results;
+      try {
+        results = await writeValues(read.specs, read.handles, [claim]);
+      } finally {
+        this.writing = false;
+      }
+      this.record(results, [claim], read, "spoken");
+      const reshaped = results[0]?.status === "written" && CHOICE_KINDS.has(spec.kind) || this.movedWhileWriting ? await this.pageChanged() : null;
+      const result = this.report(results, [claim], reshaped, { waiting_for_yes: [] });
+      this.options.onChange?.();
+      return { result, outcomes: results, spoken: [claim] };
+    }
+    /**
+     * The `skip_for_now` tool: "leave that, we'll do it at the end". Needs their words, like
+     * everything else; changes nothing on the page — only the order things are asked in.
+     */
+    setAside(args, heard) {
+      const read = this.current;
+      if (!read) return { result: { error: "The form has not been read yet." }, outcomes: [], spoken: [] };
+      const fields = Array.isArray(args.fields) ? args.fields.map(String) : [];
+      const evidence = typeof args.evidence === "string" ? args.evidence : "";
+      if (!checkEvidence(heard, evidence).ok) {
+        return { result: { set_aside: [], why: "quote_not_found", submitted: false }, outcomes: [], spoken: [] };
+      }
+      const byId = new Map(read.specs.map((spec) => [spec.id, spec]));
+      const moved = fields.filter((id) => byId.has(id));
+      for (const id of moved) this.ledger.setAside(id);
+      const state = this.state();
+      const result = {
+        set_aside: moved.map((id) => (byId.get(id)?.label || id).replace(/\s*\*\s*$/, "").trim()),
+        progress: state.progress,
+        do_next: doNext(this.move()),
+        submitted: false
+      };
+      this.options.onChange?.();
+      return { result, outcomes: [], spoken: [] };
     }
     /** The form's buttons as they are right now — read fresh, since a page can rename them. */
     buttons() {
@@ -3175,12 +3387,8 @@
   var WS_URL = "wss://agents.assemblyai.com/v1/ws";
   var TARGET_SAMPLE_RATE = 24e3;
   var SAMPLES_PER_CHUNK = TARGET_SAMPLE_RATE / 20;
-  var LONG_TAKE_TURN_DETECTION = {
-    vad_threshold: 0.5,
-    min_silence: 3500,
-    max_silence: 6e3,
-    interrupt_response: true
-  };
+  var LONG_TAKE_MODE = "max_accuracy";
+  var CONVERSATION_MODE = "balanced";
   var HINGLISH_LANGUAGES = ["en", "hi"];
   var VoiceStartError = class extends Error {
     constructor(problem, message) {
@@ -3256,7 +3464,7 @@
       onResultsSent,
       onToolCall
     } = options;
-    let turnDetection = options.turnDetection ?? LONG_TAKE_TURN_DETECTION;
+    let transcriptionMode = options.transcriptionMode ?? LONG_TAKE_MODE;
     if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
       const secure = typeof isSecureContext === "undefined" || isSecureContext;
       throw secure ? new VoiceStartError("unsupported", PROBLEM_WORDS.unsupported) : explainMicFailure(null, false);
@@ -3439,7 +3647,8 @@
       greeting: config.greeting,
       input: {
         format: { encoding: "audio/pcm" },
-        turn_detection: turnDetection,
+        // No `turn_detection`: its defaults are the semantic end-of-turn and barge-in.
+        transcription_mode: transcriptionMode,
         ...languageCodes.length > 0 ? { language_codes: languageCodes } : {}
       },
       output: { voice, format: { encoding: "audio/pcm" }, volume: 100 },
@@ -3594,9 +3803,9 @@
     };
     await connect("first", token);
     return {
-      setTurnDetection: (next) => {
-        turnDetection = next;
-        send({ type: "session.update", session: { input: { turn_detection: next } } });
+      setTranscriptionMode: (next) => {
+        transcriptionMode = next;
+        send({ type: "session.update", session: { input: { transcription_mode: next } } });
       },
       setTools: (next) => {
         send({ type: "session.update", session: { tools: next } });
@@ -3625,8 +3834,575 @@
     };
   }
 
+  // core/src/notices.ts
+  var WHY = {
+    not_an_option: "that isn't one of its choices",
+    quote_not_found: "Longtake couldn't match it to what you said",
+    page_refused: "the page didn't keep it",
+    page_refused_twice: "the page won't take it \u2014 type it yourself",
+    needs_the_person: "only you can do this one",
+    // The agent sent it without any of the person's words — not a hearing problem.
+    not_heard: "Longtake had none of your words for it"
+  };
+  function missesIn(result) {
+    const notFilled = result?.not_filled;
+    if (!Array.isArray(notFilled)) return [];
+    return notFilled.filter((item) => item.why !== "gone").map((item) => ({
+      fieldId: item.field,
+      question: item.question,
+      why: WHY[item.why] ?? item.why.replace(/_/g, " ")
+    }));
+  }
+
+  // core/src/conductor.ts
+  var EMPTY_FORM = {
+    title: "",
+    fields: [],
+    theirs: [],
+    actions: [],
+    progress: { filled: 0, total: 0, requiredLeft: 0, optionalLeft: 0 }
+  };
+  var LOG_LIMIT = 400;
+  var SHAPE_SETTLE_MS = 500;
+  var TYPING_SETTLE_MS = 1200;
+  function pcmToBase64(samples) {
+    const bytes = new Uint8Array(samples.buffer, samples.byteOffset, samples.byteLength);
+    let binary = "";
+    const CHUNK = 32768;
+    for (let i = 0; i < bytes.length; i += CHUNK) {
+      binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+    }
+    return btoa(binary);
+  }
+  var Conductor = class {
+    constructor(options) {
+      this.options = options;
+      this.voice = null;
+      this.listeners = /* @__PURE__ */ new Set();
+      this.prepared = null;
+      // ── Per call ───────────────────────────────────────────────────────────────────────
+      this.stopped = true;
+      this.transcript = "";
+      /**
+       * The turn being spoken, before it is final. The agent calls `fill_fields` mid-sentence, so a
+       * quote is checked against what has been said so far INCLUDING this — otherwise the longest
+       * answers were thrown away as invented, because their words were not in the transcript yet.
+       */
+      this.partial = "";
+      this.switchedMode = false;
+      this.sentPrompt = "";
+      this.missed = /* @__PURE__ */ new Map();
+      /** The last few finished turns: audio, words, and when each word arrived. */
+      this.turnAudio = [];
+      /** Long answers filled mid-sentence, waiting for their turn to end so their audio exists. */
+      this.pendingClips = /* @__PURE__ */ new Map();
+      this.askedAt = null;
+      this.detach = null;
+      const session = new LongtakeSession({
+        root: options.root,
+        ignore: options.ignore,
+        memory: options.memory,
+        log: (line) => this.note("app", line),
+        onChange: () => this.update({ form: session.state(), known: session.remembered() }),
+        // The form's questions changed under the call: new tools and a new prompt, straight away.
+        onReshape: () => {
+          const problems = session.toolProblems();
+          if (problems.length > 0) {
+            this.note("app", `form changed but the new tools are invalid: ${problems.join("; ")}`);
+            return;
+          }
+          this.voice?.setTools(session.tools());
+          this.sentPrompt = session.prompt();
+          this.voice?.setSystemPrompt(this.sentPrompt);
+        }
+      });
+      this.session = session;
+      this.current = {
+        status: "idle",
+        error: null,
+        problem: null,
+        form: EMPTY_FORM,
+        outcomes: [],
+        missed: [],
+        turns: [],
+        partial: "",
+        shaped: {},
+        hesitations: {},
+        known: [],
+        log: []
+      };
+    }
+    // ── Watching ───────────────────────────────────────────────────────────────────────
+    view() {
+      return this.current;
+    }
+    subscribe(listener) {
+      this.listeners.add(listener);
+      return () => this.listeners.delete(listener);
+    }
+    /** The whole call as JSON — every tool call and result in full — for a bug report. */
+    copyLog(page = typeof location === "undefined" ? "" : location.href) {
+      return JSON.stringify({ page, turns: this.current.turns, log: this.current.log }, null, 2);
+    }
+    update(patch) {
+      this.current = { ...this.current, ...patch };
+      for (const listener of this.listeners) listener(this.current);
+    }
+    note(kind, text2) {
+      const log = [...this.current.log.slice(-(LOG_LIMIT - 1)), { at: (/* @__PURE__ */ new Date()).toISOString(), kind, text: text2 }];
+      this.update({ log });
+    }
+    /** Redraw the form, and drop "didn't go in" notices for fields that now have something in them. */
+    refresh() {
+      const form = this.session.state();
+      for (const field of form.fields) if (field.value !== null) this.missed.delete(field.spec.id);
+      this.update({ form, known: this.session.remembered(), missed: [...this.missed.values()] });
+    }
+    // ── Before the call ────────────────────────────────────────────────────────────────
+    /** Remembered answers go in when the page opens, before anybody presses anything. Once. */
+    prepare() {
+      if (!this.prepared) this.prepared = this.session.prefill().then(() => this.refresh());
+      return this.prepared;
+    }
+    forgetOne(key) {
+      this.session.forgetOne(key);
+    }
+    forgetEverything() {
+      this.session.forgetEverything();
+    }
+    get running() {
+      return !this.stopped;
+    }
+    // ── The call ───────────────────────────────────────────────────────────────────────
+    async start() {
+      if (!this.stopped) return;
+      this.stopped = false;
+      this.transcript = "";
+      this.partial = "";
+      this.switchedMode = false;
+      this.missed = /* @__PURE__ */ new Map();
+      this.turnAudio = [];
+      this.pendingClips = /* @__PURE__ */ new Map();
+      this.askedAt = null;
+      this.pauseBeforeAnswer = void 0;
+      this.update({ status: "reading", error: null, problem: null, turns: [], partial: "", missed: [], log: [] });
+      this.options.onActive?.(true);
+      try {
+        await this.prepare();
+        await this.session.open();
+        this.refresh();
+        const problems = this.session.toolProblems();
+        if (problems.length > 0) throw new Error(`This form produced a tool the voice service would reject: ${problems[0]}`);
+        const greeting = this.session.greeting();
+        this.note("app", `opening line: ${greeting}`);
+        this.update({ status: "connecting" });
+        const { services } = this.options;
+        const startVoice = services.startVoice ?? startVoiceSession;
+        this.sentPrompt = this.session.prompt();
+        const voice = await startVoice({
+          voice: services.voice ?? "charles",
+          systemPrompt: this.sentPrompt,
+          greeting,
+          tools: this.session.tools(),
+          getToken: services.getToken,
+          workletUrl: services.workletUrl,
+          ...services.wsUrl ? { wsUrl: services.wsUrl } : {},
+          // The line dropped past saving: a new agent, told the form as it is and where to pick up.
+          freshStart: () => {
+            this.sentPrompt = this.session.prompt();
+            return { systemPrompt: this.sentPrompt, greeting: this.session.resumeGreeting(), tools: this.session.tools() };
+          },
+          onToolCall: (name, args) => this.runTool(name, args),
+          // After results are out, the agent's prompt catches up with the form — so even a turn with
+          // no tool call ("hello?", "what's left?") is answered from the form as it is.
+          onResultsSent: () => {
+            this.sentPrompt = this.session.prompt();
+            this.voice?.setSystemPrompt(this.sentPrompt);
+          },
+          ...this.options.logFrames ? { onEvent: (direction, message) => this.note(direction, JSON.stringify(message).slice(0, 260)) } : {},
+          onReady: () => {
+            this.update({ status: "live" });
+            this.note("app", "session.ready \u2014 speak now");
+          },
+          onReconnecting: (attempt) => {
+            this.update({ status: "reconnecting" });
+            this.note("app", `line dropped \u2014 reconnecting (try ${attempt})`);
+          },
+          onReconnected: (how) => {
+            this.update({ status: "live" });
+            this.note("app", how === "resumed" ? "reconnected \u2014 same conversation" : "reconnected \u2014 new session, picked up from the form");
+          },
+          onUserPartial: (text2) => {
+            this.partial = text2;
+            this.update({ partial: text2 });
+          },
+          onUserTranscript: (text2, audio, timeline) => this.heardTurn(text2, audio, timeline),
+          onAgentTranscript: (text2) => {
+            this.askedAt = Date.now();
+            this.note("agent", text2);
+            this.update({ turns: [...this.current.turns, { who: "agent", text: text2 }] });
+          },
+          onSpeechStart: () => {
+            const now = Date.now();
+            this.pauseBeforeAnswer = this.askedAt ? (now - this.askedAt) / 1e3 : void 0;
+          },
+          onError: (message) => {
+            if (this.stopped) return;
+            this.finish();
+            this.update({ status: "error", error: message });
+          },
+          onClosed: () => {
+            if (this.stopped) return;
+            this.finish();
+            this.update({ status: "stopped" });
+          }
+        });
+        this.voice = voice;
+        if (this.stopped) {
+          await voice.stop();
+          return;
+        }
+        this.watchPage();
+      } catch (cause) {
+        this.finish();
+        this.update({
+          status: "error",
+          problem: cause instanceof VoiceStartError ? cause.problem : null,
+          error: cause instanceof Error ? cause.message : String(cause)
+        });
+      }
+    }
+    async stop() {
+      if (this.stopped) return;
+      this.finish();
+      this.update({ status: "stopped", partial: "" });
+      await this.voice?.stop();
+      this.voice = null;
+    }
+    finish() {
+      this.stopped = true;
+      this.detach?.();
+      this.detach = null;
+      this.options.onActive?.(false);
+    }
+    /** Everything said so far, the turn still being spoken included. */
+    heard() {
+      return `${this.transcript}
+${this.partial}`.trim();
+    }
+    heardTurn(text2, audio, timeline) {
+      if (audio && audio.length > 0) {
+        this.turnAudio = [...this.turnAudio.slice(-5), { text: text2, audio, timeline }];
+        for (const [fieldId, evidence] of this.pendingClips) {
+          if (this.placeClip(fieldId, evidence)) this.pendingClips.delete(fieldId);
+        }
+      }
+      this.partial = "";
+      this.transcript = `${this.transcript}
+${text2}`.trim();
+      this.note("you", text2);
+      this.update({ partial: "", turns: [...this.current.turns, { who: "you", text: text2 }] });
+    }
+    // ── The tools ──────────────────────────────────────────────────────────────────────
+    /** Runs one tool call and returns what goes back to the agent. Public so replays can drive it. */
+    async runTool(name, args) {
+      this.note("tool", `call ${name} ${JSON.stringify(args)}`);
+      const result = await this.route(name, args);
+      this.note("tool", `result ${name} ${JSON.stringify(result)}`);
+      for (const miss of missesIn(result)) this.missed.set(miss.fieldId, miss);
+      this.refresh();
+      return result;
+    }
+    async route(name, args) {
+      const session = this.session;
+      const heard = this.heard();
+      if (name === FILL_TOOL_NAME) {
+        const done = await session.fill(args, heard);
+        this.update({ outcomes: [...this.current.outcomes, ...done.outcomes] });
+        const landed = done.outcomes.filter((o) => o.status === "written").map((o) => o.fieldId);
+        if (landed.length > 0) {
+          for (const said of done.spoken) {
+            if (!landed.includes(said.fieldId)) continue;
+            if (!this.placeClip(said.fieldId, said.evidence)) this.pendingClips.set(said.fieldId, said.evidence);
+          }
+          if (!this.switchedMode) {
+            this.switchedMode = true;
+            this.voice?.setTranscriptionMode(CONVERSATION_MODE);
+            this.note("app", "switched to conversation timing");
+          }
+        }
+        return done.result;
+      }
+      if (name === CLEAR_TOOL_NAME) {
+        const done = await session.clear(args, heard);
+        const cleared = new Set((done.result.cleared ?? []).map((c) => c.field));
+        if (cleared.size > 0) {
+          for (const id of cleared) this.pendingClips.delete(id);
+          const without = (record) => Object.fromEntries(Object.entries(record).filter(([id]) => !cleared.has(id)));
+          this.update({
+            outcomes: this.current.outcomes.filter((o) => !cleared.has(o.fieldId)),
+            hesitations: without(this.current.hesitations),
+            shaped: without(this.current.shaped)
+          });
+        }
+        return done.result;
+      }
+      if (name === CONFIRM_TOOL_NAME) {
+        const done = await session.confirm(args, heard);
+        this.update({ outcomes: [...this.current.outcomes, ...done.outcomes] });
+        return done.result;
+      }
+      if (name === PRESS_TOOL_NAME) return (await session.press(args, heard)).result;
+      if (name === LATER_TOOL_NAME) return session.setAside(args, heard).result;
+      return { error: `Unknown tool "${name}".` };
+    }
+    // ── Watching the page ──────────────────────────────────────────────────────────────
+    /**
+     * Changes nobody told us about: a person clicking an option themselves, or typing into a box.
+     * Shape changes re-read the form; typing only redraws, since `state()` reads values off the page.
+     * Left alone while a tool call is writing — that call re-reads before it answers. Anything inside
+     * our own furniture (`ignore`) is not the form, so it never triggers a re-read.
+     */
+    watchPage() {
+      const scope = this.options.root();
+      const target = "body" in scope ? scope.body : scope;
+      if (!target) return;
+      const ignore = this.options.ignore;
+      const ours = (node) => {
+        const element = node instanceof Element ? node : node?.parentElement;
+        return Boolean(ignore && element?.closest(ignore));
+      };
+      let shapeTimer;
+      let typeTimer;
+      const observer = new MutationObserver((records) => {
+        if (records.every((record) => ours(record.target))) return;
+        if (this.session.isWriting) {
+          this.session.noteMoveDuringWrite();
+          return;
+        }
+        clearTimeout(shapeTimer);
+        shapeTimer = setTimeout(() => {
+          void this.session.pageChanged().then(() => {
+            this.refresh();
+            this.syncPrompt();
+          });
+        }, SHAPE_SETTLE_MS);
+      });
+      observer.observe(target, {
+        subtree: true,
+        childList: true,
+        characterData: true,
+        attributes: true,
+        attributeFilter: ["style", "class", "hidden", "aria-checked", "aria-selected"]
+      });
+      const onInput = (event) => {
+        if (ours(event.target) || this.session.isWriting) return;
+        this.refresh();
+        clearTimeout(typeTimer);
+        typeTimer = setTimeout(() => this.syncPrompt(), TYPING_SETTLE_MS);
+      };
+      target.addEventListener("input", onInput, true);
+      target.addEventListener("change", onInput, true);
+      this.detach = () => {
+        observer.disconnect();
+        target.removeEventListener("input", onInput, true);
+        target.removeEventListener("change", onInput, true);
+        clearTimeout(shapeTimer);
+        clearTimeout(typeTimer);
+      };
+    }
+    /**
+     * Give the agent the form as it is now — if it changed since it last heard. After tool results
+     * the agent is caught up anyway; this is for what happens without one: the person typing, or
+     * picking an option themselves. Without it the agent asked for a field typed in front of it.
+     */
+    syncPrompt() {
+      if (!this.voice || this.session.isWriting || this.stopped) return;
+      const prompt = this.session.prompt();
+      if (prompt === this.sentPrompt) return;
+      this.sentPrompt = prompt;
+      this.voice.setSystemPrompt(prompt);
+      this.note("app", "form changed by hand \u2014 agent brought up to date");
+    }
+    // ── A long answer's own audio: the clip, and the Dictation pass that uses it ─────────
+    /**
+     * Find the words a long answer came from in the recent turns, and send just those seconds to
+     * Dictation. Newest turn first. Where the words are in a turn but cannot be pinned to a moment,
+     * the whole turn is sent. False when the turn has not finished yet — the caller waits for it.
+     */
+    placeClip(fieldId, evidence) {
+      if (!this.options.services.dictate) return true;
+      for (const turn of [...this.turnAudio].reverse()) {
+        if (!checkEvidence(turn.text, evidence).ok) continue;
+        const clip2 = clipFor(evidence, turn.timeline, turn.audio.length);
+        const audio = clip2 ? turn.audio.subarray(clip2.start, clip2.end) : turn.audio;
+        void this.shapeLongAnswer(fieldId, audio);
+        return true;
+      }
+      return false;
+    }
+    /** One Dictation pass over one long answer, then the tidy text replaces what the agent typed. */
+    async shapeLongAnswer(fieldId, audio) {
+      const dictate = this.options.services.dictate;
+      const read = this.session.read;
+      if (!dictate || !read || audio.length === 0) return;
+      const [spec] = fieldsWorthShaping(read.specs, [fieldId]);
+      if (!spec) return;
+      const known = {};
+      for (const field of this.session.state().fields) {
+        if (typeof field.value === "string" && field.value.length < 60) known[field.spec.id] = field.value;
+      }
+      try {
+        const payload = await dictate(configForField(spec, { specs: read.specs, known }), pcmToBase64(audio));
+        const result = shapeResult(spec.id, payload);
+        this.update({ shaped: { ...this.current.shaped, [spec.id]: result } });
+        const hesitation = readHesitation(spec.id, result.verbatim, result.clean, this.pauseBeforeAnswer);
+        if (hesitation.worthAnotherLook) this.update({ hesitations: { ...this.current.hesitations, [spec.id]: hesitation } });
+        if (result.clean) await this.session.rewrite(spec.id, result.clean, result.verbatim);
+        this.note(
+          "app",
+          result.rewritten ? `dictation shaped ${spec.id}, verbatim kept (${result.verbatim.length} chars)` : `dictation returned verbatim only for ${spec.id} \u2014 ${result.note}`
+        );
+      } catch (cause) {
+        this.note("app", `dictation for ${spec.id} errored: ${String(cause)}`);
+      }
+    }
+  };
+
   // core/src/index.ts
   var CORE_VERSION = "0.9.0";
+
+  // tools/replay/fake-voice.ts
+  var FakeVoice = class {
+    constructor() {
+      __publicField(this, "options", null);
+      __publicField(this, "sent", []);
+      /** The opening config the call was started with. */
+      __publicField(this, "opening", null);
+      __publicField(this, "start", async (options) => {
+        this.options = options;
+        this.opening = { systemPrompt: options.systemPrompt, greeting: options.greeting, tools: options.tools ?? [], voice: options.voice };
+        setTimeout(() => options.onReady?.("fake-session"), 0);
+        return {
+          stop: async () => {
+            this.sent.push({ kind: "stop" });
+          },
+          setSystemPrompt: (value) => this.sent.push({ kind: "systemPrompt", value }),
+          setTools: (value) => this.sent.push({ kind: "tools", value }),
+          setTranscriptionMode: (value) => this.sent.push({ kind: "transcriptionMode", value })
+        };
+      });
+    }
+    get o() {
+      if (!this.options) throw new Error("FakeVoice: the call has not started");
+      return this.options;
+    }
+    /** The person finished a turn. */
+    userSays(text2) {
+      this.o.onSpeechStart?.();
+      this.o.onUserPartial?.(text2);
+      this.o.onUserTranscript?.(text2, null, [{ text: text2, sample: 0 }]);
+    }
+    /** The person is mid-sentence: a running partial, not yet final. */
+    partial(text2) {
+      this.o.onUserPartial?.(text2);
+    }
+    /** The agent calls a tool; resolves with what would go back to it. */
+    async toolCall(name, args) {
+      if (!this.o.onToolCall) throw new Error("FakeVoice: no tool handler");
+      const result = await this.o.onToolCall(name, args);
+      this.o.onResultsSent?.();
+      return result;
+    }
+    /** The agent said something. */
+    agentSays(text2) {
+      this.o.onAgentTranscript?.(text2);
+    }
+    /** The latest system prompt the agent has — the opening one until something replaced it. */
+    get prompt() {
+      const last = [...this.sent].reverse().find((s) => s.kind === "systemPrompt");
+      return last?.kind === "systemPrompt" ? last.value : this.opening?.systemPrompt ?? "";
+    }
+  };
+
+  // tools/replay/run-script.ts
+  async function runScript(conductor, fake, script, resolve = (ref) => ref.replace(/^\$/, "")) {
+    const failures = [];
+    const results = [];
+    let last = null;
+    const fail = (index, what) => failures.push(`step ${index + 1}: ${what}`);
+    const ids = (list) => (list ?? []).map((item) => item.field).sort();
+    const resolveArgs = (args) => {
+      const out = {};
+      for (const [key, value] of Object.entries(args)) {
+        out[key.startsWith("$") ? resolve(key) : key] = typeof value === "string" && value.startsWith("$") ? resolve(value) : value;
+      }
+      if (Array.isArray(out.fields)) out.fields = out.fields.map((f) => f.startsWith("$") ? resolve(f) : f);
+      return out;
+    };
+    for (const [index, step] of script.steps.entries()) {
+      if ("user" in step) fake.userSays(step.user);
+      else if ("partial" in step) fake.partial(step.partial);
+      else if ("agentSays" in step) fake.agentSays(step.agentSays);
+      else if ("wait" in step) await new Promise((r) => setTimeout(r, step.wait));
+      else if ("tool" in step) {
+        last = await fake.toolCall(step.tool, resolveArgs(step.args));
+        results.push(last);
+      } else if ("expectResult" in step) {
+        const want = step.expectResult;
+        if (!last) {
+          fail(index, "no tool result to check");
+          continue;
+        }
+        if (want.justFilled) {
+          const expected = want.justFilled.map(resolve).sort();
+          if (JSON.stringify(ids(last.just_filled)) !== JSON.stringify(expected)) {
+            fail(index, `just_filled ${JSON.stringify(ids(last.just_filled))}, expected ${JSON.stringify(expected)}`);
+          }
+        }
+        if (want.notFilled) {
+          for (const item of want.notFilled) {
+            const found = (last.not_filled ?? []).find((n) => n.field === resolve(item.field));
+            if (!found) fail(index, `expected ${item.field} not filled`);
+            else if (item.why && found.why !== item.why) fail(index, `${item.field} not filled because ${found.why}, expected ${item.why}`);
+          }
+        }
+        if (want.waiting) {
+          const expected = want.waiting.map(resolve).sort();
+          if (JSON.stringify(ids(last.waiting_for_yes)) !== JSON.stringify(expected)) {
+            fail(index, `waiting ${JSON.stringify(ids(last.waiting_for_yes))}, expected ${JSON.stringify(expected)}`);
+          }
+        }
+        if (want.doNextHas && !String(last.do_next ?? "").includes(want.doNextHas)) {
+          fail(index, `do_next "${last.do_next}" lacks "${want.doNextHas}"`);
+        }
+        if (want.doNextLacks && String(last.do_next ?? "").includes(want.doNextLacks)) {
+          fail(index, `do_next "${last.do_next}" should not mention "${want.doNextLacks}"`);
+        }
+      } else if ("expectFinal" in step) {
+        const fields = conductor.session.state().fields;
+        const value = (ref) => {
+          const field = fields.find((f) => f.spec.id === resolve(ref));
+          return field ? field.value : void 0;
+        };
+        for (const [ref, want] of Object.entries(step.expectFinal.values ?? {})) {
+          const got = value(ref);
+          if (got === void 0) fail(index, `no field ${ref}`);
+          else if (!String(Array.isArray(got) ? got.join(", ") : got).includes(want)) {
+            fail(index, `${ref} is ${JSON.stringify(got)}, expected it to contain ${JSON.stringify(want)}`);
+          }
+        }
+        for (const ref of step.expectFinal.empty ?? []) {
+          const got = value(ref);
+          if (got !== null) fail(index, `${ref} should be empty, is ${JSON.stringify(got)}`);
+        }
+        for (const words3 of step.expectFinal.promptHas ?? []) {
+          if (!fake.prompt.includes(words3)) fail(index, `the agent's prompt lacks "${words3}"`);
+        }
+      }
+    }
+    return { ok: failures.length === 0, failures, results };
+  }
 
   // tools/probe.ts
   window.__longtake = {
@@ -3689,6 +4465,10 @@
     VoiceStartError,
     nextReconnect,
     resumeLine,
+    matchOption,
+    Conductor,
+    FakeVoice,
+    runScript,
     inspect: () => {
       const read = readForm();
       window.__longtake.last = read;

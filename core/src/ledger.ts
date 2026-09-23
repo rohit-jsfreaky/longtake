@@ -38,6 +38,8 @@ export type Pending = {
 export class Ledger {
   private written = new Map<string, LedgerEntry>();
   private declined = new Set<string>();
+  /** Put off by the person: asked again only once everything else is done. */
+  private later = new Set<string>();
   private pending = new Map<string, Pending>();
   /** Fields that already had something in them when the session opened. */
   private atOpen = new Set<string>();
@@ -67,6 +69,18 @@ export class Ledger {
 
   isDeclined(id: string): boolean {
     return this.declined.has(id);
+  }
+
+  /**
+   * "Skip this, we'll do it at the end." Not declined — it will be asked again — just not now.
+   * Nothing is written or cleared; the field keeps whatever it has.
+   */
+  setAside(id: string): void {
+    this.later.add(id);
+  }
+
+  isSetAside(id: string): boolean {
+    return this.later.has(id);
   }
 
   hold(id: string, pending: Pending): void {

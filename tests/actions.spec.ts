@@ -419,7 +419,7 @@ test.describe("a Google Form", () => {
     expect(r.page_did_not_change).toBe(true);
     expect(JSON.stringify(r.the_form_says)).toContain("This is a required question");
     // Still on this page, so the plan is still this page: the next empty required question.
-    expect(String(r.do_next)).toMatch(/Ask for (Date of Birth|Gender)/);
+    expect(String(r.do_next)).toMatch(/Ask for[^\n]*(Date of Birth|Gender)/);
   });
 
   test("once it is answered, the same Next moves on", async ({ page }) => {

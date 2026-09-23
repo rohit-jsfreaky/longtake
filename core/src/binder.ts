@@ -267,6 +267,78 @@ export function buildClearTool(specs: FieldSpec[]): VoiceAgentTool {
   };
 }
 
+export const CONFIRM_TOOL_NAME = "confirm_answer";
+
+/**
+ * The person's reply to "is that right?", as the agent understood it.
+ *
+ * An answer they did not name — "Twitter" on a list offering "Social Media" — waits for their yes.
+ * Whether a reply IS a yes ("do it", "haan wahi", "that one", "sure, go on") is for the model to
+ * judge, in any words and any language; this tool is how it says what it judged. The evidence is
+ * checked against the transcript like every other quote, so the reply has to be one they gave.
+ */
+export function buildConfirmTool(specs: FieldSpec[]): VoiceAgentTool {
+  const ids = specs.filter((spec) => !spec.suspectedHoneypot && spec.kind !== "file").map((spec) => spec.id);
+  return {
+    type: "function",
+    name: CONFIRM_TOOL_NAME,
+    description:
+      "After you asked about an answer waiting for their yes, report their reply. agreed: true if they accepted it in any words or language, false if they said no or wanted something else. Only for fields waiting for their yes.",
+    parameters: {
+      type: "object",
+      properties: {
+        field: {
+          type: "string",
+          description: "The field that was waiting.",
+          ...(ids.length > 0 ? { enum: ids } : {}),
+        },
+        agreed: { type: "boolean", description: "Did they accept the answer you offered?" },
+        evidence: { type: "string", description: "Their reply, quoted exactly." },
+      },
+      required: ["field", "agreed", "evidence"],
+      additionalProperties: false,
+    },
+    execution_mode: EXECUTION_MODE,
+    timeout_seconds: TIMEOUT_SECONDS,
+  };
+}
+
+export const LATER_TOOL_NAME = "skip_for_now";
+
+/**
+ * "Skip this one, we'll come back to it." Moves fields to the end of the queue — nothing is written
+ * or cleared. Without it, a person who wanted to leave a hard question for last had no way to say
+ * so: the plan always asked the first empty required field, and the agent, stuck repeating it,
+ * told them the form would not let them move on. No form works that way.
+ */
+export function buildLaterTool(specs: FieldSpec[]): VoiceAgentTool {
+  const ids = specs.filter((spec) => !spec.suspectedHoneypot && spec.kind !== "file").map((spec) => spec.id);
+  return {
+    type: "function",
+    name: LATER_TOOL_NAME,
+    description:
+      "Put fields off until the end when the person says skip it, later, come back to it, or do the rest first. Nothing is filled or cleared; they are asked again once everything else is done.",
+    parameters: {
+      type: "object",
+      properties: {
+        fields: {
+          type: "array",
+          description: "The fields to come back to.",
+          items: ids.length > 0 ? { type: "string", enum: ids } : { type: "string" },
+        },
+        evidence: {
+          type: "string",
+          description: "The person's own words asking to skip it, quoted exactly.",
+        },
+      },
+      required: ["fields", "evidence"],
+      additionalProperties: false,
+    },
+    execution_mode: EXECUTION_MODE,
+    timeout_seconds: TIMEOUT_SECONDS,
+  };
+}
+
 export const PRESS_TOOL_NAME = "press_form_button";
 
 /**

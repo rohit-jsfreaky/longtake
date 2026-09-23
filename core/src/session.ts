@@ -17,7 +17,15 @@
  */
 
 import { pressAction, readActions, type ActionsRead } from "./actions";
-import { buildClearTool, buildFillTool, buildPressTool, validateTool, type VoiceAgentTool } from "./binder";
+import {
+  buildClearTool,
+  buildConfirmTool,
+  buildFillTool,
+  buildLaterTool,
+  buildPressTool,
+  validateTool,
+  type VoiceAgentTool,
+} from "./binder";
 import { openingLine, phoneFields, summarise, type FormReshape } from "./conversation";
 import { exclusively, whenSettled } from "./dom-path";
 import { checkEvidence, keepOnlyWhatWasSaid } from "./evidence";
@@ -102,7 +110,86 @@ export class LongtakeSession {
   tools(): VoiceAgentTool[] {
     const specs = this.current?.specs ?? [];
     const press = this.current ? buildPressTool(this.buttons().actions) : null;
-    return press ? [buildFillTool(specs), buildClearTool(specs), press] : [buildFillTool(specs), buildClearTool(specs)];
+    const always = [buildFillTool(specs), buildConfirmTool(specs), buildClearTool(specs), buildLaterTool(specs)];
+    return press ? [...always, press] : always;
+  }
+
+  /**
+   * The `confirm_answer` tool: their reply to "is that right?", as the agent understood it.
+   *
+   * Agreed: the answer that was waiting goes in, through the same write, record and re-read as a
+   * fill — its evidence is their original words plus their yes. Not agreed: it stops waiting, and
+   * the plan goes back to asking the question.
+   */
+  async confirm(args: Record<string, unknown>, heard: string): Promise<Done<Record<string, unknown>>> {
+    const read = this.current;
+    if (!read) return { result: { error: "The form has not been read yet." }, outcomes: [], spoken: [] };
+    const id = typeof args.field === "string" ? args.field : "";
+    const agreed = args.agreed === true;
+    const evidence = typeof args.evidence === "string" ? args.evidence : "";
+    const spec = read.specs.find((s) => s.id === id);
+    const pending = this.ledger.pendingFor(id);
+
+    if (!spec || !pending) {
+      return { result: { error: `Nothing is waiting for a yes on "${id}".`, do_next: doNext(this.move()), submitted: false }, outcomes: [], spoken: [] };
+    }
+    if (!checkEvidence(heard, evidence).ok) {
+      return { result: { confirmed: false, why: "quote_not_found", submitted: false }, outcomes: [], spoken: [] };
+    }
+
+    const question = (spec.label || id).replace(/\s*\*\s*$/, "").trim();
+    if (!agreed) {
+      this.ledger.release(id);
+      const state = this.state();
+      this.options.onChange?.();
+      return {
+        result: { not_confirmed: { field: id, question }, progress: state.progress, do_next: doNext(this.move()), submitted: false },
+        outcomes: [],
+        spoken: [],
+      };
+    }
+
+    const claim: SpokenValue = { fieldId: id, value: pending.suggestion, evidence: `${pending.heard} — ${evidence}` };
+    this.writing = true;
+    this.movedWhileWriting = false;
+    let results: WriteOutcome[];
+    try {
+      results = await writeValues(read.specs, read.handles, [claim]);
+    } finally {
+      this.writing = false;
+    }
+    this.record(results, [claim], read, "spoken");
+    const reshaped =
+      (results[0]?.status === "written" && CHOICE_KINDS.has(spec.kind)) || this.movedWhileWriting ? await this.pageChanged() : null;
+    const result = this.report(results, [claim], reshaped, { waiting_for_yes: [] });
+    this.options.onChange?.();
+    return { result, outcomes: results, spoken: [claim] };
+  }
+
+  /**
+   * The `skip_for_now` tool: "leave that, we'll do it at the end". Needs their words, like
+   * everything else; changes nothing on the page — only the order things are asked in.
+   */
+  setAside(args: Record<string, unknown>, heard: string): Done<Record<string, unknown>> {
+    const read = this.current;
+    if (!read) return { result: { error: "The form has not been read yet." }, outcomes: [], spoken: [] };
+    const fields = Array.isArray(args.fields) ? args.fields.map(String) : [];
+    const evidence = typeof args.evidence === "string" ? args.evidence : "";
+    if (!checkEvidence(heard, evidence).ok) {
+      return { result: { set_aside: [], why: "quote_not_found", submitted: false }, outcomes: [], spoken: [] };
+    }
+    const byId = new Map(read.specs.map((spec) => [spec.id, spec]));
+    const moved = fields.filter((id) => byId.has(id));
+    for (const id of moved) this.ledger.setAside(id);
+    const state = this.state();
+    const result = {
+      set_aside: moved.map((id) => (byId.get(id)?.label || id).replace(/\s*\*\s*$/, "").trim()),
+      progress: state.progress,
+      do_next: doNext(this.move()),
+      submitted: false,
+    };
+    this.options.onChange?.();
+    return { result, outcomes: [], spoken: [] };
   }
 
   /** The form's buttons as they are right now — read fresh, since a page can rename them. */

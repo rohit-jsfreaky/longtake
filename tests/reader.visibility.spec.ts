@@ -239,3 +239,65 @@ test.describe("controls that really are tiny", () => {
     expect((await read(page)).specs).toHaveLength(0);
   });
 });
+
+/**
+ * The accessible way to style a choice: the native input shrunk to nothing, its label drawn as the
+ * box. Copied from a real Jotform page (Actsafe's membership form), where it hid every checkbox
+ * and radio on the form from Longtake.
+ */
+test.describe("a choice drawn by its label", () => {
+  const HIDDEN = "position:absolute;width:1px;height:1px;opacity:0;clip:rect(1px,1px,1px,1px)";
+  const box = (id: string, value: string, type = "checkbox", name = "industry[]") =>
+    `<span><input type="${type}" id="${id}" name="${name}" value="${value}" aria-labelledby="l_${id}" style="${HIDDEN}">` +
+    `<label aria-hidden="true" id="l_${id}" for="${id}">${value}</label></span>`;
+
+  test("a checkbox group whose inputs are hidden but whose labels show is one field with its choices", async ({ page }) => {
+    await load(
+      page,
+      `<div role="group" aria-labelledby="q"><span id="q">Industry</span>
+         ${box("a", "Performing Arts")}${box("b", "Motion Picture")}${box("c", "Both")}
+       </div>`,
+    );
+    const { specs } = await read(page);
+    expect(specs).toHaveLength(1);
+    expect(specs[0]!.kind).toBe("multiselect");
+    expect(specs[0]!.options!.map((o) => o.label)).toEqual(["Performing Arts", "Motion Picture", "Both"]);
+  });
+
+  test("so is a radio group", async ({ page }) => {
+    await load(
+      page,
+      `<fieldset><legend>Are you applying as</legend>
+         ${box("i", "Independent Representative", "radio", "who")}${box("o", "Organization Representative", "radio", "who")}
+       </fieldset>`,
+    );
+    const { specs } = await read(page);
+    expect(specs).toHaveLength(1);
+    expect(specs[0]!.kind).toBe("radio");
+  });
+
+  test("a label wrapped around the hidden input counts too", async ({ page }) => {
+    await load(page, `<label><input type="checkbox" name="agree" style="${HIDDEN}"> I agree to be contacted</label>`);
+    expect((await read(page)).specs).toHaveLength(1);
+  });
+
+  test("a hidden checkbox whose label is hidden with it stays out — that is a honeypot", async ({ page }) => {
+    await load(
+      page,
+      `<input type="checkbox" id="h" name="confirm_human" style="${HIDDEN}"><label for="h" style="display:none">Confirm</label>`,
+    );
+    const result = await read(page);
+    expect(result.specs).toHaveLength(0);
+    expect(result.skipped).toHaveLength(1);
+  });
+
+  test("a hidden checkbox with no label at all stays out", async ({ page }) => {
+    await load(page, `<input type="checkbox" name="website_check" aria-label="Website" style="${HIDDEN}">`);
+    expect((await read(page)).specs).toHaveLength(0);
+  });
+
+  test("a hidden TEXT box is not rescued by its label — you could not see what you typed", async ({ page }) => {
+    await load(page, `<label for="t">Nickname</label><input id="t" style="${HIDDEN}">`);
+    expect((await read(page)).specs).toHaveLength(0);
+  });
+});

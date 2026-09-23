@@ -1,0 +1,41 @@
+<!doctype html>
+<!--
+  Shown only when Longtake cannot open on the page at all — a browser page, the Web Store, a PDF.
+  Everywhere else the toolbar icon opens Longtake's window on the page itself. The reason comes in
+  the query string from background.js; popup.js fills it in.
+-->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      * { box-sizing: border-box; }
+      body {
+        margin: 0; width: 320px; padding: 16px;
+        font: 13.5px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+        color: #fafafa; background: #08090a;
+      }
+      header { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+      .title { font-weight: 600; }
+      .sub { color: #9a9aa2; font-size: 12px; }
+      .lead { font-size: 15px; margin: 0 0 6px; color: #fafafa; }
+      p { margin: 0 0 10px; color: #9a9aa2; }
+      button {
+        all: unset; cursor: pointer; display: flex; align-items: center; justify-content: center;
+        height: 36px; width: 100%; border-radius: 12px; border: 1px solid rgba(255,255,255,.14); color: #fafafa;
+      }
+      button:hover { border-color: rgba(255,255,255,.3); }
+      button:active { transform: scale(0.97); }
+      [hidden] { display: none; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <img src="icons/icon-32.png" width="22" height="22" alt="" />
+      <div><div class="title">Longtake</div><div class="sub">The whole form, in one take</div></div>
+    </header>
+    <p class="lead" id="lead"></p>
+    <p id="detail"></p>
+    <button id="reload" hidden>Reload this page</button>
+    <script src="popup.js"></script>
+  </body>
+</html>

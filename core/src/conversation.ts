@@ -132,7 +132,13 @@ export function openingLine(
     }),
   })).filter((group) => group.fields.length > 0);
 
-  const alreadyIn = easyGroups.filter((group) => group.fields.every((spec) => done.has(spec.id)));
+  // A group is in when the parts the form needs are in. Greenhouse puts an optional "Preferred
+  // First Name" beside First and Last: requiring all three said "I've put in your email" on a form
+  // whose counter read 3 filled, name included. The optional one is asked later, in its turn.
+  const alreadyIn = easyGroups.filter((group) => {
+    const needed = group.fields.filter((spec) => spec.required);
+    return (needed.length > 0 ? needed : group.fields).every((spec) => done.has(spec.id));
+  });
   const toSay = easyGroups
     .filter((group) => !alreadyIn.includes(group))
     .map((group) => group.say)

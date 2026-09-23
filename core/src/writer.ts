@@ -161,12 +161,48 @@ function readAsYesOrNo(value: unknown): boolean {
  * once it is open are judged by exactly the same standard. Returns the index of the single
  * candidate the speaker meant, or `null`.
  */
+/**
+ * An option's name without what a person never says aloud: a trailing dialling code ("India +91")
+ * or a bracketed short form ("… Kharagpur (IITKGP)"). Normalised.
+ */
+function bareName(label: string): string {
+  return normalise(label.replace(/\s*\+\d[\d\s-]*$/, "").replace(/\s*\([^)]*\)\s*$/, ""));
+}
+
+/**
+ * Does a widget showing this text hold this choice?
+ *
+ * Usually it shows the choice's words. Some show only part of them: Greenhouse's phone Country
+ * picker, given "India +91", shows a flag and "+91". Checked for the whole label only, that write
+ * was reported as refused by the page — twice — while India sat in the box.
+ */
+function showsChoice(showing: string, chosen: string): boolean {
+  const shown = normalise(showing);
+  const wanted = normalise(chosen);
+  if (!shown) return false;
+  return shown.includes(wanted) || (shown.length >= 2 && ` ${wanted} `.includes(` ${shown} `));
+}
+
 function matchAmong(candidates: string[], spoken: string): number | null {
   const want = normalise(spoken);
   if (!want) return null;
 
   const exact = candidates.findIndex((candidate) => normalise(candidate) === want);
   if (exact >= 0) return exact;
+
+  // The same once a dialling code or a bracketed short name is set aside: "India +91" is India,
+  // "Indian Institute of Technology Kharagpur (IITKGP)" is the institute.
+  const plain = candidates.map(bareName);
+  if (plain.filter((text) => text === want).length === 1) return plain.indexOf(want);
+
+  // The spoken words as whole words. Greenhouse's phone Country search for "India" returns
+  // "British Indian Ocean Territory +246" and "India +91": as a bare substring "india" is in
+  // both, and the field was refused as ambiguous with India right there on the list.
+  const whole: number[] = [];
+  candidates.forEach((candidate, index) => {
+    if (` ${normalise(candidate)} `.includes(` ${want} `)) whole.push(index);
+  });
+  if (whole.length === 1) return whole[0]!;
 
   // One candidate contains the spoken words, or the spoken words contain it — but only if
   // exactly one does. Two means we do not actually know which was meant, and a coin flip on
@@ -201,8 +237,10 @@ export function optionNamedIn(spec: FieldSpec, evidence: string | undefined): { 
   const named = (spec.options ?? [])
     .filter((option) => option.value !== "")
     .filter((option) => {
-      const label = normalise(option.label);
-      return label.length >= 2 && heard.includes(` ${label} `);
+      // Named in full, or by the name a person actually says — "India" for "India +91".
+      return [normalise(option.label), bareName(option.label)].some(
+        (label) => label.length >= 2 && heard.includes(` ${label} `),
+      );
     });
 
   return named.length === 1 ? named[0]! : null;
@@ -476,7 +514,7 @@ async function pickFromWidget(
 
   // Confirmed against what the page now shows — never against the value we set ourselves.
   const showing = renderedText(el);
-  const took = normalise(showing).includes(normalise(chosen)) && showing !== wasShowing;
+  const took = showsChoice(showing, chosen) && showing !== wasShowing;
 
   if (!took) {
     closeWidget(el);
@@ -565,7 +603,7 @@ async function typeAndPick(spec: FieldSpec, el: HTMLElement, spoken: string): Pr
       pressOption(candidates[index]!);
       await sleep(200);
       const showing = renderedText(el);
-      if (normalise(showing).includes(normalise(chosen))) return { fieldId: spec.id, status: "written", wrote: chosen };
+      if (showsChoice(showing, chosen)) return { fieldId: spec.id, status: "written", wrote: chosen };
       closeWidget(el);
       return { fieldId: spec.id, status: "rejected-by-page", wrote: chosen, found: showing };
     }

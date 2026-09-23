@@ -48,7 +48,9 @@ async function formFrame(tabId) {
       // No content script in that frame — about:blank ads, sandboxed frames. Not ours.
     }
   }
-  return best && best.fields > 0 ? best.frameId : best?.top ? 0 : null;
+  // The frame with the form, or — when no frame has one — the top frame, so the panel can say so.
+  if (!best) return null;
+  return best.fields > 0 ? best.frameId : 0;
 }
 
 chrome.commands.onCommand.addListener(async (command, tab) => {
@@ -57,17 +59,70 @@ chrome.commands.onCommand.addListener(async (command, tab) => {
   if (tabId !== undefined) await toggle(tabId);
 });
 
-/** Start or stop Longtake in a tab. Named, so the extension's own tests can press the hotkey. */
+// The toolbar icon does exactly what the hotkey does. A hotkey can fail to register — Chrome and
+// Brave silently leave it unassigned when another extension or the browser already uses it — so
+// the icon is the one way in that always works.
+chrome.action.onClicked.addListener((tab) => {
+  if (tab?.id !== undefined) void toggle(tab.id);
+});
+
+/** Open or close Longtake in a tab. Named, so the extension's own tests can press the hotkey. */
 async function toggle(tabId) {
-  // A tab already live is stopped wherever it is running.
+  // A tab already live is toggled wherever it is running.
   const live = await liveTabs();
   if (live[tabId]) {
-    await chrome.tabs.sendMessage(tabId, { type: "longtake:toggle" }, { frameId: live[tabId].frameId }).catch(() => {});
-    return;
+    const sent = await chrome.tabs
+      .sendMessage(tabId, { type: "longtake:toggle" }, { frameId: live[tabId].frameId })
+      .catch(() => null);
+    if (sent) return;
+    await setLive(tabId, null); // that frame is gone; start over below
   }
-  const frameId = await formFrame(tabId);
-  if (frameId === null) return; // chrome:// pages, the Web Store, PDF viewers: nothing to fill
+  let frameId = await formFrame(tabId);
+  if (frameId === null) {
+    // Nothing answered: a tab that was open before the extension was installed or reloaded has
+    // no content script in it. Put one in now, rather than asking the person to reload the page
+    // and lose what they typed.
+    const why = await inject(tabId);
+    if (why) {
+      await explain(tabId, why);
+      return;
+    }
+    frameId = await formFrame(tabId);
+    if (frameId === null) {
+      await explain(tabId, "failed");
+      return;
+    }
+  }
   await chrome.tabs.sendMessage(tabId, { type: "longtake:toggle" }, { frameId }).catch(() => {});
+}
+
+/** Load the content script into a tab that lacks it. Returns why it could not, or null. */
+async function inject(tabId) {
+  try {
+    await chrome.scripting.executeScript({ target: { tabId, allFrames: true }, files: ["dist/content.js"] });
+    return null;
+  } catch (cause) {
+    // Chrome refuses outright on its own pages, the Web Store and the PDF viewer.
+    return /cannot be scripted|chrome:\/\/|extensions gallery|Cannot access|brave:\/\//i.test(String(cause))
+      ? "blocked"
+      : "failed";
+  }
+}
+
+/**
+ * Say why Longtake did not open, where the person is looking: a popup from the icon they clicked.
+ * Set for this tab only, and cleared by the popup itself, so the next click tries the page again.
+ */
+async function explain(tabId, why) {
+  await chrome.action.setPopup({ tabId, popup: `popup.html?why=${why}&tab=${tabId}` });
+  try {
+    await chrome.action.openPopup();
+  } catch {
+    // Some browsers only open an action popup from a click on the icon itself. The popup is set,
+    // so that click shows it; the badge says there is something to see.
+    await chrome.action.setBadgeBackgroundColor({ tabId, color: "#e0b060" });
+    await chrome.action.setBadgeText({ tabId, text: "!" });
+  }
 }
 globalThis.longtakeToggle = toggle;
 
@@ -96,6 +151,13 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
       }
     })();
     return true; // answered asynchronously
+  }
+
+  if (message?.type === "longtake:settings") {
+    // Content scripts cannot open extension pages themselves.
+    const tab = message.tab === "voice" ? "#voice" : "";
+    void chrome.tabs.create({ url: chrome.runtime.getURL(`options.html${tab}`) });
+    return;
   }
 
   if (message?.type === "longtake:active" && tabId !== undefined) {

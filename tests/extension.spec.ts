@@ -15,10 +15,9 @@
 
 /// <reference types="chrome" />
 import { chromium, expect, test, type BrowserContext, type Worker } from "@playwright/test";
-import { createServer, type Server } from "node:http";
-import type { AddressInfo } from "node:net";
 import { resolve } from "node:path";
-import { WebSocketServer, type WebSocket } from "ws";
+
+import { startFakeAgentServer, type FakeAgentServer } from "./support/fake-agent-server";
 
 const EXTENSION = resolve(process.cwd(), "extension");
 
@@ -33,59 +32,29 @@ const FORM = `<!doctype html><html><head><meta charset="utf-8"><title>Apply</tit
   <div id="sent">not sent</div>
 </body></html>`;
 
-type Agent = { sockets: WebSocket[]; received: { type: string; [k: string]: unknown }[][] };
-
-let server: Server;
-let agent: Agent;
+let agent: FakeAgentServer;
 let port: number;
 
 test.beforeAll(async () => {
-  agent = { sockets: [], received: [] };
-  let tokens = 0;
-  server = createServer((req, res) => {
-    if (req.url?.startsWith("/api/voice-token")) {
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({ token: `tok-${++tokens}` }));
-      return;
-    }
+  agent = await startFakeAgentServer({
     // A form that loads each page afresh, the way Google Forms posts every page.
-    if (req.url?.startsWith("/page1")) {
-      res.writeHead(200, { "content-type": "text/html" });
-      res.end(`<!doctype html><html><body><h1>Volunteer sign-up</h1>
+    "/page1": {
+      html: `<!doctype html><html><body><h1>Volunteer sign-up</h1>
         <form action="/page2" method="get"><label for="n">Full name</label><input id="n" name="n" required>
-        <button type="submit">Next</button></form></body></html>`);
-      return;
-    }
-    if (req.url?.startsWith("/page2")) {
-      res.writeHead(200, { "content-type": "text/html" });
-      res.end(`<!doctype html><html><body><h1>Volunteer sign-up</h1>
+        <button type="submit">Next</button></form></body></html>`,
+    },
+    "/page2": {
+      html: `<!doctype html><html><body><h1>Volunteer sign-up</h1>
         <form action="/done" method="get"><label for="c">City</label><input id="c" name="c" required>
-        <button type="submit">Submit</button></form></body></html>`);
-      return;
-    }
-    if (req.url?.startsWith("/form")) {
-      res.writeHead(200, { "content-type": "text/html", "content-security-policy": "connect-src 'self'" });
-      res.end(FORM);
-      return;
-    }
-    res.writeHead(404).end();
+        <button type="submit">Submit</button></form></body></html>`,
+    },
+    "/form": { html: FORM, headers: { "content-security-policy": "connect-src 'self'" } },
   });
-  const wss = new WebSocketServer({ server, path: "/v1/ws" });
-  wss.on("connection", (socket) => {
-    const index = agent.sockets.push(socket) - 1;
-    agent.received[index] = [];
-    socket.on("message", (data) => {
-      const message = JSON.parse(String(data));
-      if (message.type === "input.audio") return;
-      agent.received[index]!.push(message);
-    });
-  });
-  await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
-  port = (server.address() as AddressInfo).port;
+  port = agent.port;
 });
 
 test.afterAll(async () => {
-  await new Promise((done) => server.close(done));
+  await agent.close();
 });
 
 async function launch(): Promise<{ context: BrowserContext; worker: Worker }> {
@@ -109,7 +78,7 @@ async function launch(): Promise<{ context: BrowserContext; worker: Worker }> {
   return { context, worker };
 }
 
-const serve = (i: number, message: unknown) => agent.sockets[i]!.send(JSON.stringify(message));
+const serve = (i: number, message: unknown) => agent.serve(i, message);
 
 test.describe("the extension on someone else's page", () => {
   test.setTimeout(60_000);
@@ -124,8 +93,17 @@ test.describe("the extension on someone else's page", () => {
 
       await worker.evaluate(async () => {
         const [tab] = await chrome.tabs.query({ url: "http://localhost/*" });
+        // A second copy of the script, as the background injects into a tab opened before the
+        // extension was: it must not answer twice or open two panels.
+        await chrome.scripting.executeScript({ target: { tabId: tab!.id!, allFrames: true }, files: ["dist/content.js"] });
         await (globalThis as unknown as { longtakeToggle: (id: number) => Promise<void> }).longtakeToggle(tab!.id!);
       });
+      // The hotkey only opens the panel; nothing listens until the person presses Start.
+      await page.waitForTimeout(300);
+      await expect(page.locator("longtake-panel")).toHaveCount(1);
+      await page.waitForTimeout(300);
+      expect(agent.sockets.length).toBe(0);
+      await page.keyboard.press("Enter"); // Start has the focus
 
       // The call opens despite the page's CSP, with a token from the background worker.
       await expect.poll(() => agent.received[0]?.[0]?.type ?? null, { timeout: 20_000 }).toBe("session.update");
@@ -185,6 +163,8 @@ test.describe("the extension on someone else's page", () => {
         });
 
       await press();
+      await page.waitForTimeout(300);
+      await page.keyboard.press("Enter");
       await expect.poll(() => agent.received[before]?.[0]?.type ?? null, { timeout: 20_000 }).toBe("session.update");
       serve(before, { type: "session.ready", session_id: "sess_y" });
       await page.waitForTimeout(300);
@@ -209,6 +189,8 @@ test.describe("the extension on someone else's page", () => {
         const [tab] = await chrome.tabs.query({ url: "http://localhost/*" });
         await (globalThis as unknown as { longtakeToggle: (id: number) => Promise<void> }).longtakeToggle(tab!.id!);
       });
+      await page.waitForTimeout(300);
+      await page.keyboard.press("Enter");
       await expect.poll(() => agent.received[before]?.[0]?.type ?? null, { timeout: 20_000 }).toBe("session.update");
       serve(before, { type: "session.ready", session_id: "sess_p1" });
       serve(before, { type: "transcript.user", text: "Rohit Kashyap. Haan, next page" });
@@ -221,13 +203,76 @@ test.describe("the extension on someone else's page", () => {
       await expect(page.locator("#n")).toHaveValue("Rohit Kashyap");
       serve(before, { type: "tool.call", call_id: "c2", name: "press_form_button", arguments: { action: "next_next", evidence: "next page" } });
 
-      // The page reloads; the next one starts its own call, told about the new page's questions.
+      // The page reloads; the next one offers to carry on, and one Enter starts its own call,
+      // told about the new page's questions.
       await page.waitForURL(/\/page2/, { timeout: 10_000 });
+      await expect(page.locator("longtake-panel")).toHaveCount(1, { timeout: 10_000 });
+      await page.waitForTimeout(300);
+      await page.keyboard.press("Enter");
       await expect.poll(() => agent.received[before + 1]?.[0]?.type ?? null, { timeout: 20_000 }).toBe("session.update");
       const next = agent.received[before + 1]![0] as unknown as { session: { tools: { name: string; parameters: { properties: object } }[] } };
       const fill = next.session.tools.find((t) => t.name === "fill_fields")!;
       expect(Object.keys(fill.parameters.properties)).toEqual(["city"]);
       await expect(page.locator("longtake-panel")).toHaveCount(1);
+    } finally {
+      await context.close();
+    }
+  });
+
+  test("the settings page shows saved answers, edits and removes them, and the chosen voice is used", async () => {
+    const before = agent.sockets.length;
+    const { context, worker } = await launch();
+    try {
+      const id = new URL(worker.url()).host;
+      await worker.evaluate(() =>
+        chrome.storage.local.set({
+          "longtake.memory.v1": {
+            version: 1,
+            memory: {
+              email: { key: "email", value: "rohit@example.com", evidence: "rohit at example dot com", askedAs: "Email", savedAt: 1, sourceUrl: "https://job-boards.greenhouse.io/x" },
+              city: { key: "city", value: "Kolkata", evidence: "Kolkata mein", askedAs: "City", savedAt: 1, sourceUrl: "https://job-boards.greenhouse.io/x" },
+            },
+          },
+        }),
+      );
+      const settings = await context.newPage();
+      await settings.goto(`chrome-extension://${id}/options.html`);
+      await expect(settings.locator(".row")).toHaveCount(2);
+      await expect(settings.getByLabel("Email")).toHaveValue("rohit@example.com");
+
+      // Edit one, remove the other.
+      await settings.getByLabel("Email").fill("rohit.k@example.com");
+      await settings.locator(".row", { has: settings.getByLabel("Email") }).getByRole("button", { name: "Save" }).click();
+      await settings.locator(".row", { has: settings.getByLabel("City") }).getByRole("button", { name: "Remove" }).click();
+      await expect(settings.locator(".row")).toHaveCount(1);
+      const stored = (await worker.evaluate(async () => (await chrome.storage.local.get("longtake.memory.v1"))["longtake.memory.v1"])) as {
+        memory: Record<string, { value: string }>;
+      };
+      expect(Object.keys(stored.memory)).toEqual(["email"]);
+      expect(stored.memory.email.value).toBe("rohit.k@example.com");
+
+      // Choose a voice; every voice has a sample to play.
+      await settings.getByRole("tab", { name: "Voice" }).click();
+      await expect(settings.locator(".voice")).toHaveCount(11);
+      await settings.locator(".voice", { hasText: "vera" }).click();
+      await expect(settings.locator(".voice[aria-checked=true]")).toContainText("vera");
+      const sample = await settings.evaluate(async () => (await fetch("voices/vera.wav")).headers.get("content-type"));
+      expect(sample).toContain("audio");
+
+      // The next call speaks in it, and prefills the edited answer.
+      const page = await context.newPage();
+      await page.goto(`http://localhost:${port}/form`);
+      await page.waitForTimeout(500);
+      await worker.evaluate(async () => {
+        const [tab] = await chrome.tabs.query({ url: "http://localhost/*" });
+        await (globalThis as unknown as { longtakeToggle: (id: number) => Promise<void> }).longtakeToggle(tab!.id!);
+      });
+      await page.waitForTimeout(300);
+      await page.keyboard.press("Enter");
+      await expect.poll(() => agent.received[before]?.[0]?.type ?? null, { timeout: 20_000 }).toBe("session.update");
+      const opening = agent.received[before]![0] as unknown as { session: { output: { voice: string } } };
+      expect(opening.session.output.voice).toBe("vera");
+      await expect(page.locator("#email")).toHaveValue("rohit.k@example.com");
     } finally {
       await context.close();
     }

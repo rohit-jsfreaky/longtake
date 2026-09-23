@@ -1,0 +1,561 @@
+/**
+ * One call, from Start to Stop: the session, the voice, and everything that joins them.
+ *
+ * ## Why this exists
+ *
+ * The landing page (`web/src/lib/use-longtake.ts`) and the extension (`extension/src/content.ts`)
+ * each held their own copy of this: which tool does what, what counts as "heard", when to switch
+ * to conversation timing, when to catch the agent up, how to watch the page, what to log, what to
+ * show when an answer does not go in. The copies had already drifted — the extension showed every
+ * failed answer, the site only some; the site logged every frame, the extension none. A scripted
+ * replay could only ever prove one of them.
+ *
+ * Now both run this. They differ only in `ConductorServices` — where the token comes from, where
+ * the audio worklet is served, whether Dictation is reachable — and in how they draw `view()`.
+ *
+ * Framework-free, like the rest of `core/`. A surface subscribes and redraws; it never reaches in.
+ */
+
+import { checkEvidence } from "./evidence";
+import { clipFor, type TimelinePoint } from "./clip";
+import { CLEAR_TOOL_NAME, CONFIRM_TOOL_NAME, FILL_TOOL_NAME, LATER_TOOL_NAME, PRESS_TOOL_NAME } from "./binder";
+import { configForField, fieldsWorthShaping, shapeResult, type DictationConfig, type DictationResult, type ShapedAnswer } from "./dictation";
+import type { FormState } from "./form-state";
+import { readHesitation, type Hesitation } from "./hesitation";
+import type { RememberedAnswer } from "./memory";
+import { missesIn, type Missed } from "./notices";
+import { LongtakeSession, type MemoryStore } from "./session";
+import {
+  CONVERSATION_MODE,
+  startVoiceSession,
+  VoiceStartError,
+  type StartProblem,
+  type VoiceSession,
+  type VoiceSessionOptions,
+} from "./voice";
+import type { WriteOutcome } from "./writer";
+
+export type ConductorStatus = "idle" | "reading" | "connecting" | "live" | "reconnecting" | "stopped" | "error";
+
+export type LogEntry = { at: string; kind: "in" | "out" | "app" | "you" | "agent" | "tool"; text: string };
+
+export type Turn = { who: "you" | "agent"; text: string };
+
+/** What a surface draws. A new object every time something changes, so it can be compared by identity. */
+export type ConductorView = {
+  status: ConductorStatus;
+  error: string | null;
+  /** What kind of problem stopped the call starting — the microphone, most often. */
+  problem: StartProblem | null;
+  form: FormState;
+  /** Every write this call, in order. */
+  outcomes: WriteOutcome[];
+  /** What did not go in and why, until the field has something in it. */
+  missed: Missed[];
+  turns: Turn[];
+  /** The running text of the turn in progress. Replace, never append. */
+  partial: string;
+  shaped: Record<string, ShapedAnswer>;
+  hesitations: Record<string, Hesitation>;
+  known: RememberedAnswer[];
+  log: LogEntry[];
+};
+
+/** What differs between the site and the extension. Nothing else does. */
+export type ConductorServices = {
+  getToken: () => Promise<string>;
+  workletUrl: string;
+  wsUrl?: string;
+  voice?: string;
+  /** One Dictation pass over one answer's audio. Absent where Dictation is not reachable. */
+  dictate?: (config: DictationConfig, pcmBase64: string) => Promise<DictationResult>;
+  /** The call itself. A fake in tests; `startVoiceSession` everywhere else. */
+  startVoice?: (options: VoiceSessionOptions) => Promise<VoiceSession>;
+};
+
+export type ConductorOptions = {
+  root: () => Document | Element;
+  ignore: string;
+  memory: MemoryStore;
+  services: ConductorServices;
+  /** Log every frame in both directions, not just tool calls and turns. The site's debug view wants it. */
+  logFrames?: boolean;
+  /** A call started or ended — the extension tells its background worker, so a page load can carry it on. */
+  onActive?: (active: boolean) => void;
+};
+
+const EMPTY_FORM: FormState = {
+  title: "",
+  fields: [],
+  theirs: [],
+  actions: [],
+  progress: { filled: 0, total: 0, requiredLeft: 0, optionalLeft: 0 },
+};
+
+const LOG_LIMIT = 400;
+/** Wait this long after the page stops moving before re-reading it. */
+const SHAPE_SETTLE_MS = 500;
+/** Wait this long after the person stops typing before telling the agent. */
+const TYPING_SETTLE_MS = 1200;
+
+/** PCM16 as base64, chunked so a long answer does not overflow `String.fromCharCode`'s arguments. */
+export function pcmToBase64(samples: Int16Array): string {
+  const bytes = new Uint8Array(samples.buffer, samples.byteOffset, samples.byteLength);
+  let binary = "";
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(binary);
+}
+
+export class Conductor {
+  readonly session: LongtakeSession;
+  private voice: VoiceSession | null = null;
+  private listeners = new Set<(view: ConductorView) => void>();
+  private current: ConductorView;
+  private prepared: Promise<unknown> | null = null;
+
+  // ── Per call ───────────────────────────────────────────────────────────────────────
+  private stopped = true;
+  private transcript = "";
+  /**
+   * The turn being spoken, before it is final. The agent calls `fill_fields` mid-sentence, so a
+   * quote is checked against what has been said so far INCLUDING this — otherwise the longest
+   * answers were thrown away as invented, because their words were not in the transcript yet.
+   */
+  private partial = "";
+  private switchedMode = false;
+  private sentPrompt = "";
+  private missed = new Map<string, Missed>();
+  /** The last few finished turns: audio, words, and when each word arrived. */
+  private turnAudio: { text: string; audio: Int16Array; timeline: TimelinePoint[] }[] = [];
+  /** Long answers filled mid-sentence, waiting for their turn to end so their audio exists. */
+  private pendingClips = new Map<string, string>();
+  private askedAt: number | null = null;
+  private pauseBeforeAnswer: number | undefined;
+  private detach: (() => void) | null = null;
+
+  constructor(private readonly options: ConductorOptions) {
+    const session: LongtakeSession = new LongtakeSession({
+      root: options.root,
+      ignore: options.ignore,
+      memory: options.memory,
+      log: (line) => this.note("app", line),
+      onChange: () => this.update({ form: session.state(), known: session.remembered() }),
+      // The form's questions changed under the call: new tools and a new prompt, straight away.
+      onReshape: () => {
+        const problems = session.toolProblems();
+        if (problems.length > 0) {
+          this.note("app", `form changed but the new tools are invalid: ${problems.join("; ")}`);
+          return;
+        }
+        this.voice?.setTools(session.tools());
+        this.sentPrompt = session.prompt();
+        this.voice?.setSystemPrompt(this.sentPrompt);
+      },
+    });
+    this.session = session;
+    this.current = {
+      status: "idle",
+      error: null,
+      problem: null,
+      form: EMPTY_FORM,
+      outcomes: [],
+      missed: [],
+      turns: [],
+      partial: "",
+      shaped: {},
+      hesitations: {},
+      known: [],
+      log: [],
+    };
+  }
+
+  // ── Watching ───────────────────────────────────────────────────────────────────────
+
+  view(): ConductorView {
+    return this.current;
+  }
+
+  subscribe(listener: (view: ConductorView) => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  /** The whole call as JSON — every tool call and result in full — for a bug report. */
+  copyLog(page = typeof location === "undefined" ? "" : location.href): string {
+    return JSON.stringify({ page, turns: this.current.turns, log: this.current.log }, null, 2);
+  }
+
+  private update(patch: Partial<ConductorView>): void {
+    this.current = { ...this.current, ...patch };
+    for (const listener of this.listeners) listener(this.current);
+  }
+
+  private note(kind: LogEntry["kind"], text: string): void {
+    const log = [...this.current.log.slice(-(LOG_LIMIT - 1)), { at: new Date().toISOString(), kind, text }];
+    this.update({ log });
+  }
+
+  /** Redraw the form, and drop "didn't go in" notices for fields that now have something in them. */
+  private refresh(): void {
+    const form = this.session.state();
+    for (const field of form.fields) if (field.value !== null) this.missed.delete(field.spec.id);
+    this.update({ form, known: this.session.remembered(), missed: [...this.missed.values()] });
+  }
+
+  // ── Before the call ────────────────────────────────────────────────────────────────
+
+  /** Remembered answers go in when the page opens, before anybody presses anything. Once. */
+  prepare(): Promise<unknown> {
+    if (!this.prepared) this.prepared = this.session.prefill().then(() => this.refresh());
+    return this.prepared;
+  }
+
+  forgetOne(key: string): void {
+    this.session.forgetOne(key);
+  }
+
+  forgetEverything(): void {
+    this.session.forgetEverything();
+  }
+
+  get running(): boolean {
+    return !this.stopped;
+  }
+
+  // ── The call ───────────────────────────────────────────────────────────────────────
+
+  async start(): Promise<void> {
+    if (!this.stopped) return;
+    this.stopped = false;
+    this.transcript = "";
+    this.partial = "";
+    this.switchedMode = false;
+    this.missed = new Map();
+    this.turnAudio = [];
+    this.pendingClips = new Map();
+    this.askedAt = null;
+    this.pauseBeforeAnswer = undefined;
+    this.update({ status: "reading", error: null, problem: null, turns: [], partial: "", missed: [], log: [] });
+    this.options.onActive?.(true);
+
+    try {
+      await this.prepare();
+      await this.session.open();
+      this.refresh();
+
+      const problems = this.session.toolProblems();
+      if (problems.length > 0) throw new Error(`This form produced a tool the voice service would reject: ${problems[0]}`);
+
+      const greeting = this.session.greeting();
+      this.note("app", `opening line: ${greeting}`);
+      this.update({ status: "connecting" });
+
+      const { services } = this.options;
+      const startVoice = services.startVoice ?? startVoiceSession;
+      this.sentPrompt = this.session.prompt();
+      const voice = await startVoice({
+        voice: services.voice ?? "charles",
+        systemPrompt: this.sentPrompt,
+        greeting,
+        tools: this.session.tools(),
+        getToken: services.getToken,
+        workletUrl: services.workletUrl,
+        ...(services.wsUrl ? { wsUrl: services.wsUrl } : {}),
+        // The line dropped past saving: a new agent, told the form as it is and where to pick up.
+        freshStart: () => {
+          this.sentPrompt = this.session.prompt();
+          return { systemPrompt: this.sentPrompt, greeting: this.session.resumeGreeting(), tools: this.session.tools() };
+        },
+        onToolCall: (name, args) => this.runTool(name, args),
+        // After results are out, the agent's prompt catches up with the form — so even a turn with
+        // no tool call ("hello?", "what's left?") is answered from the form as it is.
+        onResultsSent: () => {
+          this.sentPrompt = this.session.prompt();
+          this.voice?.setSystemPrompt(this.sentPrompt);
+        },
+        ...(this.options.logFrames
+          ? { onEvent: (direction: "in" | "out", message: { type: string }) => this.note(direction, JSON.stringify(message).slice(0, 260)) }
+          : {}),
+        onReady: () => {
+          this.update({ status: "live" });
+          this.note("app", "session.ready — speak now");
+        },
+        onReconnecting: (attempt) => {
+          this.update({ status: "reconnecting" });
+          this.note("app", `line dropped — reconnecting (try ${attempt})`);
+        },
+        onReconnected: (how) => {
+          this.update({ status: "live" });
+          this.note("app", how === "resumed" ? "reconnected — same conversation" : "reconnected — new session, picked up from the form");
+        },
+        onUserPartial: (text) => {
+          this.partial = text;
+          this.update({ partial: text });
+        },
+        onUserTranscript: (text, audio, timeline) => this.heardTurn(text, audio, timeline),
+        onAgentTranscript: (text) => {
+          this.askedAt = Date.now();
+          this.note("agent", text);
+          this.update({ turns: [...this.current.turns, { who: "agent", text }] });
+        },
+        onSpeechStart: () => {
+          const now = Date.now();
+          this.pauseBeforeAnswer = this.askedAt ? (now - this.askedAt) / 1000 : undefined;
+        },
+        onError: (message) => {
+          if (this.stopped) return;
+          this.finish();
+          this.update({ status: "error", error: message });
+        },
+        onClosed: () => {
+          if (this.stopped) return;
+          this.finish();
+          this.update({ status: "stopped" });
+        },
+      });
+      this.voice = voice;
+      if (this.stopped) {
+        await voice.stop();
+        return;
+      }
+      this.watchPage();
+    } catch (cause) {
+      this.finish();
+      this.update({
+        status: "error",
+        problem: cause instanceof VoiceStartError ? cause.problem : null,
+        error: cause instanceof Error ? cause.message : String(cause),
+      });
+    }
+  }
+
+  async stop(): Promise<void> {
+    if (this.stopped) return;
+    this.finish();
+    this.update({ status: "stopped", partial: "" });
+    await this.voice?.stop();
+    this.voice = null;
+  }
+
+  private finish(): void {
+    this.stopped = true;
+    this.detach?.();
+    this.detach = null;
+    this.options.onActive?.(false);
+  }
+
+  /** Everything said so far, the turn still being spoken included. */
+  heard(): string {
+    return `${this.transcript}\n${this.partial}`.trim();
+  }
+
+  private heardTurn(text: string, audio: Int16Array | null, timeline: TimelinePoint[]): void {
+    if (audio && audio.length > 0) {
+      this.turnAudio = [...this.turnAudio.slice(-5), { text, audio, timeline }];
+      // Answers filled while this turn was being spoken can be placed now.
+      for (const [fieldId, evidence] of this.pendingClips) {
+        if (this.placeClip(fieldId, evidence)) this.pendingClips.delete(fieldId);
+      }
+    }
+    this.partial = "";
+    // Accumulated, not replaced: a quote may span two turns of one long take.
+    this.transcript = `${this.transcript}\n${text}`.trim();
+    this.note("you", text);
+    this.update({ partial: "", turns: [...this.current.turns, { who: "you", text }] });
+  }
+
+  // ── The tools ──────────────────────────────────────────────────────────────────────
+
+  /** Runs one tool call and returns what goes back to the agent. Public so replays can drive it. */
+  async runTool(name: string, args: Record<string, unknown>): Promise<unknown> {
+    this.note("tool", `call ${name} ${JSON.stringify(args)}`);
+    const result = await this.route(name, args);
+    this.note("tool", `result ${name} ${JSON.stringify(result)}`);
+    for (const miss of missesIn(result)) this.missed.set(miss.fieldId, miss);
+    this.refresh();
+    return result;
+  }
+
+  private async route(name: string, args: Record<string, unknown>): Promise<unknown> {
+    const session = this.session;
+    const heard = this.heard();
+
+    if (name === FILL_TOOL_NAME) {
+      const done = await session.fill(args, heard);
+      this.update({ outcomes: [...this.current.outcomes, ...done.outcomes] });
+      const landed = done.outcomes.filter((o) => o.status === "written").map((o) => o.fieldId);
+      if (landed.length > 0) {
+        // A long answer is shaped from its own audio — or waits for the turn it is in to end.
+        for (const said of done.spoken) {
+          if (!landed.includes(said.fieldId)) continue;
+          if (!this.placeClip(said.fieldId, said.evidence)) this.pendingClips.set(said.fieldId, said.evidence);
+        }
+        // The long take is over once the first answers land: conversational timing from here.
+        if (!this.switchedMode) {
+          this.switchedMode = true;
+          this.voice?.setTranscriptionMode(CONVERSATION_MODE);
+          this.note("app", "switched to conversation timing");
+        }
+      }
+      return done.result;
+    }
+
+    if (name === CLEAR_TOOL_NAME) {
+      const done = await session.clear(args, heard);
+      const cleared = new Set(((done.result.cleared as { field: string }[] | undefined) ?? []).map((c) => c.field));
+      if (cleared.size > 0) {
+        for (const id of cleared) this.pendingClips.delete(id);
+        const without = <T,>(record: Record<string, T>) =>
+          Object.fromEntries(Object.entries(record).filter(([id]) => !cleared.has(id)));
+        this.update({
+          outcomes: this.current.outcomes.filter((o) => !cleared.has(o.fieldId)),
+          hesitations: without(this.current.hesitations),
+          shaped: without(this.current.shaped),
+        });
+      }
+      return done.result;
+    }
+
+    if (name === CONFIRM_TOOL_NAME) {
+      const done = await session.confirm(args, heard);
+      this.update({ outcomes: [...this.current.outcomes, ...done.outcomes] });
+      return done.result;
+    }
+
+    // A Next that is a real page load (Google Forms posts each page) ends this page's script; the
+    // extension's background remembers the tab was live, and the next page offers to carry on.
+    if (name === PRESS_TOOL_NAME) return (await session.press(args, heard)).result;
+    if (name === LATER_TOOL_NAME) return session.setAside(args, heard).result;
+    return { error: `Unknown tool "${name}".` };
+  }
+
+  // ── Watching the page ──────────────────────────────────────────────────────────────
+
+  /**
+   * Changes nobody told us about: a person clicking an option themselves, or typing into a box.
+   * Shape changes re-read the form; typing only redraws, since `state()` reads values off the page.
+   * Left alone while a tool call is writing — that call re-reads before it answers. Anything inside
+   * our own furniture (`ignore`) is not the form, so it never triggers a re-read.
+   */
+  private watchPage(): void {
+    const scope = this.options.root();
+    const target = "body" in scope ? scope.body : scope;
+    if (!target) return;
+    const ignore = this.options.ignore;
+    const ours = (node: Node | null) => {
+      const element = node instanceof Element ? node : node?.parentElement;
+      return Boolean(ignore && element?.closest(ignore));
+    };
+
+    let shapeTimer: ReturnType<typeof setTimeout> | undefined;
+    let typeTimer: ReturnType<typeof setTimeout> | undefined;
+    const observer = new MutationObserver((records) => {
+      if (records.every((record) => ours(record.target))) return;
+      if (this.session.isWriting) {
+        this.session.noteMoveDuringWrite();
+        return;
+      }
+      clearTimeout(shapeTimer);
+      shapeTimer = setTimeout(() => {
+        void this.session.pageChanged().then(() => {
+          this.refresh();
+          this.syncPrompt();
+        });
+      }, SHAPE_SETTLE_MS);
+    });
+    observer.observe(target, {
+      subtree: true,
+      childList: true,
+      characterData: true,
+      attributes: true,
+      attributeFilter: ["style", "class", "hidden", "aria-checked", "aria-selected"],
+    });
+
+    // Typing: redraw at once, tell the agent once they pause.
+    const onInput = (event: Event) => {
+      if (ours(event.target as Node | null) || this.session.isWriting) return;
+      this.refresh();
+      clearTimeout(typeTimer);
+      typeTimer = setTimeout(() => this.syncPrompt(), TYPING_SETTLE_MS);
+    };
+    target.addEventListener("input", onInput, true);
+    target.addEventListener("change", onInput, true);
+
+    this.detach = () => {
+      observer.disconnect();
+      target.removeEventListener("input", onInput, true);
+      target.removeEventListener("change", onInput, true);
+      clearTimeout(shapeTimer);
+      clearTimeout(typeTimer);
+    };
+  }
+
+  /**
+   * Give the agent the form as it is now — if it changed since it last heard. After tool results
+   * the agent is caught up anyway; this is for what happens without one: the person typing, or
+   * picking an option themselves. Without it the agent asked for a field typed in front of it.
+   */
+  private syncPrompt(): void {
+    if (!this.voice || this.session.isWriting || this.stopped) return;
+    const prompt = this.session.prompt();
+    if (prompt === this.sentPrompt) return;
+    this.sentPrompt = prompt;
+    this.voice.setSystemPrompt(prompt);
+    this.note("app", "form changed by hand — agent brought up to date");
+  }
+
+  // ── A long answer's own audio: the clip, and the Dictation pass that uses it ─────────
+
+  /**
+   * Find the words a long answer came from in the recent turns, and send just those seconds to
+   * Dictation. Newest turn first. Where the words are in a turn but cannot be pinned to a moment,
+   * the whole turn is sent. False when the turn has not finished yet — the caller waits for it.
+   */
+  private placeClip(fieldId: string, evidence: string): boolean {
+    if (!this.options.services.dictate) return true; // nothing to wait for
+    for (const turn of [...this.turnAudio].reverse()) {
+      if (!checkEvidence(turn.text, evidence).ok) continue;
+      const clip = clipFor(evidence, turn.timeline, turn.audio.length);
+      const audio = clip ? turn.audio.subarray(clip.start, clip.end) : turn.audio;
+      void this.shapeLongAnswer(fieldId, audio);
+      return true;
+    }
+    return false;
+  }
+
+  /** One Dictation pass over one long answer, then the tidy text replaces what the agent typed. */
+  private async shapeLongAnswer(fieldId: string, audio: Int16Array): Promise<void> {
+    const dictate = this.options.services.dictate;
+    const read = this.session.read;
+    if (!dictate || !read || audio.length === 0) return;
+    const [spec] = fieldsWorthShaping(read.specs, [fieldId]);
+    if (!spec) return;
+
+    const known: Record<string, string> = {};
+    for (const field of this.session.state().fields) {
+      if (typeof field.value === "string" && field.value.length < 60) known[field.spec.id] = field.value;
+    }
+
+    try {
+      const payload = await dictate(configForField(spec, { specs: read.specs, known }), pcmToBase64(audio));
+      const result = shapeResult(spec.id, payload);
+      this.update({ shaped: { ...this.current.shaped, [spec.id]: result } });
+
+      const hesitation = readHesitation(spec.id, result.verbatim, result.clean, this.pauseBeforeAnswer);
+      if (hesitation.worthAnotherLook) this.update({ hesitations: { ...this.current.hesitations, [spec.id]: hesitation } });
+
+      if (result.clean) await this.session.rewrite(spec.id, result.clean, result.verbatim);
+      this.note(
+        "app",
+        result.rewritten
+          ? `dictation shaped ${spec.id}, verbatim kept (${result.verbatim.length} chars)`
+          : `dictation returned verbatim only for ${spec.id} — ${result.note}`,
+      );
+    } catch (cause) {
+      this.note("app", `dictation for ${spec.id} errored: ${String(cause)}`);
+    }
+  }
+}

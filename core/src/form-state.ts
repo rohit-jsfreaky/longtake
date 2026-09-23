@@ -37,6 +37,8 @@ export type FieldState = {
   evidence?: string;
   /** They asked for this one to stay empty. */
   declined: boolean;
+  /** They asked to come back to this one at the end. */
+  later?: boolean;
   /** An answer waiting for their yes. */
   pending?: Pending;
   /** What the form itself says is wrong with this field, word for word. */
@@ -68,8 +70,9 @@ function sameAnswer(written: unknown, onPage: FieldValue): boolean {
   if (typeof onPage === "boolean") return onPage === Boolean(written);
   const a = flat(written);
   const b = flat(onPage);
-  // A page may trim what we wrote (maxlength) or format it (a phone mask): the same answer.
-  return a === b || (a.length > 0 && (b.startsWith(a) || a.startsWith(b)));
+  // A page may trim what we wrote (maxlength) or format it (a phone mask): the same answer. Or
+  // show only part of a choice — a phone country picker holding "India +91" shows "+91".
+  return a === b || (a.length > 0 && (b.startsWith(a) || a.startsWith(b) || (b.length >= 2 && a.endsWith(b))));
 }
 
 /** Is this field empty and still worth asking about? */
@@ -93,6 +96,7 @@ export function snapshot(read: FormRead, ledger: Ledger, title = "", buttons?: A
     else source = "typed";
 
     const state: FieldState = { spec, value, source, declined: ledger.isDeclined(spec.id) };
+    if (ledger.isSetAside(spec.id)) state.later = true;
     if ((source === "spoken" || source === "memory") && entry) state.evidence = entry.evidence;
     const pending = ledger.pendingFor(spec.id);
     if (pending && value === null) state.pending = pending;

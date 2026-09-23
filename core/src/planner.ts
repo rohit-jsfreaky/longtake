@@ -33,6 +33,38 @@ export type Move =
   /** Nothing left that is ours to do. */
   | { kind: "handover"; theirs: string[]; submit?: string };
 
+/**
+ * How many questions are asked in one breath.
+ *
+ * One at a time made a forty-field form a forty-turn interview — the live complaint was that after
+ * the first answers it "starts doing one by one, so it's very slow". People answer a short list
+ * easily ("phone, city and LinkedIn?"); past four they lose track of what was asked.
+ */
+const ASK_AT_ONCE = 4;
+
+/**
+ * The next few questions to ask together, starting from the first.
+ *
+ * A long answer ("why do you want to work here?") is asked on its own — it is a paragraph, not a
+ * list item — and ends the batch when it comes up. A list read out from the screen (more choices
+ * than can be said aloud) is also asked on its own: "look at the list" does not combine.
+ */
+function batch(facts: FieldFacts[]): FieldFacts[] {
+  const [first] = facts;
+  if (!first) return [];
+  if (alone(first)) return [first];
+  const out: FieldFacts[] = [];
+  for (const f of facts) {
+    if (out.length >= ASK_AT_ONCE || alone(f)) break;
+    out.push(f);
+  }
+  return out;
+}
+
+function alone(facts: FieldFacts): boolean {
+  return facts.answer_type === "long answer" || facts.choice_count !== undefined;
+}
+
 /** What the planner has to remember between moves. Tiny on purpose — the form is the rest. */
 export type Plan = { optionalOffered: boolean };
 
@@ -58,7 +90,13 @@ export function nextMove(state: FormState, plan: Plan): Move {
   }
 
   const open = state.fields.filter(isOpen);
-  const required = inAskingOrder(open.filter((f) => f.spec.required).map((f) => f.spec));
+  // What they put off comes last: asked again only when nothing else is left.
+  const later = new Set(open.filter((f) => f.later).map((f) => f.spec.id));
+  const lastIfLater = (specs: FieldState["spec"][]) => [
+    ...specs.filter((spec) => !later.has(spec.id)),
+    ...specs.filter((spec) => later.has(spec.id)),
+  ];
+  const required = lastIfLater(inAskingOrder(open.filter((f) => f.spec.required).map((f) => f.spec)));
 
   if (required.length > 0) {
     const first = factsOf(required[0]!, specs);
@@ -66,14 +104,16 @@ export function nextMove(state: FormState, plan: Plan): Move {
     // however many boxes the form splits it into.
     if (first.group) {
       const together = open
+        .filter((f) => later.has(first.field) || !later.has(f.spec.id))
         .map((f) => factsOf(f.spec, specs))
         .filter((facts) => facts.group === first.group && facts.section === first.section);
       return { kind: "ask", fields: together };
     }
-    return { kind: "ask", fields: [first] };
+    // The next few, together — but not across into a group, which is asked as its own question.
+    return { kind: "ask", fields: batch(required.map((spec) => factsOf(spec, specs)).filter((f) => !f.group || f.field === first.field)) };
   }
 
-  const optional = inAskingOrder(open.filter((f) => !f.spec.required).map((f) => f.spec)).map((spec) =>
+  const optional = lastIfLater(inAskingOrder(open.filter((f) => !f.spec.required).map((f) => f.spec))).map((spec) =>
     factsOf(spec, specs),
   );
   const next = state.actions.find((a) => a.kind === "next");
@@ -120,13 +160,25 @@ function describe(facts: FieldFacts): string {
   return `${facts.question}${where}`;
 }
 
+/** ", 1 waiting for their yes" — so "everything is in" can never be said over one. */
+function waitingCount(state: FormState): string {
+  const n = state.fields.filter((f) => f.pending).length;
+  return n > 0 ? `, ${n} waiting for their yes` : "";
+}
+
+/** The next optional ones, several at once when they combine. */
+function askFor(fields: FieldFacts[]): string {
+  const now = batch(fields);
+  return now.length > 1 ? `these together, in one question: ${now.map(describe).join("; ")}` : describe(now[0]!);
+}
+
 /** The instruction for the next move. What to do, never the words to say. */
 export function doNext(move: Move): string {
   switch (move.kind) {
     case "confirm":
       return move.reason === "hedged"
         ? `They weren't sure for "${move.field.question}" (they said: "${move.heard}"). Ask which it is before anything goes in.`
-        : `"${move.field.question}" is waiting for their yes: they said "${move.heard}", and the closest the form offers is "${move.suggestion}". Ask if that's right. If they say yes, call fill_fields with "${move.suggestion}" and their yes as evidence. If not, offer the other choices.`;
+        : `"${move.field.question}" is waiting for their yes: they said "${move.heard}", and the closest the form offers is "${move.suggestion}". Ask if that's right, then call confirm_answer for ${move.field.field} with agreed true or false — you judge their reply, in whatever words. If not, offer the other choices.`;
     case "resolve":
       return `The form won't accept "${move.value}" for "${move.field.question}" — it says: "${move.problem}". Tell them in a few words and ask for it again.`;
     case "ask": {
@@ -137,14 +189,17 @@ export function doNext(move: Move): string {
       if (move.fields.length > 1 && move.fields.every((f) => f.group === "phone")) {
         return `Ask for their phone number, with its country code, as one question.`;
       }
+      if (move.fields.length > 1) {
+        return `Ask for these together in one short question — they can answer them all at once: ${move.fields.map(describe).join("; ")}.`;
+      }
       return `Ask for ${describe(move.fields[0]!)}.`;
     }
     case "offer_optional":
       return `Every required field is in. Say so, and ask if they want to do the ${move.fields.length} optional ones or hear what they are: ${move.fields.map((f) => f.question).join("; ")}.`;
     case "optional":
       return move.next
-        ? `If they wanted the optional ones, ask for ${describe(move.fields[0]!)}. If they didn't, ask if they're ready for the next page, and press "${move.next}" with press_form_button only on their yes.`
-        : `If they wanted the optional ones, ask for ${describe(move.fields[0]!)}. If they didn't, hand over: everything they told you is in, and they should ${move.submit ? `look it over and press "${move.submit}" themselves` : "look it over and send it themselves"}.`;
+        ? `If they wanted the optional ones, ask for ${askFor(move.fields)}. If they didn't, ask if they're ready for the next page, and press "${move.next}" with press_form_button only on their yes.`
+        : `If they wanted the optional ones, ask for ${askFor(move.fields)}. If they didn't, hand over: everything they told you is in, and they should ${move.submit ? `look it over and press "${move.submit}" themselves` : "look it over and send it themselves"}.`;
     case "next_page":
       return `Everything needed on this page is in. Ask if they're ready for the next page, and press "${move.label}" with press_form_button only on their yes.`;
     case "handover": {
@@ -168,7 +223,7 @@ export function brief(state: FormState, move: Move): string {
   const lines: string[] = [];
 
   lines.push(
-    `FORM NOW${state.title ? ` — ${state.title}` : ""}: ${progress.filled} of ${progress.total} answered, ${progress.requiredLeft} required left, ${progress.optionalLeft} optional left.`,
+    `FORM NOW${state.title ? ` — ${state.title}` : ""}: ${progress.filled} of ${progress.total} answered, ${progress.requiredLeft} required left, ${progress.optionalLeft} optional left${waitingCount(state)}.`,
   );
 
   const answered = state.fields.filter((f) => f.value !== null);
@@ -179,12 +234,19 @@ export function brief(state: FormState, move: Move): string {
     }
   }
 
-  const left = state.fields.filter((f) => isOpen(f) && !f.pending);
+  const left = state.fields.filter((f) => isOpen(f) && !f.pending && !f.later);
   if (left.length > 0) {
     lines.push("Still empty:");
     for (const f of left) {
       lines.push(`  ${describe(factsOf(f.spec, specs))}${f.spec.required ? " [required]" : ""}`);
     }
+  }
+
+  const putOff = state.fields.filter((f) => isOpen(f) && f.later);
+  if (putOff.length > 0) {
+    lines.push(
+      `Set aside for later, at their request — ask again only once everything else is done: ${putOff.map((f) => factsOf(f.spec, specs).question).join(", ")}`,
+    );
   }
 
   const declined = state.fields.filter((f) => f.declined && f.value === null);
@@ -237,7 +299,9 @@ export function resumeLine(state: FormState, move: Move): string {
           ? "your address"
           : move.fields.length > 1 && first?.group === "phone"
             ? "your phone number"
-            : (first?.question ?? "the next one");
+            : move.fields.length > 1
+              ? move.fields.map((f) => f.question).join(", ")
+              : (first?.question ?? "the next one");
       return `${where}. Next up: ${what}.`;
     }
     case "offer_optional":
