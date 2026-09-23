@@ -6,15 +6,17 @@
  *   seed    <id>        writes an unverified truth.json from ax.json (never over a verified one)
  *   check   <id>        does the offline replay reproduce the page?
  *   review  <id> [--port 4477]   a local page to correct the truth and mark it verified
+ *   drift   [<id>…]     has the live site changed its form? Reads only; every form when no id
  *
  * Every command works on `corpus/<id>/` — the private corpus repo, cloned into `corpus/`.
  */
 
-import { readFile, writeFile, access } from "node:fs/promises";
+import { appendFile, readFile, writeFile, access } from "node:fs/promises";
 import { join } from "node:path";
 
 import { capture } from "./capture";
 import { checkReplay } from "./check";
+import { corpusIds, driftMarkdown, driftOf } from "./drift";
 import { review } from "./review";
 import { parseStep } from "./steps";
 import { seedTruth } from "./seed";
@@ -38,7 +40,19 @@ async function exists(path: string): Promise<boolean> {
 
 async function main(): Promise<void> {
   const [command, id, ...rest] = process.argv.slice(2);
-  if (!command || !id) throw new Error("usage: corpus <capture|seed|check|review> <id> [...]");
+
+  if (command === "drift") {
+    const ids = id ? [id, ...rest.filter((arg) => !arg.startsWith("--"))] : await corpusIds(DIR);
+    const drift = await driftOf(ids, DIR);
+    // Public CI logs get counts only — no text from somebody else's page.
+    const markdown = driftMarkdown(drift, process.env.CORPUS_REPORT_DETAILS !== "off");
+    console.log(markdown);
+    if (process.env.GITHUB_STEP_SUMMARY) await appendFile(process.env.GITHUB_STEP_SUMMARY, markdown + "\n");
+    if (drift.some((d) => d.status !== "same")) process.exitCode = 1;
+    return;
+  }
+
+  if (!command || !id) throw new Error("usage: corpus <capture|seed|check|review> <id> [...] | corpus drift [<id>…]");
 
   if (command === "capture") {
     const url = rest[0];

@@ -22,7 +22,8 @@
     "corpus:seed": "npm run corpus:build --silent && node .probe/corpus.mjs seed",
     "corpus:check": "npm run corpus:build --silent && node .probe/corpus.mjs check",
     "corpus": "npm run build:probe && playwright test --project corpus",
-    "corpus:review": "npm run corpus:build --silent && node .probe/corpus.mjs review"
+    "corpus:review": "npm run corpus:build --silent && node .probe/corpus.mjs review",
+    "corpus:drift": "npm run corpus:build --silent && node .probe/corpus.mjs drift"
   },
   "devDependencies": {
     "@playwright/test": "^1.63.0",

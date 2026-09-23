@@ -60,3 +60,57 @@ jobs:
             playwright-report/
             test-results/
           retention-days: 7
+
+  # Real forms from other sites, replayed offline from the private corpus repo, scored against
+  # their verified truth. Fails when any form reads worse than `baseline.json`, or a honeypot
+  # becomes something the model can fill.
+  #
+  # The key is a read-only deploy key on longtake-corpus. A fork's pull request has no secrets,
+  # so there the job says why it has nothing to score and passes.
+  #
+  # This repo is public and so are its logs: the report here is numbers and form ids only
+  # (`CORPUS_REPORT_DETAILS=off`), and nothing is uploaded — a trace holds a copy of the page.
+  corpus:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      HAS_CORPUS: ${{ secrets.CORPUS_DEPLOY_KEY != '' }}
+      CORPUS_REPORT_DETAILS: "off"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check out the private corpus
+        if: env.HAS_CORPUS == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: rohit-jsfreaky/longtake-corpus
+          ssh-key: ${{ secrets.CORPUS_DEPLOY_KEY }}
+          path: corpus
+          persist-credentials: false
+
+      - name: No corpus here
+        if: env.HAS_CORPUS != 'true'
+        run: echo "No CORPUS_DEPLOY_KEY secret, so no private corpus to score — skipped." >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/setup-node@v4
+        if: env.HAS_CORPUS == 'true'
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        if: env.HAS_CORPUS == 'true'
+        run: npm ci
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
+
+      - name: Install Chrome
+        if: env.HAS_CORPUS == 'true'
+        run: npx playwright install --with-deps chrome
+
+      # Builds the probe bundle, replays every form, scores it, then writes the report — to this
+      # run's summary page — and compares it with the baseline.
+      - name: Score the corpus
+        if: env.HAS_CORPUS == 'true'
+        run: npm run corpus

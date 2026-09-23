@@ -1,0 +1,58 @@
+name: corpus-live
+
+# Once a week, and whenever it is started by hand: open every corpus form on its real site and
+# check it still is the form we captured. A job that closed, a question reworded, a list that grew
+# — each fails this run, as the signal to recapture that form.
+#
+# It only reads. It never types into a live form and never presses anything but the clicks saved
+# in a form's meta.json to reveal its conditional fields.
+
+on:
+  schedule:
+    - cron: "30 3 * * 1" # Mondays, 03:30 UTC (09:00 IST)
+  workflow_dispatch:
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      HAS_CORPUS: ${{ secrets.CORPUS_DEPLOY_KEY != '' }}
+      # Public logs: counts per form, never the page's own words.
+      CORPUS_REPORT_DETAILS: "off"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check out the private corpus
+        if: env.HAS_CORPUS == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: rohit-jsfreaky/longtake-corpus
+          ssh-key: ${{ secrets.CORPUS_DEPLOY_KEY }}
+          path: corpus
+          persist-credentials: false
+
+      - name: No corpus here
+        if: env.HAS_CORPUS != 'true'
+        run: echo "No CORPUS_DEPLOY_KEY secret, so no private corpus to check — skipped." >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/setup-node@v4
+        if: env.HAS_CORPUS == 'true'
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        if: env.HAS_CORPUS == 'true'
+        run: npm ci
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
+
+      - name: Install Chrome
+        if: env.HAS_CORPUS == 'true'
+        run: npx playwright install --with-deps chrome
+
+      - name: Compare every live form with its capture
+        if: env.HAS_CORPUS == 'true'
+        run: npm run corpus:drift

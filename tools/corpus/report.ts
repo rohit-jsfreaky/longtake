@@ -3,8 +3,8 @@
  *
  * The baseline lives in the corpus repo (`corpus/baseline.json`), so moving it is a visible diff
  * there. The ratchet is per form: a form already in the baseline may not get worse on any number,
- * and a honeypot leak fails whatever the baseline says. A new form simply joins the baseline on
- * the next `--update-baseline`.
+ * and a honeypot leak fails whatever the baseline says. A new form simply joins the baseline the
+ * next time it is moved (`CORPUS_UPDATE_BASELINE=1`).
  */
 
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -69,7 +69,21 @@ function show(metric: Metric, value: number | null, base: number | null | undefi
 
 export type Report = { markdown: string; failures: string[] };
 
-export function report(options: { results: string; corpus: string; update?: boolean }): Report {
+/**
+ * `details: false` keeps the page's own words out — for CI logs, which are public on a public
+ * repo. The numbers and form ids stay; the questions stay in the private corpus.
+ *
+ * `update: "better"` moves the baseline only when nothing got worse. A reader that loses a whole
+ * group also loses that group's mistakes, so a broken run can look better on half its numbers —
+ * locking that in would make the break the new normal. `"accept-worse"` is for the one honest
+ * reason to move down: the truth itself was corrected.
+ */
+export function report(options: {
+  results: string;
+  corpus: string;
+  update?: false | "better" | "accept-worse";
+  details?: boolean;
+}): Report {
   const dir = join(options.results, "read");
   const stored: Stored[] = existsSync(dir)
     ? readdirSync(dir)
@@ -81,6 +95,7 @@ export function report(options: { results: string; corpus: string; update?: bool
   const baseline: Baseline = existsSync(baselinePath) ? (JSON.parse(readFileSync(baselinePath, "utf8")) as Baseline) : { read: {} };
 
   const failures: string[] = [];
+  let improved = 0;
   const lines: string[] = [];
   const total = sum(stored.map((s) => s.counts));
   // The total moves only against a total over the very same forms; a new form is not a regression.
@@ -104,6 +119,7 @@ export function report(options: { results: string; corpus: string; update?: bool
       if (was === undefined || was === null || value === null) continue;
       const worse = metric.better === "higher" ? value < was - EPSILON : value > was + EPSILON;
       if (worse) failures.push(`${form.id}: ${metric.label} got worse — ${show(metric, value, was)}`);
+      else if (Math.abs(value - was) > EPSILON) improved++;
     }
   }
   for (const id of Object.keys(baseline.read)) {
@@ -111,24 +127,34 @@ export function report(options: { results: string; corpus: string; update?: bool
   }
 
   lines.push("");
-  lines.push("<details><summary>What is wrong, field by field</summary>");
-  lines.push("");
-  for (const form of stored) {
-    const wrong = form.rows.filter((row) => row.problems.length > 0);
-    if (wrong.length === 0 && form.extras.length === 0) continue;
-    lines.push(`**${form.id}**`);
-    for (const row of wrong) lines.push(`- ${row.key} “${row.question}” — ${row.problems.join("; ")}`);
-    for (const extra of form.extras) {
-      lines.push(`- extra \`${extra.id}\` “${extra.label}” — ${extra.duplicateOf ? `a second reading of \`${extra.duplicateOf}\`` : "no such field in the truth"}`);
-    }
-    lines.push("");
+  if (options.details === false) {
+    lines.push("_Field-by-field details stay out of public logs — run `npm run corpus` with the corpus checked out._");
+  } else {
+    lines.push(...details(stored));
   }
-  lines.push("</details>");
 
   if (failures.length > 0) {
     lines.push("");
     lines.push("**Worse than the baseline:**");
     for (const failure of failures) lines.push(`- ${failure}`);
+  }
+
+  if (improved > 0 && failures.length === 0 && !options.update) {
+    lines.push("");
+    lines.push(
+      `${improved} number${improved === 1 ? "" : "s"} improved. Lock ${improved === 1 ? "it" : "them"} in: ` +
+        "`CORPUS_UPDATE_BASELINE=1 npx playwright test --project=corpus`, then commit `baseline.json` in the corpus repo.",
+    );
+  }
+
+  const regressions = failures.filter((f) => !f.includes("must be 0"));
+  if (options.update === "better" && regressions.length > 0) {
+    lines.push("");
+    lines.push(
+      `Baseline NOT moved: ${regressions.length} number${regressions.length === 1 ? "" : "s"} got worse. ` +
+        "If that is intended — the truth was corrected — run with `CORPUS_UPDATE_BASELINE=accept-worse`.",
+    );
+    return { markdown: lines.join("\n"), failures };
   }
 
   if (options.update) {
@@ -141,4 +167,20 @@ export function report(options: { results: string; corpus: string; update?: bool
     return { markdown: lines.join("\n"), failures: failures.filter((f) => f.includes("must be 0")) };
   }
   return { markdown: lines.join("\n"), failures };
+}
+
+function details(stored: Stored[]): string[] {
+  const lines = ["<details><summary>What is wrong, field by field</summary>", ""];
+  for (const form of stored) {
+    const wrong = form.rows.filter((row) => row.problems.length > 0);
+    if (wrong.length === 0 && form.extras.length === 0) continue;
+    lines.push(`**${form.id}**`);
+    for (const row of wrong) lines.push(`- ${row.key} “${row.question}” — ${row.problems.join("; ")}`);
+    for (const extra of form.extras) {
+      lines.push(`- extra \`${extra.id}\` “${extra.label}” — ${extra.duplicateOf ? `a second reading of \`${extra.duplicateOf}\`` : "no such field in the truth"}`);
+    }
+    lines.push("");
+  }
+  lines.push("</details>");
+  return lines;
 }

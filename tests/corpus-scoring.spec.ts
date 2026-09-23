@@ -88,14 +88,14 @@ test.describe("reading, scored", () => {
 test.describe("the report", () => {
   const counts = { fields: 10, found: 10, specs: 10, duplicates: 0, extras: 0, honeypotLeaks: 0, labelExact: 9, labelF1: 9.5, kindRight: 10, requiredTP: 4, requiredFP: 0, requiredFN: 0, choiceFields: 2, optionsF1: 2, searchableRight: 2, ambiguous: 0 };
 
-  function run(forms: Record<string, Partial<typeof counts>>, update = false, baselineDir?: string) {
+  function run(forms: Record<string, Partial<typeof counts>>, update: boolean | "accept-worse" = false, baselineDir?: string) {
     const results = mkdtempSync(join(tmpdir(), "longtake-results-"));
     const corpus = baselineDir ?? mkdtempSync(join(tmpdir(), "longtake-corpus-"));
     mkdirSync(join(results, "read"), { recursive: true });
     for (const [id, changes] of Object.entries(forms)) {
       writeFileSync(join(results, "read", `${id}.json`), JSON.stringify({ id, at: "", counts: { ...counts, ...changes }, rows: [], extras: [] }));
     }
-    return { ...report({ results, corpus, update }), corpus };
+    return { ...report({ results, corpus, update: update === true ? "better" : update }), corpus };
   }
 
   test("with no baseline, nothing can have got worse", () => {
@@ -124,6 +124,23 @@ test.describe("the report", () => {
   test("a honeypot leak fails even when the baseline already had it", () => {
     const { corpus } = run({ a: { honeypotLeaks: 1 } }, true);
     expect(run({ a: { honeypotLeaks: 1 } }, false, corpus).failures).toEqual(["a: Honeypot leaks is 1, must be 0"]);
+  });
+
+  test("a run that got worse cannot move the baseline — not even where it looks better", () => {
+    // Losing a whole group loses its mistakes too: fewer duplicates, fewer found.
+    const { corpus } = run({ a: { duplicates: 3 } }, true);
+    const { failures, markdown } = run({ a: { duplicates: 0, found: 8 } }, true, corpus);
+    expect(failures).toEqual(["a: Found got worse — 80.0% ▼-20.0"]);
+    expect(markdown).toContain("Baseline NOT moved");
+    expect(markdown).not.toContain("Lock them in");
+    expect(JSON.parse(readFileSync(join(corpus, "baseline.json"), "utf8")).read.a.found).toBe(1);
+  });
+
+  test("accept-worse moves it anyway, for a corrected truth", () => {
+    const { corpus } = run({ a: {} }, true);
+    const { failures } = run({ a: { found: 8 } }, "accept-worse", corpus);
+    expect(failures).toEqual([]);
+    expect(JSON.parse(readFileSync(join(corpus, "baseline.json"), "utf8")).read.a.found).toBe(0.8);
   });
 
   test("updating writes the baseline per form and in total", () => {
