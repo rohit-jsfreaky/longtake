@@ -301,3 +301,32 @@ test.describe("a choice drawn by its label", () => {
     expect((await read(page)).specs).toHaveLength(0);
   });
 });
+
+/**
+ * React-Select, once a choice is made: its input goes `opacity: 0` and the choice shows in a
+ * sibling. Taken from the real Glean Greenhouse form, where every answered dropdown dropped out of
+ * the form — and the agent was told the question had gone.
+ */
+test.describe("a widget's input made transparent by the widget", () => {
+  const input = `<input role="combobox" aria-haspopup="true" aria-label="How did you hear about us?" style="opacity:0;width:3px;height:20px;border:0;padding:0">`;
+
+  test("an answered combobox is still a field", async ({ page }) => {
+    await load(page, `<div style="display:grid;width:220px;height:30px"><div>LinkedIn</div>${input}</div>`);
+    expect((await read(page)).specs).toHaveLength(1);
+  });
+
+  test("…but not inside a hidden container", async ({ page }) => {
+    await load(page, `<div style="display:none"><div style="display:grid;width:220px;height:30px"><div>LinkedIn</div>${input}</div></div>`);
+    expect((await read(page)).specs).toHaveLength(0);
+  });
+
+  test("…and not when the whole widget is transparent", async ({ page }) => {
+    await load(page, `<div style="opacity:0"><div style="display:grid;width:220px;height:30px"><div>LinkedIn</div>${input}</div></div>`);
+    expect((await read(page)).specs).toHaveLength(0);
+  });
+
+  test("a transparent input that announces nothing stays hidden, even in a visible box", async ({ page }) => {
+    await load(page, `<div style="width:220px;height:30px"><label for="h">Company</label><input id="h" style="opacity:0"></div>`);
+    expect((await read(page)).specs).toHaveLength(0);
+  });
+});

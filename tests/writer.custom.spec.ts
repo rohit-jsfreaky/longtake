@@ -286,3 +286,141 @@ test.describe("ARIA checkboxes and switches", () => {
     expect(outcome!.status).toBe("rejected-by-page");
   });
 });
+
+/**
+ * A menu drawn late. On a busy machine Greenhouse's country picker drew its 244 options after
+ * the fixed 150 ms the harvest used to wait, so it was read as empty — and a "+91" had no picker
+ * to go to. The harvest now waits for the menu itself, not for a guess at how long one takes.
+ */
+test.describe("a dropdown whose menu is slow to draw", () => {
+  const SLOW_SELECT = (delay: number) => `
+    <div style="width:220px">
+      <div id="s-label">Seniority</div>
+      <div id="s-value" style="height:20px"></div>
+      <input id="s" role="combobox" aria-labelledby="s-label" aria-expanded="false" style="width:200px;height:24px">
+    </div>
+    <script>
+      const input = document.getElementById('s');
+      input.addEventListener('pointerdown', () => {
+        if (document.querySelector('.pop')) return;
+        setTimeout(() => {
+          const pop = document.createElement('div');
+          pop.className = 'pop';
+          ['Junior', 'Mid', 'Senior'].forEach((text) => {
+            const opt = document.createElement('div');
+            opt.setAttribute('role', 'option');
+            opt.textContent = text;
+            opt.style.height = '20px';
+            opt.addEventListener('click', () => { document.getElementById('s-value').textContent = text; pop.remove(); });
+            pop.appendChild(opt);
+          });
+          document.body.appendChild(pop);
+        }, ${delay});
+      });
+      input.addEventListener('keydown', (e) => { if (e.key === 'Escape') document.querySelector('.pop')?.remove(); });
+    </script>`;
+
+  test("its choices are still learned", async ({ page }) => {
+    await load(page, SLOW_SELECT(400));
+    const read = await readDeep(page);
+    expect(byLabel(read, "Seniority")?.options?.map((o) => o.label)).toEqual(["Junior", "Mid", "Senior"]);
+    expect(byLabel(read, "Seniority")?.searchable).toBeFalsy();
+  });
+
+  test("and one of them can be chosen", async ({ page }) => {
+    await load(page, SLOW_SELECT(400));
+    await readDeep(page);
+    const [outcome] = await write(page, said("seniority", "Senior"));
+    expect(outcome!.status).toBe("written");
+    expect(await page.textContent("#s-value")).toBe("Senior");
+  });
+
+  test("a list that opens empty — it fills as you type — is not waited on", async ({ page }) => {
+    await load(
+      page,
+      `<div style="width:220px"><div id="c-label">City</div>
+         <input id="c" role="combobox" aria-labelledby="c-label" aria-autocomplete="list" aria-expanded="false" style="width:200px;height:24px"></div>
+       <script>document.getElementById('c').addEventListener('pointerdown', (e) => e.target.setAttribute('aria-expanded', 'true'));</script>`,
+    );
+    const started = Date.now();
+    const read = await readDeep(page);
+    expect(Date.now() - started).toBeLessThan(1500);
+    expect(byLabel(read, "City")?.searchable).toBe(true);
+  });
+});
+
+/**
+ * A page that confirms a press late — Google Forms on a busy machine. A fixed 30 ms after the
+ * click read it as refused; the agent said "that didn't go in", and the choice landed anyway.
+ */
+test.describe("a choice the page confirms late", () => {
+  const SLOW_RADIOS = (delay: number | null) => `
+    <div role="radiogroup" aria-label="Gender" style="width:300px">
+      ${["Male", "Female", "Prefer not to say"]
+        .map((label) => `<div role="radio" aria-checked="false" aria-label="${label}" style="height:24px">${label}</div>`)
+        .join("")}
+    </div>
+    <script>
+      document.querySelectorAll('[role=radio]').forEach((radio) => radio.addEventListener('click', () => {
+        ${delay === null ? "" : `setTimeout(() => {
+          document.querySelectorAll('[role=radio]').forEach((r) => r.setAttribute('aria-checked', 'false'));
+          radio.setAttribute('aria-checked', 'true');
+        }, ${delay});`}
+      }));
+    </script>`;
+
+  test("is written once the page confirms it", async ({ page }) => {
+    await load(page, SLOW_RADIOS(600));
+    await readDeep(page);
+    const [outcome] = await write(page, said("gender", "Female"));
+    expect(outcome!.status).toBe("written");
+    expect(await page.getAttribute("[aria-label=Female]", "aria-checked")).toBe("true");
+  });
+
+  test("a page that never confirms is still reported, not waited on forever", async ({ page }) => {
+    await load(page, SLOW_RADIOS(null));
+    await readDeep(page);
+    const [outcome] = await write(page, said("gender", "Female"));
+    expect(outcome!.status).toBe("rejected-by-page");
+  });
+});
+
+/**
+ * A widget that is on the page before its script is. Server-rendered forms show their dropdowns
+ * first and bring them to life later — on a busy machine, Greenhouse's took eight seconds. Pressed
+ * too early, nothing happens; that silence is not "a list with no choices".
+ */
+test.describe("a dropdown whose script arrives late", () => {
+  test("is asked again before it is written off", async ({ page }) => {
+    await load(
+      page,
+      `<div style="width:220px"><div id="h-label">Seniority</div>
+         <input id="h" role="combobox" aria-labelledby="h-label" aria-expanded="false" style="width:200px;height:24px"></div>
+       <script>
+         setTimeout(() => {
+           const input = document.getElementById('h');
+           input.addEventListener('pointerdown', () => {
+             if (document.querySelector('.pop')) return;
+             input.setAttribute('aria-expanded', 'true');
+             const pop = document.createElement('div');
+             pop.className = 'pop';
+             ['Junior', 'Mid', 'Senior'].forEach((text) => {
+               const opt = document.createElement('div');
+               opt.setAttribute('role', 'option');
+               opt.textContent = text;
+               opt.style.height = '20px';
+               pop.appendChild(opt);
+             });
+             document.body.appendChild(pop);
+           });
+           input.addEventListener('keydown', (e) => {
+             if (e.key === 'Escape') { document.querySelector('.pop')?.remove(); input.setAttribute('aria-expanded', 'false'); }
+           });
+         }, 2500);
+       </script>`,
+    );
+    const read = await readDeep(page);
+    expect(byLabel(read, "Seniority")?.options?.map((o) => o.label)).toEqual(["Junior", "Mid", "Senior"]);
+    expect(byLabel(read, "Seniority")?.searchable).toBeFalsy();
+  });
+});

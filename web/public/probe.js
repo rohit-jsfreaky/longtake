@@ -104,9 +104,26 @@
   }
   function isVisible(el) {
     if (paintedOnScreen(el)) return true;
+    if (declaresItselfInteractive(el) && ownOpacity(el) === 0) {
+      const holder = sizedAncestor(el);
+      return holder !== null && paintedOnScreen(holder);
+    }
     const input = el;
     if (el.localName !== "input" || input.type !== "checkbox" && input.type !== "radio") return false;
     return Array.from(input.labels ?? []).some((label) => paintedOnScreen(label));
+  }
+  function ownOpacity(el) {
+    const style = el.ownerDocument?.defaultView?.getComputedStyle(el);
+    return style ? Number(style.opacity) : 1;
+  }
+  function sizedAncestor(el) {
+    let ancestor = el.parentElement;
+    for (let hops = 0; ancestor && hops < 3; hops++) {
+      const box = ancestor.getBoundingClientRect();
+      if (box.width > 0 || box.height > 0) return ancestor;
+      ancestor = ancestor.parentElement;
+    }
+    return null;
   }
   function paintedOnScreen(el) {
     const html = el;
@@ -332,6 +349,31 @@
     }
     return "";
   }
+  var GROUP_CONTAINER = "fieldset, [role='radiogroup'], [role='group']";
+  function groupQuestion(el) {
+    let container = el.parentElement?.closest(GROUP_CONTAINER) ?? null;
+    for (let hops = 0; container && hops < 2; hops++) {
+      const name = containerName(container);
+      if (name) return name;
+      container = container.parentElement?.closest(GROUP_CONTAINER) ?? null;
+    }
+    return "";
+  }
+  function containerName(container) {
+    const root = container.getRootNode();
+    const labelledBy = container.getAttribute("aria-labelledby");
+    if (labelledBy) {
+      const text2 = labelledBy.split(/\s+/).map((id) => textOf(root.querySelector(`#${CSS.escape(id)}`) ?? container.ownerDocument?.getElementById(id))).filter(Boolean).join(" ");
+      if (text2) return text2;
+    }
+    const ariaLabel = container.getAttribute("aria-label")?.trim();
+    if (ariaLabel) return ariaLabel;
+    return container.localName === "fieldset" ? textOf(container.querySelector(":scope > legend")) : "";
+  }
+  function groupRequired(el, question) {
+    const container = el.parentElement?.closest(GROUP_CONTAINER);
+    return container?.getAttribute("aria-required") === "true" || STARRED.test(question);
+  }
   var PART_ONLY = /^(date|time|day|month|year|hour|minute|dd|mm|yyyy|hh)$/i;
   var STARRED = /[*✱]\s*$/;
   function cleanLabel(raw) {
@@ -443,6 +485,9 @@
       const tag = el.tagName.toLowerCase();
       const typed = tag === "textarea" || tag === "input" && !/^(radio|checkbox)$/i.test(el.type);
       if (typed && el.parentElement?.closest("[role='radiogroup']")) return;
+      if (el.getAttribute("role") === "radiogroup" && !el.querySelector("[role='radio']") && el.querySelector("input[type='radio']")) {
+        return;
+      }
       if (tag === "input") {
         const type = (el.type || "text").toLowerCase();
         if (NON_ANSWER_TYPES.has(type)) return;
@@ -478,16 +523,16 @@
           };
           if (existing) {
             existing.options?.push(option);
+            if (el.required) existing.required = true;
             return;
           }
-          const groupLabel = cleanLabel(
-            textOf(el.closest("fieldset")?.querySelector("legend")) || el.closest("[role='radiogroup']")?.getAttribute("aria-label") || name
-          );
+          const question = groupQuestion(el);
+          const groupLabel = cleanLabel(question || name);
           const spec2 = {
             id: takeId(groupLabel || name, index),
             label: groupLabel,
             kind: kind === "radio" ? "radio" : "multiselect",
-            required: el.required,
+            required: el.required || groupRequired(el, question),
             options: [option],
             ...visible ? {} : { suspectedHoneypot: true }
           };
@@ -593,20 +638,19 @@
   function harvestOptions(read, settleMs = 150) {
     return exclusively(() => harvestAll(read, settleMs));
   }
+  var MENU_TIMEOUT_MS = 2e3;
   async function harvestAll(read, settleMs) {
     const doc = typeof document !== "undefined" ? document : null;
     if (!doc) return read;
     const sleep2 = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
     const allOptions = () => optionNodes(doc);
-    for (const spec of read.specs) {
-      if (spec.kind !== "select" && spec.kind !== "multiselect") continue;
-      if (spec.options && spec.options.length > 0) continue;
-      const el = read.handles.get(spec.id);
-      if (!el || !el.isConnected) continue;
+    const pressAndRead = async (spec, el, lastTry) => {
       const before = new Set(allOptions());
+      const opened = () => allOptions().some((option) => !before.has(option)) || el.getAttribute("aria-expanded") === "true";
       try {
         openWidget(el);
-        await sleep2(settleMs);
+        await whenSettled(doc, settleMs, MENU_TIMEOUT_MS, opened);
+        if (!opened() && !lastTry) return false;
         let revealed = allOptions().filter((option) => !before.has(option));
         if (revealed.length === 0 && el.getAttribute("aria-expanded") === "true") {
           revealed = allOptions().filter((option) => ownsOptions(el, option) === true);
@@ -629,6 +673,19 @@
         closeWidget(el);
         await sleep2(40);
       }
+      return true;
+    };
+    const silent = [];
+    for (const spec of read.specs) {
+      if (spec.kind !== "select" && spec.kind !== "multiselect") continue;
+      if (spec.options && spec.options.length > 0) continue;
+      const el = read.handles.get(spec.id);
+      if (!el || !el.isConnected) continue;
+      if (!await pressAndRead(spec, el, false)) silent.push([spec, el]);
+    }
+    if (silent.length > 0) {
+      await whenSettled(doc, 350, 3e3);
+      for (const [spec, el] of silent) if (el.isConnected) await pressAndRead(spec, el, true);
     }
     return read;
   }
@@ -645,6 +702,18 @@
   var WIDGET_OPEN_MS = 400;
   var RETRY_AFTER_MS = 250;
   var sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  var CONFIRM_MS = 1500;
+  function confirmed(done, timeoutMs = CONFIRM_MS) {
+    return new Promise((resolve) => {
+      const started = Date.now();
+      const check = () => {
+        if (done()) resolve(true);
+        else if (Date.now() - started >= timeoutMs) resolve(false);
+        else setTimeout(check, 16);
+      };
+      check();
+    });
+  }
   function setNativeValue(el, value) {
     const view = el.ownerDocument?.defaultView ?? window;
     const tag = el.tagName.toLowerCase();
@@ -1032,8 +1101,7 @@
         );
         if (!target) return { fieldId: id, status: "refused", reason: "That option is no longer on the page." };
         if (target.getAttribute("aria-checked") !== "true") target.click();
-        await sleep(30);
-        return target.getAttribute("aria-checked") === "true" ? { fieldId: id, status: "written", wrote: chosen[0].label } : { fieldId: id, status: "rejected-by-page", wrote: chosen[0].label, found: "" };
+        return await confirmed(() => target.getAttribute("aria-checked") === "true") ? { fieldId: id, status: "written", wrote: chosen[0].label } : { fieldId: id, status: "rejected-by-page", wrote: chosen[0].label, found: "" };
       }
       if (spec.custom) return pickFromWidget(spec, el, chosen[0], wanted.join(", "));
       if (spec.kind === "radio") {
@@ -1066,7 +1134,7 @@
         const already = el.getAttribute("aria-checked") === "true";
         if (already !== yes) {
           openWidget(el);
-          await sleep(120);
+          await confirmed(() => el.getAttribute("aria-checked") === "true" === yes);
         }
         const now = el.getAttribute("aria-checked") === "true";
         return now === yes ? { fieldId: id, status: "written", wrote: yes ? "checked" : "unchecked" } : {
@@ -1180,7 +1248,7 @@
     if (spec.kind === "checkbox") {
       if (el.getAttribute("aria-checked") === "true") {
         openWidget(el);
-        await sleep(120);
+        await confirmed(() => el.getAttribute("aria-checked") !== "true");
       }
       return el.getAttribute("aria-checked") === "true" ? cannot("The switch would not turn off.") : { fieldId: id, status: "cleared" };
     }

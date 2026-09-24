@@ -118,7 +118,7 @@ test.describe("the report", () => {
 
   test("a form in the baseline with no result this run fails", () => {
     const { corpus } = run({ a: {}, b: {} }, true);
-    expect(run({ a: {} }, false, corpus).failures).toEqual(["b: in the baseline, but no result this run"]);
+    expect(run({ a: {} }, false, corpus).failures).toEqual(["b: in the reading baseline, but no result this run"]);
   });
 
   test("a honeypot leak fails even when the baseline already had it", () => {

@@ -9,6 +9,7 @@
  *   page.mhtml        a static snapshot, for reading when the replay breaks
  *   ax.json           Chrome's accessibility tree at capture, with a DOM path per control
  *   truth.json        the verified answer key: what each field really is
+ *   fill.json         what we try on it, and what must happen — verified separately
  *   shots/page.png    full-page screenshot, for the human review
  */
 
@@ -107,16 +108,30 @@ export type TruthField = {
   honeypot: boolean;
 };
 
+/**
+ * One answer, as the agent's `fill_fields` call would carry it, and what must happen to it.
+ * Cases run in order on one page — like a person answering — so a conditional field can follow
+ * the choice that reveals it.
+ */
 export type FillCase = {
+  /** Truth key ("f07"). */
   field: string;
-  value: unknown;
+  value: string | string[] | boolean;
+  /** Their words. Passed as everything they said, so the quote check sees it. */
   evidence: string;
   expect: {
+    /** `held`: waiting for their yes (an answer the page does not offer, a hedge). */
     outcome: "written" | "refused" | "held";
+    /** What the page must show afterwards, when not simply the value. */
     shows?: string;
+    /** A framework's own hidden state, where a widget keeps it: the input and the value it must hold. */
     hidden?: { css: string; value: string };
+    /** Other truth keys this answer rightly changes — a phone's country-code picker. */
+    also?: string[];
   };
 };
+
+export type FillPlan = { cases: FillCase[]; verified: { by: string; at: string } | null };
 
 export type TruthPage = {
   page: number;
@@ -128,7 +143,6 @@ export type TruthPage = {
 export type Truth = {
   id: string;
   pages: TruthPage[];
-  fillPlan: FillCase[];
   pageContext?: { mustContain: string[] };
   verified: { by: string; at: string } | null;
 };

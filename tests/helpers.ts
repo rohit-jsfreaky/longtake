@@ -31,6 +31,7 @@ export type TestFieldSpec = {
   custom?: boolean;
   suspectedHoneypot?: boolean;
   section?: string;
+  searchable?: boolean;
 };
 
 export type TestRead = {

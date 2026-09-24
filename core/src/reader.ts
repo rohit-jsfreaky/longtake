@@ -220,6 +220,53 @@ function labelOf(el: Element): string {
   return "";
 }
 
+/** What holds a set of radios or checkboxes and can say what question they answer. */
+const GROUP_CONTAINER = "fieldset, [role='radiogroup'], [role='group']";
+
+/**
+ * The question a group of radios or checkboxes answers: the accessible name of the group around
+ * it — a fieldset's own legend, or a radiogroup / group named by `aria-labelledby` or
+ * `aria-label`. Jotform names every group by `aria-labelledby`; read only from a legend or an
+ * `aria-label`, its questions came out as the inputs' `name` ("q40_areYou", "q25_typeA[]").
+ *
+ * The nearest named container, at most two out: an unnamed wrapper is skipped, but a whole form
+ * wrapped in a named group must not become every group's question.
+ */
+function groupQuestion(el: Element): string {
+  let container = el.parentElement?.closest(GROUP_CONTAINER) ?? null;
+  for (let hops = 0; container && hops < 2; hops++) {
+    const name = containerName(container);
+    if (name) return name;
+    container = container.parentElement?.closest(GROUP_CONTAINER) ?? null;
+  }
+  return "";
+}
+
+function containerName(container: Element): string {
+  const root = container.getRootNode() as Document | ShadowRoot;
+  const labelledBy = container.getAttribute("aria-labelledby");
+  if (labelledBy) {
+    const text = labelledBy
+      .split(/\s+/)
+      .map((id) => textOf(root.querySelector(`#${CSS.escape(id)}`) ?? container.ownerDocument?.getElementById(id)))
+      .filter(Boolean)
+      .join(" ");
+    if (text) return text;
+  }
+  const ariaLabel = container.getAttribute("aria-label")?.trim();
+  if (ariaLabel) return ariaLabel;
+  return container.localName === "fieldset" ? textOf(container.querySelector(":scope > legend")) : "";
+}
+
+/**
+ * A group is required when the group says so — `aria-required` on it — or when its question
+ * carries the star. Each radio's own `required` counts too, and is added as members are read.
+ */
+function groupRequired(el: Element, question: string): boolean {
+  const container = el.parentElement?.closest(GROUP_CONTAINER);
+  return container?.getAttribute("aria-required") === "true" || STARRED.test(question);
+}
+
 /** A label that names a piece of an answer rather than the question. */
 const PART_ONLY = /^(date|time|day|month|year|hour|minute|dd|mm|yyyy|hh)$/i;
 
@@ -423,6 +470,14 @@ export function readForm(
     const typed = tag === "textarea" || (tag === "input" && !/^(radio|checkbox)$/i.test((el as HTMLInputElement).type));
     if (typed && el.parentElement?.closest("[role='radiogroup']")) return;
 
+    // And the wrapper itself, when what it wraps are native radios: it is the question, and the
+    // radios inside are read as the group — named from this wrapper, below. Read as a field of
+    // its own, every Jotform radio question came out twice, and the copy the agent was given had
+    // no choices, so none of them could be answered.
+    if (el.getAttribute("role") === "radiogroup" && !el.querySelector("[role='radio']") && el.querySelector("input[type='radio']")) {
+      return;
+    }
+
     if (tag === "input") {
       const type = ((el as HTMLInputElement).type || "text").toLowerCase();
       if (NON_ANSWER_TYPES.has(type)) return;
@@ -477,6 +532,7 @@ export function readForm(
 
         if (existing) {
           existing.options?.push(option);
+          if ((el as HTMLInputElement).required) existing.required = true;
           // The handle map points at the group's first control; `writer.ts` walks from there.
           return;
         }
@@ -487,17 +543,14 @@ export function readForm(
         // using it for the group's id produced `yes_i_am_authorized` as the name of a question
         // actually called "Work authorization". The id and the label have to come from the same
         // place or the model is answering a question it cannot see.
-        const groupLabel = cleanLabel(
-          textOf(el.closest("fieldset")?.querySelector("legend")) ||
-            el.closest("[role='radiogroup']")?.getAttribute("aria-label") ||
-            name,
-        );
+        const question = groupQuestion(el);
+        const groupLabel = cleanLabel(question || name);
 
         const spec: FieldSpec = {
           id: takeId(groupLabel || name, index),
           label: groupLabel,
           kind: kind === "radio" ? "radio" : "multiselect",
-          required: (el as HTMLInputElement).required,
+          required: (el as HTMLInputElement).required || groupRequired(el, question),
           options: [option],
           ...(visible ? {} : { suspectedHoneypot: true }),
         };
@@ -711,6 +764,9 @@ export function harvestOptions(read: FormRead, settleMs = 150): Promise<FormRead
   return exclusively(() => harvestAll(read, settleMs));
 }
 
+/** How long a dropdown gets to show that it opened, however slow the machine. */
+const MENU_TIMEOUT_MS = 2000;
+
 async function harvestAll(read: FormRead, settleMs: number): Promise<FormRead> {
   const doc = typeof document !== "undefined" ? document : null;
   if (!doc) return read;
@@ -718,20 +774,25 @@ async function harvestAll(read: FormRead, settleMs: number): Promise<FormRead> {
   const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
   const allOptions = () => optionNodes(doc);
 
-  for (const spec of read.specs) {
-    if (spec.kind !== "select" && spec.kind !== "multiselect") continue;
-    if (spec.options && spec.options.length > 0) continue; // a real <select> already gave them up
-
-    const el = read.handles.get(spec.id);
-    if (!el || !el.isConnected) continue;
-
+  /**
+   * Press one widget and read what it offers. False when it did not react at all — no menu, not
+   * even "expanded" — which says nothing about its options yet: `lastTry` decides whether that
+   * silence may be read as "a list that fills as you type".
+   */
+  const pressAndRead = async (spec: FieldSpec, el: HTMLElement, lastTry: boolean): Promise<boolean> => {
     // Whatever is already on screen belongs to someone else. Diffing against it means we can
     // never attribute another widget's options to this field.
     const before = new Set(allOptions());
+    const opened = () => allOptions().some((option) => !before.has(option)) || el.getAttribute("aria-expanded") === "true";
 
     try {
       openWidget(el);
-      await sleep(settleMs);
+      // Wait for the menu, not for a guess at how long a menu takes. A fixed 150 ms read
+      // Greenhouse's 244 country codes as nothing on a busy machine — and a "+91" then had no
+      // picker to go to. Open means new options on screen, or the widget saying it is expanded
+      // (a list that fills as you type opens empty); read once the page has gone quiet.
+      await whenSettled(doc, settleMs, MENU_TIMEOUT_MS, opened);
+      if (!opened() && !lastTry) return false;
 
       let revealed = allOptions().filter((option) => !before.has(option));
       // Already open before we got here, so nothing is "new" — read its own options instead.
@@ -774,6 +835,27 @@ async function harvestAll(read: FormRead, settleMs: number): Promise<FormRead> {
       closeWidget(el);
       await sleep(40);
     }
+    return true;
+  };
+
+  const silent: [FieldSpec, HTMLElement][] = [];
+  for (const spec of read.specs) {
+    if (spec.kind !== "select" && spec.kind !== "multiselect") continue;
+    if (spec.options && spec.options.length > 0) continue; // a real <select> already gave them up
+
+    const el = read.handles.get(spec.id);
+    if (!el || !el.isConnected) continue;
+    if (!(await pressAndRead(spec, el, false))) silent.push([spec, el]);
+  }
+
+  // A widget that did not react at all has not said it has no options. A server-rendered page
+  // shows its widgets before its scripts bring them to life: on a busy machine Greenhouse's
+  // dropdowns stayed dead for eight seconds after load, and each was read as a list that fills
+  // as you type — so no choices, and no picker for a phone's "+91". Ask them once more, after the
+  // rest, before deciding.
+  if (silent.length > 0) {
+    await whenSettled(doc, 350, 3000);
+    for (const [spec, el] of silent) if (el.isConnected) await pressAndRead(spec, el, true);
   }
 
   return read;

@@ -3,54 +3,67 @@
  *
  * The baseline lives in the corpus repo (`corpus/baseline.json`), so moving it is a visible diff
  * there. The ratchet is per form: a form already in the baseline may not get worse on any number,
- * and a honeypot leak fails whatever the baseline says. A new form simply joins the baseline the
- * next time it is moved (`CORPUS_UPDATE_BASELINE=1`).
+ * and a gate (a honeypot leak, a field changed that nobody answered) fails whatever the baseline
+ * says. A new form simply joins the baseline the next time it is moved (`CORPUS_UPDATE_BASELINE=1`).
  */
 
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import type { ReadCounts, ReadRow } from "./score";
-
-type Stored = { id: string; at: string; counts: ReadCounts; rows: ReadRow[]; extras: { id: string; label: string; duplicateOf?: string }[] };
+type Counts = Record<string, number>;
+type Row = { key: string; question: string; problems: string[] };
+type Stored = { id: string; at: string; counts: Counts; rows: Row[]; extras?: { id: string; label: string; duplicateOf?: string }[] };
 
 type Metric = {
   key: string;
+  /** Unique across scorers, so a failure line names its number without saying which scorer. */
   label: string;
   better: "higher" | "lower";
   /** Must be exactly 0, whatever the baseline says. */
   gate?: boolean;
-  value: (c: ReadCounts) => number | null;
+  value: (c: Counts) => number | null;
 };
 
-const ratio = (a: number, b: number) => (b > 0 ? a / b : null);
+type Scorer = { name: string; title: string; size: (total: Counts) => string; metrics: Metric[] };
+
+const ratio = (a: number | undefined, b: number | undefined) => (b ? (a ?? 0) / b : null);
 
 const READ: Metric[] = [
   { key: "found", label: "Found", better: "higher", value: (c) => ratio(c.found, c.fields) },
-  { key: "notExtra", label: "Not extra", better: "higher", value: (c) => ratio(c.specs - c.duplicates - c.extras, c.specs) },
+  { key: "notExtra", label: "Not extra", better: "higher", value: (c) => ratio(c.specs! - c.duplicates! - c.extras!, c.specs) },
   { key: "labelExact", label: "Label exact", better: "higher", value: (c) => ratio(c.labelExact, c.found) },
   { key: "labelWords", label: "Label words", better: "higher", value: (c) => ratio(c.labelF1, c.found) },
   { key: "kind", label: "Kind", better: "higher", value: (c) => ratio(c.kindRight, c.found) },
-  { key: "requiredCaught", label: "Required caught", better: "higher", value: (c) => ratio(c.requiredTP, c.requiredTP + c.requiredFN) },
-  { key: "requiredRight", label: "Required right", better: "higher", value: (c) => ratio(c.requiredTP, c.requiredTP + c.requiredFP) },
+  { key: "requiredCaught", label: "Required caught", better: "higher", value: (c) => ratio(c.requiredTP, c.requiredTP! + c.requiredFN!) },
+  { key: "requiredRight", label: "Required right", better: "higher", value: (c) => ratio(c.requiredTP, c.requiredTP! + c.requiredFP!) },
   { key: "choices", label: "Choices", better: "higher", value: (c) => ratio(c.optionsF1, c.choiceFields) },
   { key: "listType", label: "List type", better: "higher", value: (c) => ratio(c.searchableRight, c.choiceFields) },
-  { key: "askedTwice", label: "Asked twice", better: "lower", value: (c) => c.duplicates },
-  { key: "notAField", label: "Not a field", better: "lower", value: (c) => c.extras },
-  { key: "sameWords", label: "Same words", better: "lower", value: (c) => c.ambiguous },
-  { key: "honeypotLeaks", label: "Honeypot leaks", better: "lower", gate: true, value: (c) => c.honeypotLeaks },
+  { key: "askedTwice", label: "Asked twice", better: "lower", value: (c) => c.duplicates ?? 0 },
+  { key: "notAField", label: "Not a field", better: "lower", value: (c) => c.extras ?? 0 },
+  { key: "sameWords", label: "Same words", better: "lower", value: (c) => c.ambiguous ?? 0 },
+  { key: "honeypotLeaks", label: "Honeypot leaks", better: "lower", gate: true, value: (c) => c.honeypotLeaks ?? 0 },
 ];
 
-/** Deterministic reads: any move is a real move. Raise per metric here only if one turns out noisy. */
+const FILL: Metric[] = [
+  { key: "outcome", label: "Right outcome", better: "higher", value: (c) => ratio(c.outcomeRight, c.cases) },
+  { key: "shows", label: "Shows right", better: "higher", value: (c) => ratio(c.shownRight, c.written) },
+  { key: "hidden", label: "Widget state", better: "higher", value: (c) => ratio(c.hiddenRight, c.hiddenChecked) },
+  { key: "collateral", label: "Touched others", better: "lower", gate: true, value: (c) => c.collateral ?? 0 },
+];
+
+export const SCORERS: Scorer[] = [
+  { name: "read", title: "reading", size: (t) => `${t.fields ?? 0} fields`, metrics: READ },
+  { name: "fill", title: "filling", size: (t) => `${t.cases ?? 0} answers`, metrics: FILL },
+];
+
+/** Deterministic reads and writes: any move is a real move. Raise per metric here only if one turns out noisy. */
 const EPSILON = 1e-9;
 
-type Baseline = { read: Record<string, Record<string, number | null>> };
+type Baseline = Record<string, Record<string, Record<string, number | null>>>;
 
-function sum(all: ReadCounts[]): ReadCounts {
-  const total = {} as ReadCounts;
-  for (const counts of all) {
-    for (const [key, value] of Object.entries(counts) as [keyof ReadCounts, number][]) total[key] = (total[key] ?? 0) + value;
-  }
+function sum(all: Counts[]): Counts {
+  const total: Counts = {};
+  for (const counts of all) for (const [key, value] of Object.entries(counts)) total[key] = (total[key] ?? 0) + value;
   return total;
 }
 
@@ -65,6 +78,15 @@ function show(metric: Metric, value: number | null, base: number | null | undefi
   const better = metric.better === "higher" ? moved > 0 : moved < 0;
   const size = isCount(metric) ? `${moved > 0 ? "+" : ""}${moved}` : `${moved > 0 ? "+" : ""}${(moved * 100).toFixed(1)}`;
   return `${text} ${better ? "▲" : "▼"}${size}`;
+}
+
+function load(results: string, scorer: string): Stored[] {
+  const dir = join(results, scorer);
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir)
+    .filter((name) => name.endsWith(".json"))
+    .sort()
+    .map((name) => JSON.parse(readFileSync(join(dir, name), "utf8")) as Stored);
 }
 
 export type Report = { markdown: string; failures: string[] };
@@ -84,62 +106,69 @@ export function report(options: {
   update?: false | "better" | "accept-worse";
   details?: boolean;
 }): Report {
-  const dir = join(options.results, "read");
-  const stored: Stored[] = existsSync(dir)
-    ? readdirSync(dir)
-        .filter((name) => name.endsWith(".json"))
-        .sort()
-        .map((name) => JSON.parse(readFileSync(join(dir, name), "utf8")) as Stored)
-    : [];
   const baselinePath = join(options.corpus, "baseline.json");
-  const baseline: Baseline = existsSync(baselinePath) ? (JSON.parse(readFileSync(baselinePath, "utf8")) as Baseline) : { read: {} };
+  const baseline: Baseline = existsSync(baselinePath) ? (JSON.parse(readFileSync(baselinePath, "utf8")) as Baseline) : {};
 
   const failures: string[] = [];
+  const gateFailures: string[] = [];
   let improved = 0;
   const lines: string[] = [];
-  const total = sum(stored.map((s) => s.counts));
-  // The total moves only against a total over the very same forms; a new form is not a regression.
-  const baseForms = Object.keys(baseline.read).filter((id) => id !== "__total__");
-  const sameForms = stored.length === baseForms.length && stored.every((s) => baseline.read[s.id]);
-  const baseTotal = (key: string) => (sameForms ? baseline.read.__total__?.[key] : undefined);
+  const next: Baseline = {};
 
-  lines.push(`### Corpus · reading — ${stored.length} forms, ${total.fields ?? 0} fields`);
-  lines.push("");
-  lines.push(`| Form | ${READ.map((m) => m.label).join(" | ")} |`);
-  lines.push(`|---|${READ.map(() => "---:").join("|")}|`);
-  lines.push(`| **All** | ${READ.map((m) => `**${show(m, stored.length ? m.value(total) : null, baseTotal(m.key))}**`).join(" | ")} |`);
-  for (const form of stored) {
-    const base = baseline.read[form.id];
-    lines.push(`| ${form.id} | ${READ.map((m) => show(m, m.value(form.counts), base?.[m.key])).join(" | ")} |`);
+  for (const scorer of SCORERS) {
+    const stored = load(options.results, scorer.name);
+    const base = baseline[scorer.name] ?? {};
+    const baseForms = Object.keys(base).filter((id) => id !== "__total__");
+    if (stored.length === 0 && baseForms.length === 0) continue;
 
-    for (const metric of READ) {
-      const value = metric.value(form.counts);
-      if (metric.gate && value !== null && value !== 0) failures.push(`${form.id}: ${metric.label} is ${value}, must be 0`);
-      const was = base?.[metric.key];
-      if (was === undefined || was === null || value === null) continue;
-      const worse = metric.better === "higher" ? value < was - EPSILON : value > was + EPSILON;
-      if (worse) failures.push(`${form.id}: ${metric.label} got worse — ${show(metric, value, was)}`);
-      else if (Math.abs(value - was) > EPSILON) improved++;
+    const total = sum(stored.map((s) => s.counts));
+    // The total moves only against a total over the very same forms; a new form is not a regression.
+    const sameForms = stored.length === baseForms.length && stored.every((s) => base[s.id]);
+    const baseTotal = (key: string) => (sameForms ? base.__total__?.[key] : undefined);
+
+    if (lines.length > 0) lines.push("");
+    lines.push(`### Corpus · ${scorer.title} — ${stored.length} forms, ${scorer.size(total)}`);
+    lines.push("");
+    lines.push(`| Form | ${scorer.metrics.map((m) => m.label).join(" | ")} |`);
+    lines.push(`|---|${scorer.metrics.map(() => "---:").join("|")}|`);
+    lines.push(`| **All** | ${scorer.metrics.map((m) => `**${show(m, stored.length ? m.value(total) : null, baseTotal(m.key))}**`).join(" | ")} |`);
+
+    for (const form of stored) {
+      const was = base[form.id];
+      lines.push(`| ${form.id} | ${scorer.metrics.map((m) => show(m, m.value(form.counts), was?.[m.key])).join(" | ")} |`);
+      for (const metric of scorer.metrics) {
+        const value = metric.value(form.counts);
+        if (metric.gate && value !== null && value !== 0) gateFailures.push(`${form.id}: ${metric.label} is ${value}, must be 0`);
+        const before = was?.[metric.key];
+        if (before === undefined || before === null || value === null) continue;
+        const worse = metric.better === "higher" ? value < before - EPSILON : value > before + EPSILON;
+        if (worse) failures.push(`${form.id}: ${metric.label} got worse — ${show(metric, value, before)}`);
+        else if (Math.abs(value - before) > EPSILON) improved++;
+      }
     }
-  }
-  for (const id of Object.keys(baseline.read)) {
-    if (id !== "__total__" && !stored.some((s) => s.id === id)) failures.push(`${id}: in the baseline, but no result this run`);
+    for (const id of baseForms) {
+      if (!stored.some((s) => s.id === id)) failures.push(`${id}: in the ${scorer.title} baseline, but no result this run`);
+    }
+
+    lines.push("");
+    if (options.details === false) {
+      lines.push("_Field-by-field details stay out of public logs — run `npm run corpus` with the corpus checked out._");
+    } else {
+      lines.push(...details(stored));
+    }
+
+    next[scorer.name] = Object.fromEntries(stored.map((form) => [form.id, Object.fromEntries(scorer.metrics.map((m) => [m.key, m.value(form.counts)]))]));
+    next[scorer.name]!.__total__ = Object.fromEntries(scorer.metrics.map((m) => [m.key, m.value(total)]));
   }
 
-  lines.push("");
-  if (options.details === false) {
-    lines.push("_Field-by-field details stay out of public logs — run `npm run corpus` with the corpus checked out._");
-  } else {
-    lines.push(...details(stored));
-  }
-
-  if (failures.length > 0) {
+  const all = [...gateFailures, ...failures];
+  if (all.length > 0) {
     lines.push("");
     lines.push("**Worse than the baseline:**");
-    for (const failure of failures) lines.push(`- ${failure}`);
+    for (const failure of all) lines.push(`- ${failure}`);
   }
 
-  if (improved > 0 && failures.length === 0 && !options.update) {
+  if (improved > 0 && all.length === 0 && !options.update) {
     lines.push("");
     lines.push(
       `${improved} number${improved === 1 ? "" : "s"} improved. Lock ${improved === 1 ? "it" : "them"} in: ` +
@@ -147,36 +176,33 @@ export function report(options: {
     );
   }
 
-  const regressions = failures.filter((f) => !f.includes("must be 0"));
-  if (options.update === "better" && regressions.length > 0) {
+  if (options.update === "better" && failures.length > 0) {
     lines.push("");
     lines.push(
-      `Baseline NOT moved: ${regressions.length} number${regressions.length === 1 ? "" : "s"} got worse. ` +
+      `Baseline NOT moved: ${failures.length} number${failures.length === 1 ? "" : "s"} got worse. ` +
         "If that is intended — the truth was corrected — run with `CORPUS_UPDATE_BASELINE=accept-worse`.",
     );
-    return { markdown: lines.join("\n"), failures };
+    return { markdown: lines.join("\n"), failures: all };
   }
 
   if (options.update) {
-    const next: Baseline = { read: {} };
-    for (const form of stored) next.read[form.id] = Object.fromEntries(READ.map((m) => [m.key, m.value(form.counts)]));
-    next.read.__total__ = Object.fromEntries(READ.map((m) => [m.key, m.value(total)]));
     writeFileSync(baselinePath, JSON.stringify(next, null, 2) + "\n");
     lines.push("");
     lines.push(`Baseline updated: ${baselinePath}`);
-    return { markdown: lines.join("\n"), failures: failures.filter((f) => f.includes("must be 0")) };
+    return { markdown: lines.join("\n"), failures: gateFailures };
   }
-  return { markdown: lines.join("\n"), failures };
+  return { markdown: lines.join("\n"), failures: all };
 }
 
 function details(stored: Stored[]): string[] {
   const lines = ["<details><summary>What is wrong, field by field</summary>", ""];
   for (const form of stored) {
     const wrong = form.rows.filter((row) => row.problems.length > 0);
-    if (wrong.length === 0 && form.extras.length === 0) continue;
+    const extras = form.extras ?? [];
+    if (wrong.length === 0 && extras.length === 0) continue;
     lines.push(`**${form.id}**`);
     for (const row of wrong) lines.push(`- ${row.key} “${row.question}” — ${row.problems.join("; ")}`);
-    for (const extra of form.extras) {
+    for (const extra of extras) {
       lines.push(`- extra \`${extra.id}\` “${extra.label}” — ${extra.duplicateOf ? `a second reading of \`${extra.duplicateOf}\`` : "no such field in the truth"}`);
     }
     lines.push("");

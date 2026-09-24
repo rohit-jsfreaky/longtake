@@ -73,6 +73,30 @@ const RETRY_AFTER_MS = 250;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/** How long a page gets to show that it took a press, however busy the machine. */
+const CONFIRM_MS = 1500;
+
+/**
+ * Wait for the page to confirm what was pressed — not for a guess at how long that takes. True as
+ * soon as `done()` holds (a quick page answers within a frame); false once `timeoutMs` passes (a
+ * page that really did refuse).
+ *
+ * A fixed 30 ms after a click read Google Forms' choices as refused on a busy machine: the agent
+ * was told "that didn't go in" — and then the choice landed anyway, a moment later. Polled rather
+ * than observed, because a `checked` property changes without any mutation to observe.
+ */
+function confirmed(done: () => boolean, timeoutMs = CONFIRM_MS): Promise<boolean> {
+  return new Promise((resolve) => {
+    const started = Date.now();
+    const check = () => {
+      if (done()) resolve(true);
+      else if (Date.now() - started >= timeoutMs) resolve(false);
+      else setTimeout(check, 16);
+    };
+    check();
+  });
+}
+
 /**
  * React (and Vue, and Svelte) keep their own copy of an input's value and overwrite anything
  * set directly on the element. Going through the prototype's native setter updates the value
@@ -817,8 +841,7 @@ async function writeOne(
       ) as HTMLElement | undefined;
       if (!target) return { fieldId: id, status: "refused", reason: "That option is no longer on the page." };
       if (target.getAttribute("aria-checked") !== "true") target.click();
-      await sleep(30);
-      return target.getAttribute("aria-checked") === "true"
+      return (await confirmed(() => target.getAttribute("aria-checked") === "true"))
         ? { fieldId: id, status: "written", wrote: chosen[0]!.label }
         : { fieldId: id, status: "rejected-by-page", wrote: chosen[0]!.label, found: "" };
     }
@@ -864,7 +887,7 @@ async function writeOne(
       const already = el.getAttribute("aria-checked") === "true";
       if (already !== yes) {
         openWidget(el); // the same press sequence; a switch answers pointerdown too
-        await sleep(120);
+        await confirmed(() => (el.getAttribute("aria-checked") === "true") === yes);
       }
       const now = el.getAttribute("aria-checked") === "true";
       return now === yes
@@ -1070,7 +1093,7 @@ async function clearOne(spec: FieldSpec, el: HTMLElement): Promise<ClearOutcome>
   if (spec.kind === "checkbox") {
     if (el.getAttribute("aria-checked") === "true") {
       openWidget(el);
-      await sleep(120);
+      await confirmed(() => el.getAttribute("aria-checked") !== "true");
     }
     return el.getAttribute("aria-checked") === "true"
       ? cannot("The switch would not turn off.")

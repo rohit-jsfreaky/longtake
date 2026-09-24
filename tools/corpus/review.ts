@@ -4,15 +4,16 @@
  * A small local server, nothing installed: the full-page screenshot with a numbered box on every
  * field, and beside it every field of `truth.json`, editable. Saving writes the file; "Verified"
  * stamps it with who checked it. An edit after that clears the stamp — a truth nobody re-checked
- * is not verified.
+ * is not verified. Below it, the fill plan (`fill.json`) — what we try on the form — with a stamp
+ * of its own.
  */
 
 import { execFileSync } from "node:child_process";
-import { readFile, writeFile } from "node:fs/promises";
+import { access, readFile, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { join, resolve } from "node:path";
 
-import type { AxCapture, Meta, Truth } from "./types";
+import type { AxCapture, FillPlan, Meta, Truth } from "./types";
 
 const KINDS = ["text", "textarea", "email", "tel", "url", "number", "date", "select", "radio", "checkbox", "multiselect", "file"];
 const SUBJECTS = ["self", "other_person", "organization", "none"];
@@ -39,6 +40,23 @@ export function problemsIn(truth: Truth, verifying: boolean): string[] {
   return problems;
 }
 
+const OUTCOMES = ["written", "refused", "held"];
+
+/** What is wrong with a fill plan before it can be saved (or, with `verifying`, stamped). */
+export function problemsInPlan(plan: FillPlan, truth: Truth, verifying: boolean): string[] {
+  const problems: string[] = [];
+  const keys = new Set(truth.pages.flatMap((page) => page.fields.map((field) => field.key)));
+  plan.cases.forEach((item, i) => {
+    const at = `answer ${i + 1} (${item.field})`;
+    if (!keys.has(item.field)) problems.push(`${at}: no field ${item.field} in the truth`);
+    if (!OUTCOMES.includes(item.expect?.outcome)) problems.push(`${at}: outcome must be one of ${OUTCOMES.join(", ")}`);
+    for (const key of item.expect?.also ?? []) if (!keys.has(key)) problems.push(`${at}: also-changes names ${key}, which is not in the truth`);
+    if (verifying && (item.value === "" || (Array.isArray(item.value) && item.value.length === 0))) problems.push(`${at}: no answer`);
+    if (verifying && !item.evidence.trim()) problems.push(`${at}: no words — what did they say?`);
+  });
+  return problems;
+}
+
 function gitUser(): string {
   try {
     return execFileSync("git", ["config", "user.name"], { encoding: "utf8" }).trim() || "reviewer";
@@ -47,10 +65,14 @@ function gitUser(): string {
   }
 }
 
-export async function review(id: string, dir = "corpus", port = 4477): Promise<void> {
+/**
+ * `reviewer` names whoever really checks — the git user by default. A stamp is a record of who
+ * looked; when someone else looks on the git user's behalf, it says so.
+ */
+export async function review(id: string, dir = "corpus", port = 4477, reviewer?: string): Promise<void> {
   const base = join(dir, id);
   const page = resolve(process.cwd(), "tools/corpus/review.html");
-  const by = gitUser();
+  const by = reviewer ?? gitUser();
 
   const server = createServer(async (req, res) => {
     const send = (status: number, type: string, body: string | Buffer) => {
@@ -64,7 +86,21 @@ export async function review(id: string, dir = "corpus", port = 4477): Promise<v
         const [meta, ax, truth] = await Promise.all(
           ["meta.json", "ax.json", "truth.json"].map((name) => readFile(join(base, name), "utf8").then(JSON.parse)),
         );
-        return send(200, "application/json", JSON.stringify({ meta: meta as Meta, ax: ax as AxCapture, truth: truth as Truth, by }));
+        const fill: FillPlan = await access(join(base, "fill.json"))
+          .then(() => readFile(join(base, "fill.json"), "utf8").then((text) => JSON.parse(text) as FillPlan))
+          .catch(() => ({ cases: [], verified: null }));
+        return send(200, "application/json", JSON.stringify({ meta: meta as Meta, ax: ax as AxCapture, truth: truth as Truth, fill, by }));
+      }
+      if (req.method === "PUT" && req.url === "/api/fill") {
+        let body = "";
+        for await (const chunk of req) body += chunk;
+        const { fill, verify } = JSON.parse(body) as { fill: FillPlan; verify: boolean };
+        const truth = JSON.parse(await readFile(join(base, "truth.json"), "utf8")) as Truth;
+        const problems = problemsInPlan(fill, truth, verify);
+        if (problems.length > 0) return send(422, "application/json", JSON.stringify({ problems }));
+        const saved: FillPlan = { cases: fill.cases, verified: verify ? { by, at: new Date().toISOString() } : null };
+        await writeFile(join(base, "fill.json"), JSON.stringify(saved, null, 2) + "\n");
+        return send(200, "application/json", JSON.stringify({ fill: saved }));
       }
       if (req.method === "PUT" && req.url === "/api/truth") {
         let body = "";

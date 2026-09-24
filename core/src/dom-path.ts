@@ -213,12 +213,39 @@ export function deepQueryAll(root: Document | ShadowRoot | Element, selector: st
  * screen — through its label — so it is visible when that label is. A honeypot's label is hidden
  * with it, or it has none. Only for checkables: a text box whose label shows still hides what you
  * type into it.
+ *
+ * And one for widgets: React-Select sets its input to `opacity: 0` the moment a choice is made,
+ * and shows the choice in a sibling. Read as hidden, every Greenhouse dropdown vanished from the
+ * form as soon as it was answered — the agent was told the question had gone. The same rule as
+ * for its 3-pixel input below: a control that has announced what it is (`role="combobox"`,
+ * `aria-haspopup`) is judged by the widget it sits in. A honeypot never announces itself.
  */
 export function isVisible(el: Element): boolean {
   if (paintedOnScreen(el)) return true;
+  if (declaresItselfInteractive(el) && ownOpacity(el) === 0) {
+    const holder = sizedAncestor(el);
+    return holder !== null && paintedOnScreen(holder);
+  }
   const input = el as HTMLInputElement;
   if (el.localName !== "input" || (input.type !== "checkbox" && input.type !== "radio")) return false;
   return Array.from(input.labels ?? []).some((label) => paintedOnScreen(label));
+}
+
+/** The element's own opacity — not its ancestors': a transparent wrapper hides everything in it. */
+function ownOpacity(el: Element): number {
+  const style = el.ownerDocument?.defaultView?.getComputedStyle(el);
+  return style ? Number(style.opacity) : 1;
+}
+
+/** The first ancestor with a box at all, within three hops — `display: contents` wrappers skipped. */
+function sizedAncestor(el: Element): Element | null {
+  let ancestor = el.parentElement;
+  for (let hops = 0; ancestor && hops < 3; hops++) {
+    const box = ancestor.getBoundingClientRect();
+    if (box.width > 0 || box.height > 0) return ancestor;
+    ancestor = ancestor.parentElement;
+  }
+  return null;
 }
 
 function paintedOnScreen(el: Element): boolean {

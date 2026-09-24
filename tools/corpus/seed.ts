@@ -87,7 +87,6 @@ export function seedTruth(id: string, ax: AxCapture): Truth {
   return {
     id,
     pages: [{ page: 1, fields, actions, ...(submit ? { submit } : {}) }],
-    fillPlan: [],
     verified: null,
   };
 }

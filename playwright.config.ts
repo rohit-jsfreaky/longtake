@@ -52,6 +52,10 @@ export default defineConfig({
       name: "corpus",
       testMatch: /corpus[\\/].*\.spec\.ts$/,
       use: { bypassCSP: true },
+      // A real page, a full read with every dropdown opened, then ten answers that each wait for
+      // the page to settle: 14–28 s on a quiet machine. The 30 s default is for one small page —
+      // at it, a busy machine cut runs off mid-navigation ("ERR_ABORTED; frame detached").
+      timeout: 120_000,
       // Last run's results cleared first; the report runs after, whatever passed or failed.
       dependencies: ["corpus-setup"],
       teardown: "corpus-report",

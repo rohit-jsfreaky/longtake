@@ -12,7 +12,7 @@ import type { Page } from "@playwright/test";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
-import { HAR, REPLAYED, type AxCapture, type Locator, type Meta, type Truth } from "../../tools/corpus/types";
+import { HAR, REPLAYED, type AxCapture, type FillPlan, type Locator, type Meta, type Truth } from "../../tools/corpus/types";
 import { runSteps } from "../../tools/corpus/steps";
 import type { ReadJoin, ReadSpec } from "../../tools/corpus/score";
 import { PROBE } from "../helpers";
@@ -21,7 +21,7 @@ export const CORPUS = resolve(process.cwd(), process.env.CORPUS_DIR ?? "corpus")
 /** One JSON per form per scorer, read by the report. Cleared at the start of every run. */
 export const RESULTS = resolve(process.cwd(), process.env.CORPUS_RESULTS ?? "corpus-results");
 
-export type CorpusForm = { id: string; dir: string; meta: Meta; ax: AxCapture; truth: Truth | null };
+export type CorpusForm = { id: string; dir: string; meta: Meta; ax: AxCapture; truth: Truth | null; fill: FillPlan | null };
 
 /** Every captured form, read synchronously so specs can be generated from it. Empty without a corpus. */
 export function corpusForms(): CorpusForm[] {
@@ -37,6 +37,7 @@ export function corpusForms(): CorpusForm[] {
       meta: json<Meta>("meta.json"),
       ax: json<AxCapture>("ax.json"),
       truth: existsSync(join(dir, "truth.json")) ? json<Truth>("truth.json") : null,
+      fill: existsSync(join(dir, "fill.json")) ? json<FillPlan>("fill.json") : null,
     });
   }
   return forms;
@@ -48,6 +49,7 @@ export type Sent = { submits: string[]; posts: string[] };
 declare global {
   interface Window {
     __corpusSent?: string[];
+    __corpusSession?: InstanceType<Window["__longtake"]["LongtakeSession"]>;
   }
 }
 
@@ -108,10 +110,15 @@ export async function readAsIs(page: Page): Promise<ReadSpec[]> {
  * Join truth to the last read **by element**. Each truth field comes as all of its elements (its
  * own first, then the other choices of its group); `found[i]` is false when its own no longer
  * resolves — a corpus problem, not a reader one.
+ *
+ * `stale` counts handles the page has since thrown away: a framework that re-renders after the
+ * read replaces the very elements the read holds, and then nothing can join. The product re-reads
+ * when its page changes (the conductor watches for it); so does the caller, on `stale > 0`.
  */
-export async function joinTruth(page: Page, fields: Locator[][]): Promise<ReadJoin & { found: boolean[] }> {
+export async function joinTruth(page: Page, fields: Locator[][]): Promise<ReadJoin & { found: boolean[]; stale: number }> {
   return page.evaluate((fields) => {
     const handles = window.__longtake.last!.handles;
+    const stale = [...handles.values()].filter((handle) => !handle.isConnected).length;
 
     const inHops = (root: Document | ShadowRoot, hops: string[]): Element | null => {
       let scope: Document | ShadowRoot | null = root;
@@ -163,7 +170,7 @@ export async function joinTruth(page: Page, fields: Locator[][]): Promise<ReadJo
     for (const [id, handle] of handles) {
       touches[id] = elements.flatMap((els, i) => (closeness(handle, els) >= 0 ? [i] : []));
     }
-    return { best, touches, found: elements.map((els) => els[0] !== null) };
+    return { best, touches, found: elements.map((els) => els[0] !== null), stale };
   }, fields);
 }
 
@@ -171,4 +178,73 @@ export async function joinTruth(page: Page, fields: Locator[][]): Promise<ReadJo
 export function saveResult(scorer: string, id: string, result: object): void {
   mkdirSync(join(RESULTS, scorer), { recursive: true });
   writeFileSync(join(RESULTS, scorer, `${id}.json`), JSON.stringify({ id, at: new Date().toISOString(), ...result }, null, 1));
+}
+
+/**
+ * Open the form the way a call does: a real `LongtakeSession`, nothing remembered, form read in
+ * full. Its read becomes the one `joinTruth` joins against.
+ */
+export async function startSession(page: Page): Promise<void> {
+  await page.evaluate(async () => {
+    const core = window.__longtake;
+    const session = new core.LongtakeSession({ root: () => document, ignore: "", memory: { load: () => ({}), save: () => {} } });
+    await session.open();
+    window.__corpusSession = session;
+    core.last = session.read!;
+  });
+}
+
+export type Answer = { specId: string; also: string[]; value: string | string[] | boolean; evidence: string; hiddenCss?: string };
+
+/**
+ * One answer, exactly as the agent's `fill_fields` call carries it, with everything they said
+ * being its evidence. Every field's value is photographed before and after, so an answer that
+ * moved some other field — one nobody spoke to — is caught.
+ */
+export async function answer(page: Page, input: Answer) {
+  return page.evaluate(async ({ specId, also, value, evidence, hiddenCss }) => {
+    const core = window.__longtake;
+    const session = window.__corpusSession!;
+    const photo = () => new Map(session.state().fields.map((f) => [f.spec.id, JSON.stringify(f.value)]));
+    const labels = new Map(session.state().fields.map((f) => [f.spec.id, f.spec.label || f.spec.id]));
+
+    const before = photo();
+    const done = await session.fill({ [specId]: { value, evidence } }, evidence);
+    await new Promise((settle) => setTimeout(settle, 300));
+    const after = photo();
+
+    const result = done.result as { waiting_for_yes?: { field: string }[] };
+    const outcome = done.outcomes.some((o) => o.fieldId === specId && o.status === "written")
+      ? "written"
+      : (result.waiting_for_yes ?? []).some((held) => held.field === specId)
+        ? "held"
+        : "refused";
+    const touched = [...after.keys()]
+      .filter((id) => id !== specId && !also.includes(id) && before.has(id) && before.get(id) !== after.get(id))
+      .map((id) => `${labels.get(id) ?? id} (${before.get(id)} → ${after.get(id)})`);
+    const shows = session.state().fields.find((f) => f.spec.id === specId)?.value ?? null;
+    const hidden = hiddenCss ? ((document.querySelector(hiddenCss) as HTMLInputElement | null)?.value ?? null) : undefined;
+    core.last = session.read!;
+    // What the call itself reported, field by field — so a wrong answer explains itself.
+    const call = done.outcomes.map((o) => {
+      const { wrote, reason } = o as { wrote?: string; reason?: string };
+      return `${labels.get(o.fieldId) ?? o.fieldId}: ${o.status}${wrote ? ` "${wrote}"` : ""}${reason ? ` (${reason})` : ""}`;
+    });
+    return { outcome: outcome as "written" | "held" | "refused", shows, touched, hidden, call };
+  }, input);
+}
+
+/**
+ * When the page has replaced elements the session holds, read it again — what the conductor does
+ * the moment it sees the page change. True when it had to.
+ */
+export async function freshen(page: Page): Promise<boolean> {
+  return page.evaluate(async () => {
+    const session = window.__corpusSession!;
+    const read = session.read;
+    if (!read || [...read.handles.values()].every((handle) => handle.isConnected)) return false;
+    await session.pageChanged();
+    window.__longtake.last = session.read!;
+    return true;
+  });
 }

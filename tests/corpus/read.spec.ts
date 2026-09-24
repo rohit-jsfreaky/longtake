@@ -18,16 +18,25 @@ for (const form of forms) {
   test(`${form.id} — reading`, async ({ page }) => {
     test.skip(!form.meta.fillable, "replay does not reproduce this page — read from its snapshot instead");
     const sent = await openForm(page, form);
-    const specs = await readLikeTheProduct(page);
     const fields = form.truth!.pages[0]!.fields;
-    const join = await joinTruth(
-      page,
-      fields.map((field) => locatorsOf(field, form.ax)),
-    );
+    const locators = fields.map((field) => locatorsOf(field, form.ax));
+    let specs = await readLikeTheProduct(page);
+    let join = await joinTruth(page, locators);
+    // A framework that re-renders after the read replaces what the read holds; read again, as the
+    // product does when its page changes.
+    for (let again = 0; join.stale > 0 && again < 2; again++) {
+      test.info().annotations.push({ type: "read again", description: `${join.stale} fields were replaced after the read` });
+      specs = await readLikeTheProduct(page);
+      join = await joinTruth(page, locators);
+    }
+    expect(join.stale, "the page keeps replacing its fields after every read").toBe(0);
     expect(fields.filter((_, i) => !join.found[i]).map((f) => f.key), "truth fields whose element is gone").toEqual([]);
 
     const result = scoreRead(fields, specs, join);
     saveResult("read", form.id, result);
+    // Per run, beside the saved file (which the next run overwrites) — so a flaky field shows up.
+    const wrong = result.rows.filter((row) => row.problems.length > 0).map((row) => `${row.key}: ${row.problems.join("; ")}`);
+    if (wrong.length > 0) test.info().annotations.push({ type: "read wrong", description: wrong.join(" | ") });
 
     expect(result.counts.honeypotLeaks, "a honeypot became something the model can fill").toBe(0);
     expect(await sentSoFar(page, sent)).toEqual({ submits: [], posts: [] });

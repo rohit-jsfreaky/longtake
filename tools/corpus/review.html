@@ -93,6 +93,11 @@
   .question { font-size: 14px; font-weight: 500; }
   textarea { resize: vertical; font: 12px/1.4 ui-monospace, monospace; }
   .checks { display: flex; flex-wrap: wrap; gap: 14px; }
+  .case { border-top: 1px solid var(--line); padding: 10px 0; display: flex; flex-direction: column; gap: 6px; }
+  .case:first-child { border-top: 0; padding-top: 0; }
+  .case .top { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1.4fr) minmax(0, 1fr) auto; gap: 8px; align-items: end; }
+  .case .bottom { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 0.6fr); gap: 8px; }
+  #plan-rows:empty::before { content: "No answers yet."; color: var(--muted); }
   h2 { font-size: 13px; margin: 14px 0 0; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
 
   @media (max-width: 900px) {
@@ -122,7 +127,17 @@
       <label class="f">The submit button (never pressed)<input type="text" id="submit"></label>
       <label class="f">Other buttons — one per line, <code>label | next</code> or <code>label | add-another</code><textarea id="actions" rows="3"></textarea></label>
       <label class="f">Page context must contain — one phrase per line<textarea id="context" rows="3"></textarea></label>
-      <label class="f">Fill plan (JSON)<textarea id="plan" rows="6"></textarea></label>
+    </div>
+    <h2>Fill plan <span id="plan-state" class="chip"></span></h2>
+    <div class="card">
+      <p class="ax">Each answer is sent the way the agent sends it, top to bottom on one page. Several choices: separate them with <code>;</code>. “Refused” is right for a choice the page does not offer — the agent then asks with the real choices.</p>
+      <div id="plan-rows"></div>
+      <div class="row">
+        <button id="add-case">Add an answer</button>
+        <span class="spacer"></span>
+        <button id="save-plan">Save plan</button>
+        <button id="verify-plan" class="primary">Mark plan verified</button>
+      </div>
     </div>
   </div>
 </main>
@@ -288,8 +303,7 @@ function fillPageBox() {
   $("submit").value = page.submit ?? "";
   $("actions").value = page.actions.map((a) => `${a.label} | ${a.kind}`).join("\n");
   $("context").value = (truth.pageContext?.mustContain ?? []).join("\n");
-  $("plan").value = JSON.stringify(truth.fillPlan, null, 2);
-  for (const id of ["submit", "actions", "context", "plan"]) $(id).oninput = () => setDirty(true);
+  for (const id of ["submit", "actions", "context"]) $(id).oninput = () => setDirty(true);
 }
 
 function readPageBox() {
@@ -300,18 +314,12 @@ function readPageBox() {
     .map(([label, kind]) => ({ label, kind: kind === "add-another" ? "add-another" : "next" }));
   const phrases = $("context").value.split("\n").map((s) => s.trim()).filter(Boolean);
   if (phrases.length) truth.pageContext = { mustContain: phrases }; else delete truth.pageContext;
-  truth.fillPlan = JSON.parse($("plan").value || "[]");
+  delete truth.fillPlan; // lives in fill.json now, with its own stamp
 }
 
 async function save(verify) {
   const problems = $("problems");
-  try {
-    readPageBox();
-  } catch (e) {
-    problems.replaceChildren("The fill plan is not valid JSON: " + e.message);
-    problems.classList.add("show");
-    return;
-  }
+  readPageBox();
   const res = await fetch("/api/truth", { method: "PUT", body: JSON.stringify({ truth, verify }) });
   const body = await res.json();
   if (!res.ok) {
@@ -326,10 +334,87 @@ async function save(verify) {
   render();
 }
 
+// ── The fill plan ────────────────────────────────────────────────────────────────
+let plan, planDirty = false;
+const OUTCOMES = ["written", "refused", "held"];
+const fieldOf = (key) => truth.pages[0].fields.find((f) => f.key === key);
+const asText = (value) => Array.isArray(value) ? value.join("; ") : typeof value === "boolean" ? (value ? "yes" : "no") : String(value ?? "");
+function asValue(text, key) {
+  const kind = fieldOf(key)?.kind;
+  if (kind === "multiselect") return text.split(";").map((s) => s.trim()).filter(Boolean);
+  if (kind === "checkbox" && /^(yes|true|no|false)$/i.test(text.trim())) return /^(yes|true)$/i.test(text.trim());
+  return text;
+}
+
+function planChip() {
+  const chip = $("plan-state");
+  chip.className = "chip" + (plan.verified && !planDirty ? " ok" : " warn");
+  chip.textContent = planDirty ? "unsaved" : plan.verified ? `verified by ${plan.verified.by}, ${plan.verified.at.slice(0, 10)}` : "not verified";
+}
+function planChanged() { planDirty = true; planChip(); }
+/** Like `input()`, but an edit here is the plan's, not the truth's. */
+function planInput(value, onChange, props = {}) {
+  const node = el("input", { type: "text", value: value ?? "", ...props });
+  node.oninput = () => onChange(node.value);
+  return node;
+}
+
+function caseRow(item, i) {
+  const node = el("div", { className: "case" });
+  node.onmouseenter = () => hot(item.field, true, "box");
+  node.onmouseleave = () => hot(item.field, false);
+  const field = el("select", {}, ...truth.pages[0].fields.map((f, n) =>
+    el("option", { value: f.key, textContent: `${n + 1} · ${f.question || f.key}`, selected: f.key === item.field })));
+  field.onchange = () => { item.field = field.value; item.value = asValue(asText(item.value), item.field); planChanged(); };
+  const value = planInput(asText(item.value), (v) => { item.value = asValue(v, item.field); planChanged(); }, { placeholder: "the answer" });
+  const outcome = el("select", {}, ...OUTCOMES.map((o) => el("option", { value: o, textContent: o, selected: o === item.expect.outcome })));
+  outcome.onchange = () => { item.expect.outcome = outcome.value; planChanged(); };
+  const remove = el("button", { className: "quiet", textContent: "Remove" });
+  remove.onclick = () => { plan.cases.splice(i, 1); planChanged(); renderPlan(); };
+  node.append(el("div", { className: "top" }, labelled("Field", field), labelled("Answer", value), labelled("Must be", outcome), remove));
+  node.append(labelled("What they said (the evidence)", planInput(item.evidence, (v) => { item.evidence = v; planChanged(); })));
+  const shows = planInput(item.expect.shows, (v) => { if (v.trim()) item.expect.shows = v; else delete item.expect.shows; planChanged(); }, { placeholder: "the answer itself" });
+  const also = planInput((item.expect.also ?? []).join(", "), (v) => {
+    const keys = v.split(/[,\s]+/).filter(Boolean);
+    if (keys.length) item.expect.also = keys; else delete item.expect.also;
+    planChanged();
+  }, { placeholder: "e.g. f04" });
+  node.append(el("div", { className: "bottom" }, labelled("The page then shows", shows), labelled("Also changes (keys)", also)));
+  return node;
+}
+function renderPlan() {
+  $("plan-rows").replaceChildren(...plan.cases.map(caseRow));
+  planChip();
+}
+
+async function savePlan(verify) {
+  const problems = $("problems");
+  const res = await fetch("/api/fill", { method: "PUT", body: JSON.stringify({ fill: plan, verify }) });
+  const body = await res.json();
+  if (!res.ok) {
+    problems.replaceChildren(el("strong", { textContent: "Plan not saved:" }), el("ul", {}, ...body.problems.map((p) => el("li", { textContent: p }))));
+    problems.classList.add("show");
+    problems.scrollIntoView({ block: "nearest" });
+    return;
+  }
+  problems.classList.remove("show");
+  plan = body.fill;
+  planDirty = false;
+  renderPlan();
+}
+$("add-case").onclick = () => {
+  const last = plan.cases.at(-1);
+  plan.cases.push({ field: last?.field ?? truth.pages[0].fields[0].key, value: "", evidence: "", expect: { outcome: "written" } });
+  planChanged();
+  renderPlan();
+};
+$("save-plan").onclick = () => savePlan(false);
+$("verify-plan").onclick = () => savePlan(true);
+
 $("save").onclick = () => save(false);
 $("verify").onclick = () => save(true);
 $("img").onload = drawBoxes;
-window.addEventListener("beforeunload", (event) => { if (dirty) event.preventDefault(); });
+window.addEventListener("beforeunload", (event) => { if (dirty || planDirty) event.preventDefault(); });
 window.addEventListener("keydown", (event) => {
   if ((event.ctrlKey || event.metaKey) && event.key === "s") { event.preventDefault(); save(false); }
 });
@@ -341,8 +426,10 @@ fetch("/api/form").then((r) => r.json()).then((got) => {
   $("title").textContent = got.meta.id;
   $("url").textContent = got.meta.url;
   $("url").href = got.meta.url;
+  plan = got.fill;
   fillPageBox();
   render();
+  renderPlan();
   setDirty(false);
 });
 </script>

@@ -5,7 +5,7 @@
  *                      [--click "radio:Organization Representative"]   repeatable, done before reading
  *   seed    <id>        writes an unverified truth.json from ax.json (never over a verified one)
  *   check   <id>        does the offline replay reproduce the page?
- *   review  <id> [--port 4477]   a local page to correct the truth and mark it verified
+ *   review  <id> [--port 4477] [--by "name"]   a local page to correct the truth and mark it verified
  *   drift   [<id>…]     has the live site changed its form? Reads only; every form when no id
  *
  * Every command works on `corpus/<id>/` — the private corpus repo, cloned into `corpus/`.
@@ -101,7 +101,7 @@ async function main(): Promise<void> {
   }
 
   if (command === "review") {
-    await review(id, DIR, Number(flag(rest, "port") ?? 4477));
+    await review(id, DIR, Number(flag(rest, "port") ?? 4477), flag(rest, "by"));
     return;
   }
 
