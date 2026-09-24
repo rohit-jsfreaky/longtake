@@ -38,7 +38,7 @@ import { systemPrompt } from "./persona";
 import { brief, doNext, nextMove, resumeLine, type Move, type Plan } from "./planner";
 import { harvestOptions, readForm, titleOf, waitForForm } from "./reader";
 import { FieldRegistry } from "./reconcile";
-import type { FieldSpec, FormRead, SpokenValue } from "./types";
+import { fieldName, type FieldSpec, type FormRead, type SpokenValue } from "./types";
 import { clearValues, writeValues, type ClearOutcome, type WriteOutcome } from "./writer";
 
 /** Where remembered answers are kept — localStorage on the web, chrome.storage in the extension. */
@@ -137,7 +137,7 @@ export class LongtakeSession {
       return { result: { confirmed: false, why: "quote_not_found", submitted: false }, outcomes: [], spoken: [] };
     }
 
-    const question = (spec.label || id).replace(/\s*\*\s*$/, "").trim();
+    const question = fieldName(spec);
     if (!agreed) {
       this.ledger.release(id);
       const state = this.state();
@@ -183,7 +183,7 @@ export class LongtakeSession {
     for (const id of moved) this.ledger.setAside(id);
     const state = this.state();
     const result = {
-      set_aside: moved.map((id) => (byId.get(id)?.label || id).replace(/\s*\*\s*$/, "").trim()),
+      set_aside: moved.map((id) => { const spec = byId.get(id); return spec ? fieldName(spec) : id; }),
       progress: state.progress,
       do_next: doNext(this.move()),
       submitted: false,
@@ -240,7 +240,7 @@ export class LongtakeSession {
     const state = this.state();
     const says = state.fields
       .filter((f) => f.error)
-      .map((f) => ({ question: f.spec.label, form_says: f.error }));
+      .map((f) => ({ question: fieldName(f.spec), form_says: f.error }));
     const result = {
       pressed: action.label,
       ...(stayed ? { page_did_not_change: true, ...(says.length ? { the_form_says: says } : {}) } : {}),
@@ -390,7 +390,7 @@ export class LongtakeSession {
         this.ledger.hold(claim.fieldId, verdict.pending);
         held.push({
           field: claim.fieldId,
-          question: spec?.label ?? claim.fieldId,
+          question: spec ? fieldName(spec) : claim.fieldId,
           suggestion: verdict.pending.suggestion,
           they_said: verdict.pending.heard,
         });
@@ -462,7 +462,7 @@ export class LongtakeSession {
     const fields = Array.isArray(args.fields) ? args.fields.map(String) : [];
     const evidence = typeof args.evidence === "string" ? args.evidence : "";
     const byId = new Map(read.specs.map((spec) => [spec.id, spec]));
-    const question = (id: string) => (byId.get(id)?.label || id).replace(/\s*\*\s*$/, "").trim();
+    const question = (id: string) => { const spec = byId.get(id); return spec ? fieldName(spec) : id; };
 
     if (!checkEvidence(heard, evidence).ok) {
       return {
@@ -554,8 +554,8 @@ export class LongtakeSession {
 
   private changeFacts(reshaped: FormReshape) {
     return {
-      new_questions: reshaped.appeared.map((spec) => spec.label || spec.id),
-      gone: reshaped.disappeared.map((spec) => spec.label || spec.id),
+      new_questions: reshaped.appeared.map(fieldName),
+      gone: reshaped.disappeared.map(fieldName),
       kept: reshaped.restored,
     };
   }
@@ -605,11 +605,11 @@ export class LongtakeSession {
         });
       const restored = change.appeared
         .filter((spec) => !empty.has(spec.id) && this.ledger.entry(spec.id))
-        .map((spec) => spec.label || spec.id);
+        .map(fieldName);
       if (restorable.length > 0) {
         const results = await writeValues(read.specs, read.handles, restorable);
         for (const r of results) {
-          if (r.status === "written") restored.push(read.specs.find((s) => s.id === r.fieldId)?.label ?? r.fieldId);
+          if (r.status === "written") { const spec = read.specs.find((s) => s.id === r.fieldId); restored.push(spec ? fieldName(spec) : r.fieldId); }
         }
       }
 
@@ -620,13 +620,13 @@ export class LongtakeSession {
         .flatMap((spec) => {
           const earlier = this.ledger
             .entries()
-            .find(([id, e]) => id !== spec.id && !present.has(id) && e.spec.kind === spec.kind && e.spec.label === spec.label);
+            .find(([id, e]) => id !== spec.id && !present.has(id) && e.spec.kind === spec.kind && e.spec.label === spec.label && e.spec.part === spec.part);
           if (!earlier) return [];
           return [{
             field: spec.id,
-            question: spec.label || spec.id,
+            question: fieldName(spec),
             earlier_answer: String(earlier[1].value),
-            earlier_question: earlier[1].spec.label || earlier[0],
+            earlier_question: fieldName(earlier[1].spec),
           }];
         });
 

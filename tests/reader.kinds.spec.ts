@@ -122,6 +122,31 @@ test.describe("native non-input controls", () => {
   });
 });
 
+// A choice is something a person can pick that answers the question. Jotform, Lever and Slate open
+// every select with `<option value="">Please Select</option>` — it submits nothing — and it was in
+// the agent's list of answers.
+test.describe("what counts as a choice in a select", () => {
+  const labels = async (page: Parameters<typeof read>[0]) => only(await read(page)).options?.map((o) => o.label);
+
+  test("the option that submits nothing is not a choice", async ({ page }) => {
+    await load(page, `<label for="f">Sex</label><select id="f" required><option value="">Please Select</option><option>Male</option><option>Female</option></select>`);
+    expect(await labels(page)).toEqual(["Male", "Female"]);
+  });
+
+  test("…nor one that cannot be picked or is not shown", async ({ page }) => {
+    await load(
+      page,
+      `<label for="f">Size</label><select id="f"><option disabled selected>Choose a size</option><option hidden>internal</option><option>S</option><option>M</option></select>`,
+    );
+    expect(await labels(page)).toEqual(["S", "M"]);
+  });
+
+  test("an option without a value attribute submits its text, and is a choice", async ({ page }) => {
+    await load(page, `<label for="f">Size</label><select id="f"><option>S</option><option>M</option></select>`);
+    expect(await labels(page)).toEqual(["S", "M"]);
+  });
+});
+
 test.describe("controls built out of divs", () => {
   test("contenteditable reads as a textarea", async ({ page }) => {
     await load(page, `<div contenteditable="true" aria-label="Bio"></div>`);

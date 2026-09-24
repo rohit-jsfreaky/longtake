@@ -65,6 +65,13 @@ test.describe("what a question means", () => {
   }
 });
 
+// Jotform splits a phone number into an area-code box and a number box, both under "Phone Number".
+// A saved phone number written whole into either would be wrong however right the number.
+test("a box that takes a piece of an answer is not that answer", async ({ page }) => {
+  expect(await keyFor(page, "Phone Number")).toBe("phone");
+  expect(await keyFor(page, "Phone Number", { part: "Area Code" })).toBeNull();
+});
+
 test.describe("the labels that look alike and are not", () => {
   /**
    * Every one of these would be a real, plausible mistake on a real job form, and each would put

@@ -210,21 +210,59 @@ export function deepQueryAll(root: Document | ShadowRoot | Element, selector: st
  * gives every group's "Other" choice exactly such a name. Read by the name alone, "Other" became a
  * question of its own. Such names are joined — but only inside the same named group, so two
  * questions that happen to share an array prefix (`user[terms]`, `user[news]`) stay apart.
+ *
+ * Checkboxes the name does not join are joined by HTML's other rule: a `<fieldset>` (or an ARIA
+ * group) is "a set of controls grouped together" — when it holds checkboxes and nothing else, they
+ * answer one question. Ashby names each box after its choice ("LinkedIn", "Glassdoor"), Tally names
+ * none; read box by box, every choice was a question.
  */
 export function choiceGroup(el: Element): HTMLInputElement[] {
   const input = el as HTMLInputElement;
   const type = (el.getAttribute("type") ?? "").toLowerCase();
+  if (type !== "radio" && type !== "checkbox") return [input];
   const name = el.getAttribute("name");
-  if (!name || (type !== "radio" && type !== "checkbox")) return [input];
-
   const root = el.getRootNode() as Document | ShadowRoot;
-  const base = arrayBase(name);
-  const group = base ? namedGroupOf(el) : null;
-  return Array.from(root.querySelectorAll<HTMLInputElement>(`input[type="${type}"]`)).filter((other) => {
-    const otherName = other.getAttribute("name");
-    if (otherName === name) return true;
-    return group !== null && otherName !== null && arrayBase(otherName) === base && namedGroupOf(other) === group;
-  });
+
+  let byName = [input];
+  if (name) {
+    const base = arrayBase(name);
+    const group = base ? namedGroupOf(el) : null;
+    byName = Array.from(root.querySelectorAll<HTMLInputElement>(`input[type="${type}"]`)).filter((other) => {
+      const otherName = other.getAttribute("name");
+      if (otherName === name) return true;
+      return group !== null && otherName !== null && arrayBase(otherName) === base && namedGroupOf(other) === group;
+    });
+  }
+  if (type === "radio" || byName.length > 1) return byName;
+
+  const set = el.parentElement?.closest("fieldset, [role='group']");
+  if (!set) return byName;
+  const controls = Array.from(set.querySelectorAll(ANSWERING));
+  const onlyBoxes = controls.every((control) => control.localName === "input" && (control.getAttribute("type") ?? "").toLowerCase() === "checkbox");
+  return onlyBoxes && controls.length > 1 ? (controls as HTMLInputElement[]) : byName;
+}
+
+/** Everything in a group that takes an answer — what a set of checkboxes must be alone in. */
+const ANSWERING =
+  "input:not([type='hidden']), select, textarea, [role='checkbox'], [role='radio'], [role='switch'], [role='combobox'], [role='listbox'], [role='textbox'], [contenteditable='true']";
+
+/**
+ * Which box of its group this is — the one name reader and writer both use for it. HTML names a
+ * box by the value it submits, but a box with no `value` submits "on", and when every box says
+ * "on" the value names none of them: matched by value, picking LinkedIn ticked all seven. So the
+ * value when the group's values tell its boxes apart; else the name (Ashby's are the choices);
+ * else the id (Tally's boxes have nothing else); else the place in the group.
+ */
+export function choiceKey(box: Element, group: Element[] = choiceGroup(box)): string {
+  const apart = (read: (member: Element) => string | null) => {
+    const all = group.map(read);
+    return all.every((one) => one !== null && one !== "") && new Set(all).size === all.length;
+  };
+  const value = (member: Element) => (member as HTMLInputElement).value;
+  if (apart(value)) return value(box);
+  if (apart((member) => member.getAttribute("name"))) return box.getAttribute("name")!;
+  if (apart((member) => member.id || null)) return box.id;
+  return String(group.indexOf(box));
 }
 
 /** `industry[]` and `industry[other]` → `industry`; a plain name has no array base. */

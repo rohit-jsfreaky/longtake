@@ -4,6 +4,12 @@
   var __defNormalProp = (obj, key, value) => key in obj ? __defProp(obj, key, { enumerable: true, configurable: true, writable: true, value }) : obj[key] = value;
   var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "symbol" ? key + "" : key, value);
 
+  // core/src/types.ts
+  function fieldName(spec) {
+    const question = (spec.label || spec.id).replace(/\s*\*\s*$/, "").trim();
+    return spec.part ? `${question} \u2014 ${spec.part}` : question;
+  }
+
   // core/src/dom-path.ts
   var MAX_DEPTH = 15;
   var MIN_INTERACTIVE_PX = 10;
@@ -105,16 +111,37 @@
   function choiceGroup(el) {
     const input = el;
     const type = (el.getAttribute("type") ?? "").toLowerCase();
+    if (type !== "radio" && type !== "checkbox") return [input];
     const name = el.getAttribute("name");
-    if (!name || type !== "radio" && type !== "checkbox") return [input];
     const root = el.getRootNode();
-    const base = arrayBase(name);
-    const group = base ? namedGroupOf(el) : null;
-    return Array.from(root.querySelectorAll(`input[type="${type}"]`)).filter((other) => {
-      const otherName = other.getAttribute("name");
-      if (otherName === name) return true;
-      return group !== null && otherName !== null && arrayBase(otherName) === base && namedGroupOf(other) === group;
-    });
+    let byName = [input];
+    if (name) {
+      const base = arrayBase(name);
+      const group = base ? namedGroupOf(el) : null;
+      byName = Array.from(root.querySelectorAll(`input[type="${type}"]`)).filter((other) => {
+        const otherName = other.getAttribute("name");
+        if (otherName === name) return true;
+        return group !== null && otherName !== null && arrayBase(otherName) === base && namedGroupOf(other) === group;
+      });
+    }
+    if (type === "radio" || byName.length > 1) return byName;
+    const set = el.parentElement?.closest("fieldset, [role='group']");
+    if (!set) return byName;
+    const controls = Array.from(set.querySelectorAll(ANSWERING));
+    const onlyBoxes = controls.every((control) => control.localName === "input" && (control.getAttribute("type") ?? "").toLowerCase() === "checkbox");
+    return onlyBoxes && controls.length > 1 ? controls : byName;
+  }
+  var ANSWERING = "input:not([type='hidden']), select, textarea, [role='checkbox'], [role='radio'], [role='switch'], [role='combobox'], [role='listbox'], [role='textbox'], [contenteditable='true']";
+  function choiceKey(box, group = choiceGroup(box)) {
+    const apart = (read) => {
+      const all = group.map(read);
+      return all.every((one) => one !== null && one !== "") && new Set(all).size === all.length;
+    };
+    const value = (member) => member.value;
+    if (apart(value)) return value(box);
+    if (apart((member) => member.getAttribute("name"))) return box.getAttribute("name");
+    if (apart((member) => member.id || null)) return box.id;
+    return String(group.indexOf(box));
   }
   function arrayBase(name) {
     const bracket = name.indexOf("[");
@@ -390,6 +417,37 @@
     return false;
   }
   function labelOf(el) {
+    const own = ownLabelOf(el);
+    const piece = (text2) => text2 !== "" && PART_ONLY.test(cleanLabel(text2));
+    if (!piece(own.text)) {
+      const labels = Array.from(el.labels ?? []).map(textOf);
+      const part = labels.length > 1 ? labels.find(piece) : void 0;
+      return part ? { ...own, part: cleanLabel(part) } : own;
+    }
+    const whole = wholeQuestion(el);
+    if (!whole) return own;
+    return whole.boxes > 1 ? { text: whole.text, from: whole.from, part: cleanLabel(own.text) } : { text: whole.text, from: whole.from };
+  }
+  var MOST_PARTS = 4;
+  function wholeQuestion(el) {
+    const fieldsIn = (node) => Array.from(node.querySelectorAll(CANDIDATE_SELECTOR)).filter(isAField);
+    const whole = (text2) => text2 !== "" && !PART_ONLY.test(cleanLabel(text2));
+    const group = el.parentElement?.closest("[aria-labelledby], [aria-label], fieldset");
+    if (group) {
+      const boxes = fieldsIn(group).length;
+      const named2 = boxes <= MOST_PARTS ? labelOf(group) : null;
+      if (named2 && whole(named2.text)) return { text: named2.text, from: named2.from, boxes };
+    }
+    let block = el.parentElement;
+    while (block && fieldsIn(block).length < 2) block = block.parentElement;
+    if (!block) return null;
+    const fields = fieldsIn(block);
+    if (fields.length > MOST_PARTS) return null;
+    const before = (node) => (fields[0].compareDocumentPosition(node) & Node.DOCUMENT_POSITION_PRECEDING) !== 0;
+    const label = Array.from(block.querySelectorAll("label, legend")).find((node) => before(node) && whole(textOf(node)));
+    return label ? { text: textOf(label), from: [label], boxes: fields.length } : null;
+  }
+  function ownLabelOf(el) {
     const doc = el.ownerDocument;
     const root = el.getRootNode();
     const labelledBy = el.getAttribute("aria-labelledby");
@@ -401,11 +459,6 @@
       const shown2 = parts.filter((part) => isVisible(part) && worded(part));
       const chosen = question.length > 0 ? question : shown2.length > 0 ? shown2 : parts;
       const text2 = chosen.map(textOf).join(" ");
-      if (text2 && PART_ONLY.test(cleanLabel(text2))) {
-        const group = el.parentElement?.closest("[aria-labelledby], [aria-label], fieldset");
-        const outer = group ? labelOf(group) : null;
-        if (outer?.text) return outer;
-      }
       if (text2) return { text: text2, from: chosen };
     }
     const ariaLabel = tidy(el.getAttribute("aria-label") ?? "");
@@ -531,7 +584,9 @@
   function optionsOf(el) {
     const tag = el.tagName.toLowerCase();
     if (tag === "select") {
-      const options = Array.from(el.options).filter((option) => option.value !== "" || textOf(option) !== "").map((option) => ({ value: option.value, label: textOf(option) || option.value }));
+      const all = Array.from(el.options).filter((option) => option.value !== "" || textOf(option) !== "");
+      const picks = all.filter((option) => option.value !== "" && !option.disabled && !option.hidden);
+      const options = (picks.length > 0 ? picks : all).map((option) => ({ value: option.value, label: textOf(option) || option.value }));
       return options.length > 0 ? options : void 0;
     }
     if (el.getAttribute("role") === "radiogroup") {
@@ -616,7 +671,7 @@
       }
       const visible = isVisible(el);
       const kind = kindOf(el);
-      const { text: rawLabel, from: labelledFrom } = labelOf(el);
+      const { text: rawLabel, from: labelledFrom, part } = labelOf(el);
       const label = cleanLabel(rawLabel);
       const starred = STARRED.test(rawLabel) || drawsAStar(labelledFrom);
       const name = el.getAttribute("name") ?? "";
@@ -628,15 +683,16 @@
         skipped.push({ label: label || name, reason: "a file cannot be attached by voice" });
         return;
       }
-      if ((kind === "radio" || kind === "checkbox") && name) {
-        const members = tag === "input" ? choiceGroup(el) : [];
-        const groupKey = `${kind}:${members[0]?.getAttribute("name") ?? name}`;
+      const members = (kind === "radio" || kind === "checkbox") && tag === "input" ? choiceGroup(el) : [];
+      if ((kind === "radio" || kind === "checkbox") && (name || members.length > 1)) {
+        const groupKey = members[0] ?? `${kind}:${name}`;
         const siblings = tag === "input" ? members.filter((other) => candidates.includes(other) && kindOf(other) === kind) : candidates.filter((other) => other.getAttribute("name") === name && kindOf(other) === kind);
         const isGroup = kind === "radio" || siblings.length > 1;
         if (isGroup) {
           const existing = groups.get(groupKey);
           const option = {
-            value: el.value || label,
+            // What tells this box from the others in its group — the writer finds it by the same.
+            value: tag === "input" ? choiceKey(el, members) : el.value || label,
             label: label || el.value
           };
           if (existing) {
@@ -662,13 +718,14 @@
           return;
         }
       }
-      const id = takeId(label || name || el.id, index);
+      const id = takeId(part && label ? `${label} ${part}` : label || name || el.id, index);
       const spec = {
         id,
         label,
         kind,
         required: Boolean(el.required) || el.getAttribute("aria-required") === "true" || starred
       };
+      if (part) spec.part = part;
       const selector = uniqueSelector(el, ownerDocumentOf(root));
       if (selector) spec.selector = selector;
       const options = optionsOf(el);
@@ -950,9 +1007,10 @@
     const tag = el.tagName.toLowerCase();
     if (spec.kind === "radio") {
       if (tag === "input") {
-        const on2 = radioGroup(el).find((radio) => radio.checked);
+        const radios = radioGroup(el);
+        const on2 = radios.find((radio) => radio.checked);
         if (!on2) return null;
-        return spec.options?.find((option) => option.value === on2.value)?.label ?? on2.value;
+        return spec.options?.find((option) => option.value === choiceKey(on2, radios))?.label ?? on2.value;
       }
       const on = el.querySelector("[aria-checked='true']");
       return on ? (on.getAttribute("aria-label") ?? on.textContent ?? "").trim() || null : null;
@@ -963,7 +1021,7 @@
     }
     if (spec.kind === "multiselect" && tag === "input") {
       const boxes = choiceGroup(el);
-      const ticked = boxes.filter((box) => box.checked).map((box) => spec.options?.find((option) => option.value === box.value)?.label ?? box.value);
+      const ticked = boxes.filter((box) => box.checked).map((box) => spec.options?.find((option) => option.value === choiceKey(box, boxes))?.label ?? box.value);
       return ticked.length > 0 ? ticked : null;
     }
     if (spec.kind === "checkbox") {
@@ -1230,7 +1288,8 @@
       }
       if (spec.custom) return pickFromWidget(spec, el, chosen[0], wanted.join(", "));
       if (spec.kind === "radio") {
-        const target = radioGroup(el).find((radio) => radio.value === chosen[0].value);
+        const radios = radioGroup(el);
+        const target = radios.find((radio) => choiceKey(radio, radios) === chosen[0].value);
         if (!target) {
           return { fieldId: id, status: "refused", reason: "That option is no longer on the page." };
         }
@@ -1239,14 +1298,15 @@
       }
       const boxes = choiceGroup(el);
       const wantedValues = chosen.map((c) => c.value);
+      const wants = (box) => wantedValues.includes(choiceKey(box, boxes));
       for (const box of boxes) {
-        const shouldCheck = wantedValues.includes(box.value);
+        const shouldCheck = wants(box);
         if (box.checked !== shouldCheck) {
           pressChoice(box, shouldCheck);
         }
       }
       const wrote = chosen.map((c) => c.label).join(", ");
-      const off = boxes.filter((box) => box.checked !== wantedValues.includes(box.value));
+      const off = boxes.filter((box) => box.checked !== wants(box));
       return off.length === 0 && boxes.length > 0 ? { fieldId: id, status: "written", wrote } : { fieldId: id, status: "rejected-by-page", wrote, found: boxes.filter((box) => box.checked).map((box) => box.value).join(", ") };
     }
     if (spec.kind === "checkbox") {
@@ -1506,7 +1566,7 @@
     }
   }
   function fieldSchema(spec) {
-    const parts = [spec.label || spec.id];
+    const parts = [fieldName(spec)];
     if (spec.section) parts.push(`(in the "${spec.section}" section)`);
     if (spec.required) parts.push("(the form marks this required)");
     if (spec.longForm) parts.push("(a long answer \u2014 several sentences are welcome)");
@@ -1701,7 +1761,7 @@
     const usable = specs.filter((spec) => !spec.suspectedHoneypot && spec.kind !== "file");
     if (usable.length === 0) return "There is no form on this page yet.";
     const lines = usable.map((spec) => {
-      const bits = [`- ${spec.label || spec.id}`];
+      const bits = [`- ${fieldName(spec)}`];
       if (spec.section) bits.push(`[${spec.section}]`);
       if (spec.required) bits.push("(required)");
       if (spec.options?.length) {
@@ -1816,7 +1876,7 @@
   }
   function configForField(spec, options = {}) {
     const { specs = [], known = {}, languageCodes = ["en", "hi"], sampleRate = 24e3 } = options;
-    const question = spec.label || spec.id;
+    const question = fieldName(spec);
     const config = {
       sample_rate: sampleRate,
       channels: 1,
@@ -1832,7 +1892,7 @@
     return config;
   }
   function instructionForField(spec) {
-    const question = spec.label || spec.id;
+    const question = fieldName(spec);
     const parts = [
       `This is somebody's spoken answer to "${question}" on a form.`,
       "Write it as the person would have typed it: remove filler words and false starts, resolve self-corrections to what they landed on, and punctuate it properly.",
@@ -2040,6 +2100,7 @@
     return label.toLowerCase().replace(/\*/g, " ").replace(/[\p{P}\p{S}]/gu, " ").replace(/\s+/g, " ").trim();
   }
   function canonicalKey(spec) {
+    if (spec.part) return null;
     const label = normalise4(spec.label || spec.id.replace(/_/g, " "));
     if (!label) return null;
     const context = spec.section ? `${normalise4(spec.section)} ${label}` : label;
@@ -2239,7 +2300,7 @@
     return `${intro} Tell me whatever you know and I'll put it in the right places.`;
   }
   function howToAsk(spec) {
-    const label = (spec.label || spec.id).replace(/\s*\*\s*$/, "").trim();
+    const label = fieldName(spec);
     const question = spec.section ? `${label} (under "${spec.section}")` : label;
     if (spec.kind === "checkbox") {
       return `${question} \u2014 a yes or no.`;
@@ -2291,7 +2352,7 @@
     return pairs;
   }
   function questionOf(spec) {
-    return (spec.label || spec.id).replace(/\s*\*\s*$/, "").trim();
+    return fieldName(spec);
   }
   function factsOf(spec, all = [spec]) {
     const facts = {
@@ -2395,7 +2456,7 @@
     return raw.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 40);
   }
   function signature(spec) {
-    return `${spec.kind}|${spec.section ?? ""}|${spec.label}`;
+    return `${spec.kind}|${spec.section ?? ""}|${spec.label}|${spec.part ?? ""}`;
   }
   var FieldRegistry = class {
     constructor() {
@@ -3041,7 +3102,7 @@
       if (!checkEvidence(heard, evidence).ok) {
         return { result: { confirmed: false, why: "quote_not_found", submitted: false }, outcomes: [], spoken: [] };
       }
-      const question = (spec.label || id).replace(/\s*\*\s*$/, "").trim();
+      const question = fieldName(spec);
       if (!agreed) {
         this.ledger.release(id);
         const state = this.state();
@@ -3084,7 +3145,10 @@
       for (const id of moved) this.ledger.setAside(id);
       const state = this.state();
       const result = {
-        set_aside: moved.map((id) => (byId.get(id)?.label || id).replace(/\s*\*\s*$/, "").trim()),
+        set_aside: moved.map((id) => {
+          const spec = byId.get(id);
+          return spec ? fieldName(spec) : id;
+        }),
         progress: state.progress,
         do_next: doNext(this.move()),
         submitted: false
@@ -3129,7 +3193,7 @@
       const stayed = action.kind === "next" && !reshaped;
       if (action.kind === "next" && !stayed) this.plan = { optionalOffered: false };
       const state = this.state();
-      const says = state.fields.filter((f) => f.error).map((f) => ({ question: f.spec.label, form_says: f.error }));
+      const says = state.fields.filter((f) => f.error).map((f) => ({ question: fieldName(f.spec), form_says: f.error }));
       const result = {
         pressed: action.label,
         ...stayed ? { page_did_not_change: true, ...says.length ? { the_form_says: says } : {} } : {},
@@ -3254,7 +3318,7 @@
           this.ledger.hold(claim.fieldId, verdict.pending);
           held.push({
             field: claim.fieldId,
-            question: spec?.label ?? claim.fieldId,
+            question: spec ? fieldName(spec) : claim.fieldId,
             suggestion: verdict.pending.suggestion,
             they_said: verdict.pending.heard
           });
@@ -3315,7 +3379,10 @@
       const fields = Array.isArray(args.fields) ? args.fields.map(String) : [];
       const evidence = typeof args.evidence === "string" ? args.evidence : "";
       const byId = new Map(read.specs.map((spec) => [spec.id, spec]));
-      const question = (id) => (byId.get(id)?.label || id).replace(/\s*\*\s*$/, "").trim();
+      const question = (id) => {
+        const spec = byId.get(id);
+        return spec ? fieldName(spec) : id;
+      };
       if (!checkEvidence(heard, evidence).ok) {
         return {
           result: { cleared: [], not_cleared: fields.map((id) => ({ field: id, question: question(id), why: "quote_not_found" })), submitted: false },
@@ -3388,8 +3455,8 @@
     }
     changeFacts(reshaped) {
       return {
-        new_questions: reshaped.appeared.map((spec) => spec.label || spec.id),
-        gone: reshaped.disappeared.map((spec) => spec.label || spec.id),
+        new_questions: reshaped.appeared.map(fieldName),
+        gone: reshaped.disappeared.map(fieldName),
         kept: reshaped.restored
       };
     }
@@ -3426,22 +3493,25 @@
           const entry = this.ledger.entry(spec.id);
           return entry ? [{ fieldId: spec.id, value: entry.value, evidence: entry.evidence }] : [];
         });
-        const restored = change.appeared.filter((spec) => !empty.has(spec.id) && this.ledger.entry(spec.id)).map((spec) => spec.label || spec.id);
+        const restored = change.appeared.filter((spec) => !empty.has(spec.id) && this.ledger.entry(spec.id)).map(fieldName);
         if (restorable.length > 0) {
           const results = await writeValues(read.specs, read.handles, restorable);
           for (const r of results) {
-            if (r.status === "written") restored.push(read.specs.find((s) => s.id === r.fieldId)?.label ?? r.fieldId);
+            if (r.status === "written") {
+              const spec = read.specs.find((s) => s.id === r.fieldId);
+              restored.push(spec ? fieldName(spec) : r.fieldId);
+            }
           }
         }
         const present = new Set(read.specs.map((s) => s.id));
         const maybeSame = change.appeared.filter((spec) => empty.has(spec.id) && !this.ledger.entry(spec.id)).flatMap((spec) => {
-          const earlier = this.ledger.entries().find(([id, e]) => id !== spec.id && !present.has(id) && e.spec.kind === spec.kind && e.spec.label === spec.label);
+          const earlier = this.ledger.entries().find(([id, e]) => id !== spec.id && !present.has(id) && e.spec.kind === spec.kind && e.spec.label === spec.label && e.spec.part === spec.part);
           if (!earlier) return [];
           return [{
             field: spec.id,
-            question: spec.label || spec.id,
+            question: fieldName(spec),
             earlier_answer: String(earlier[1].value),
-            earlier_question: earlier[1].spec.label || earlier[0]
+            earlier_question: fieldName(earlier[1].spec)
           }];
         });
         this.options.log?.(`form changed: +${change.appeared.length} \u2212${change.disappeared.length}, restored ${restored.length}`);

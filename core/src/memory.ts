@@ -153,6 +153,9 @@ function normalise(label: string): string {
  * other twelve are that company's own, and guessing at them is exactly the failure mode.
  */
 export function canonicalKey(spec: FieldSpec): string | null {
+  // A box that takes a piece of an answer — the month of a date of birth — is not the answer: a
+  // saved date of birth written whole into it would be wrong however right the date.
+  if (spec.part) return null;
   const label = normalise(spec.label || spec.id.replace(/_/g, " "));
   if (!label) return null;
 

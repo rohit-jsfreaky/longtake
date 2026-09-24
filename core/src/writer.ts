@@ -32,7 +32,7 @@
  * difference between a demo that looks like it works and a form that is actually filled in.
  */
 
-import { choiceGroup, closeWidget, deepQueryAll, exclusively, openWidget, optionNodes, ownsOptions, pressOption } from "./dom-path";
+import { choiceGroup, choiceKey, closeWidget, deepQueryAll, exclusively, openWidget, optionNodes, ownsOptions, pressOption } from "./dom-path";
 import type { FieldHandles, FieldSpec, SpokenValue } from "./types";
 
 export type WriteOutcome =
@@ -392,9 +392,10 @@ export function readValue(spec: FieldSpec, el: HTMLElement): FieldValue {
 
   if (spec.kind === "radio") {
     if (tag === "input") {
-      const on = radioGroup(el).find((radio) => radio.checked);
+      const radios = radioGroup(el);
+      const on = radios.find((radio) => radio.checked);
       if (!on) return null;
-      return spec.options?.find((option) => option.value === on.value)?.label ?? on.value;
+      return spec.options?.find((option) => option.value === choiceKey(on, radios))?.label ?? on.value;
     }
     const on = el.querySelector<HTMLElement>("[aria-checked='true']");
     return on ? (on.getAttribute("aria-label") ?? on.textContent ?? "").trim() || null : null;
@@ -409,7 +410,7 @@ export function readValue(spec: FieldSpec, el: HTMLElement): FieldValue {
     const boxes = choiceGroup(el);
     const ticked = boxes
       .filter((box) => box.checked)
-      .map((box) => spec.options?.find((option) => option.value === box.value)?.label ?? box.value);
+      .map((box) => spec.options?.find((option) => option.value === choiceKey(box, boxes))?.label ?? box.value);
     return ticked.length > 0 ? ticked : null;
   }
 
@@ -861,7 +862,8 @@ async function writeOne(
     if (spec.custom) return pickFromWidget(spec, el, chosen[0]!, wanted.join(", "));
 
     if (spec.kind === "radio") {
-      const target = radioGroup(el).find((radio) => radio.value === chosen[0]!.value);
+      const radios = radioGroup(el);
+      const target = radios.find((radio) => choiceKey(radio, radios) === chosen[0]!.value);
       if (!target) {
         return { fieldId: id, status: "refused", reason: "That option is no longer on the page." };
       }
@@ -873,16 +875,18 @@ async function writeOne(
 
     const boxes = choiceGroup(el);
 
+    // Each box by the key the reader gave its option — not its value: boxes without one all say "on".
     const wantedValues = chosen.map((c) => c.value);
+    const wants = (box: HTMLInputElement) => wantedValues.includes(choiceKey(box, boxes));
     for (const box of boxes) {
-      const shouldCheck = wantedValues.includes(box.value);
+      const shouldCheck = wants(box);
       if (box.checked !== shouldCheck) {
         pressChoice(box, shouldCheck);
       }
     }
     // Read back, as everywhere else: "written" is a claim about the page, not about our presses.
     const wrote = chosen.map((c) => c.label).join(", ");
-    const off = boxes.filter((box) => box.checked !== wantedValues.includes(box.value));
+    const off = boxes.filter((box) => box.checked !== wants(box));
     return off.length === 0 && boxes.length > 0
       ? { fieldId: id, status: "written", wrote }
       : { fieldId: id, status: "rejected-by-page", wrote, found: boxes.filter((box) => box.checked).map((box) => box.value).join(", ") };

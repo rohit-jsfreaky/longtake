@@ -194,9 +194,10 @@ test.describe("choices come from the page, never from the model", () => {
     <select id="a"><option value="">Select…</option><option value="in">India</option>
       <option value="us">United States</option></select>`;
 
+  // "Select…" submits nothing: it is no answer, and the model must not be offered it as one.
   test("a select becomes an enum of the page's own labels", async ({ page }) => {
     const { tool } = await buildFrom(page, COUNTRY);
-    expect(valueOf(tool, "country").enum).toEqual(["Select…", "India", "United States"]);
+    expect(valueOf(tool, "country").enum).toEqual(["India", "United States"]);
   });
 
   test("the enum tells the model to leave it out rather than pick a near-miss", async ({ page }) => {

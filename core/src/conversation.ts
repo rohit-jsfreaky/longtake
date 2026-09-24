@@ -29,7 +29,7 @@
 
 import { stillMissing, stillOptional } from "./binder";
 import { canonicalKey } from "./memory";
-import type { FieldSpec, SpokenValue } from "./types";
+import { fieldName, type FieldSpec, type SpokenValue } from "./types";
 import { realChoices, type WriteOutcome } from "./writer";
 
 /** More choices than this is a list to look at, not a list to hear. */
@@ -170,7 +170,7 @@ export function openingLine(
  * cannot answer.
  */
 export function howToAsk(spec: FieldSpec): string {
-  const label = (spec.label || spec.id).replace(/\s*\*\s*$/, "").trim();
+  const label = fieldName(spec);
   // The section rides along, because a bare "First Name" is ambiguous on a form that asks it
   // twice — for the person, and for somebody standing in for them.
   const question = spec.section ? `${label} (under "${spec.section}")` : label;
@@ -303,7 +303,7 @@ export function phoneFields(specs: FieldSpec[]): Map<string, string> {
 
 /** The question a field asks, with the form's required marker taken off. */
 function questionOf(spec: FieldSpec): string {
-  return (spec.label || spec.id).replace(/\s*\*\s*$/, "").trim();
+  return fieldName(spec);
 }
 
 /** The facts about one field. `all` is the whole form, for grouping. */

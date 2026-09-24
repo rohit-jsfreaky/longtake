@@ -81,6 +81,73 @@ test.describe("label resolution, in priority order", () => {
   });
 });
 
+/**
+ * One answer split across boxes. A box whose own label names only a piece — "Month" — is asked
+ * the question over the boxes, and keeps its piece as `part`: three boxes that all said "What is
+ * your date of birth?" and nothing else would be three fields with one name.
+ */
+test.describe("one answer split across boxes", () => {
+  const SR_ONLY = "position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)";
+  const asRead = async (page: Parameters<typeof read>[0]) =>
+    (await read(page)).specs.map((s) => ({ id: s.id, label: s.label, part: (s as { part?: string }).part }));
+
+  // IRCC: the question labels the year box; each box also has its piece, for screen readers only.
+  test("pieces named for screen readers only take the question set over them", async ({ page }) => {
+    await load(
+      page,
+      `<div>
+         <div><label for="y">What is your date of birth?</label></div>
+         <div><label for="y" style="${SR_ONLY}">Year</label><select id="y"><option>2026</option></select></div>
+         <div><label for="m" style="${SR_ONLY}">Month</label><select id="m"><option>January</option></select></div>
+         <div><label for="d" style="${SR_ONLY}">Day</label><select id="d"><option>01</option></select></div>
+       </div>`,
+    );
+    const specs = await asRead(page);
+    expect(specs.map((s) => [s.label, s.part])).toEqual([
+      ["What is your date of birth?", "Year"],
+      ["What is your date of birth?", "Month"],
+      ["What is your date of birth?", "Day"],
+    ]);
+    expect(new Set(specs.map((s) => s.id)).size).toBe(3);
+  });
+
+  // GOV.UK: the question is the legend; "Day", "Month", "Year" are shown over the boxes.
+  test("pieces in a fieldset take its legend", async ({ page }) => {
+    await load(
+      page,
+      `<fieldset role="group"><legend><h1>What is your date of birth?</h1></legend>
+         <div>For example, 14 10 1968</div>
+         <div><label for="d">Day</label><input id="d" name="dob[day]" inputmode="numeric"></div>
+         <div><label for="m">Month</label><input id="m" name="dob[month]" inputmode="numeric"></div>
+         <div><label for="y">Year</label><input id="y" name="dob[year]" inputmode="numeric"></div>
+       </fieldset>`,
+    );
+    expect((await asRead(page)).map((s) => [s.label, s.part])).toEqual([
+      ["What is your date of birth?", "Day"],
+      ["What is your date of birth?", "Month"],
+      ["What is your date of birth?", "Year"],
+    ]);
+  });
+
+  test("a single box whose label is a piece takes the question, with no part", async ({ page }) => {
+    await load(page, `<div role="group" aria-labelledby="q"><span id="q">Date of Birth</span><span id="p">Date</span><input type="date" aria-labelledby="p"></div>`);
+    expect(await asRead(page)).toEqual([{ id: expect.any(String), label: "Date of Birth", part: undefined }]);
+  });
+
+  test("a section of several questions is not one split answer", async ({ page }) => {
+    await load(
+      page,
+      `<fieldset><legend>Your details</legend>
+         <label for="a">Name</label><input id="a"><label for="b">Email</label><input id="b">
+         <label for="c">Phone</label><input id="c"><label for="e">City</label><input id="e">
+         <label for="d">Date</label><input id="d" type="date">
+       </fieldset>`,
+    );
+    const date = (await asRead(page)).find((s) => s.label === "Date");
+    expect(date?.part).toBeUndefined();
+  });
+});
+
 test.describe("label cleanup", () => {
   const markers: [string, string][] = [
     ["Country*", "Country"],

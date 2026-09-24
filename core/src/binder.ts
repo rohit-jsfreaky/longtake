@@ -29,7 +29,7 @@
  * So `validateTool` exists, and it runs before the tool is ever sent.
  */
 
-import type { FieldSpec } from "./types";
+import { fieldName, type FieldSpec } from "./types";
 
 /** The tool shape the Voice Agent API expects in `session.tools`. */
 export type VoiceAgentTool = {
@@ -167,7 +167,7 @@ function valueSchema(spec: FieldSpec): JsonSchema {
 }
 
 function fieldSchema(spec: FieldSpec): JsonSchema {
-  const parts = [spec.label || spec.id];
+  const parts = [fieldName(spec)];
   // Where it sits, because a real form can ask "First Name" twice — once for the person and once
   // for somebody else — and the heading above is the only thing that tells them apart.
   if (spec.section) parts.push(`(in the "${spec.section}" section)`);
@@ -441,7 +441,7 @@ export function describeForm(specs: FieldSpec[], url = ""): string {
   if (usable.length === 0) return "There is no form on this page yet.";
 
   const lines = usable.map((spec) => {
-    const bits = [`- ${spec.label || spec.id}`];
+    const bits = [`- ${fieldName(spec)}`];
     if (spec.section) bits.push(`[${spec.section}]`);
     if (spec.required) bits.push("(required)");
     if (spec.options?.length) {

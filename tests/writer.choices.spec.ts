@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { load, read, readThenWrite, valueOf, write } from "./helpers";
+import { load, only, read, readThenWrite, valueOf, write } from "./helpers";
 
 /**
  * Choosing among the options a page actually offers.
@@ -469,6 +469,68 @@ test.describe("an array-named group and its Other", () => {
        <label><input type="checkbox" name="prefs[sms]"> Text me</label>`,
     );
     expect((await read(page)).specs).toHaveLength(2);
+  });
+});
+
+/**
+ * Checkboxes a `<fieldset>` holds, and nothing else, are one question whatever their names: HTML's
+ * own element for "these controls go together". Ashby names each box after its choice
+ * ("LinkedIn", "Glassdoor"); Tally gives them no name at all. Read by name, every choice was a
+ * question of its own. And no box has a `value`, so each one submits "on" — matched by value, a
+ * person picking LinkedIn would have ticked all of them.
+ */
+test.describe("a fieldset of checkboxes", () => {
+  const ASHBY = `
+    <fieldset><label for="nowhere">How did you hear about us?</label>
+      <div><input type="checkbox" id="c0" name="LinkedIn"><label for="c0">LinkedIn</label></div>
+      <div><input type="checkbox" id="c1" name="Glassdoor"><label for="c1">Glassdoor</label></div>
+      <div><input type="checkbox" id="c2" name="Referral"><label for="c2">Referral</label></div>
+    </fieldset>`;
+  const TALLY = `
+    <span id="q">How did you hear about this job?</span>
+    <fieldset aria-labelledby="q">
+      <div><input type="checkbox" id="c0"><label for="c0">Company website</label></div>
+      <div><input type="checkbox" id="c1"><label for="c1">LinkedIn</label></div>
+      <div><input type="checkbox" id="c2"><label for="c2">Twitter</label></div>
+    </fieldset>`;
+
+  for (const [who, markup, question, second] of [
+    ["named after their choices (Ashby)", ASHBY, "How did you hear about us?", "Glassdoor"],
+    ["with no name (Tally)", TALLY, "How did you hear about this job?", "LinkedIn"],
+  ] as const) {
+    test(`boxes ${who} are one question`, async ({ page }) => {
+      await load(page, markup);
+      const spec = only(await read(page));
+      expect(spec.label).toBe(question);
+      expect(spec.kind).toBe("multiselect");
+      expect(spec.options).toHaveLength(3);
+    });
+
+    test(`boxes ${who}: picking one ticks only that one, and reads back as it`, async ({ page }) => {
+      await load(page, markup);
+      const { id } = only(await read(page));
+      const [outcome] = await write(page, [{ fieldId: id, value: [second], evidence: second }]);
+      expect(outcome!.status).toBe("written");
+      expect([await valueOf(page, "#c0"), await valueOf(page, "#c1"), await valueOf(page, "#c2")]).toEqual(["unchecked", "checked", "unchecked"]);
+      const shown = await page.evaluate(() => {
+        const last = window.__longtake.last!;
+        const spec = last.specs[0]!;
+        return window.__longtake.readValue(spec, last.handles.get(spec.id)!);
+      });
+      expect(shown).toEqual([second]);
+    });
+  }
+
+  test("a fieldset holding other kinds of control is not one checkbox question", async ({ page }) => {
+    await load(
+      page,
+      `<fieldset><legend>Address</legend>
+         <label>Street <input name="street"></label>
+         <label><input type="checkbox" name="billing"> Same as billing</label>
+         <label><input type="checkbox" name="save"> Save this address</label>
+       </fieldset>`,
+    );
+    expect((await read(page)).specs.map((s) => s.kind)).toEqual(["text", "checkbox", "checkbox"]);
   });
 });
 

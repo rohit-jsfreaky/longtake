@@ -33,7 +33,7 @@
  * `web/src/app/api/dictate/`, because the API key must never reach a browser.
  */
 
-import type { FieldSpec } from "./types";
+import { fieldName, type FieldSpec } from "./types";
 
 /** The request `config` part. Unknown fields are rejected with a 400, so this list is exact. */
 export type DictationConfig = {
@@ -153,7 +153,7 @@ export function configForField(
   } = {},
 ): DictationConfig {
   const { specs = [], known = {}, languageCodes = ["en", "hi"], sampleRate = 24000 } = options;
-  const question = spec.label || spec.id;
+  const question = fieldName(spec);
 
   const config: DictationConfig = {
     sample_rate: sampleRate,
@@ -180,7 +180,7 @@ export function configForField(
  * certain than you were — and the hedge is often the honest part of the sentence.
  */
 export function instructionForField(spec: FieldSpec): string {
-  const question = spec.label || spec.id;
+  const question = fieldName(spec);
   const parts = [
     `This is somebody's spoken answer to "${question}" on a form.`,
     "Write it as the person would have typed it: remove filler words and false starts, resolve self-corrections to what they landed on, and punctuate it properly.",

@@ -48,7 +48,7 @@ function slug(raw: string): string {
 
 /** What a field asks, and where — enough to recognise it after a page remounts it. */
 function signature(spec: FieldSpec): string {
-  return `${spec.kind}|${spec.section ?? ""}|${spec.label}`;
+  return `${spec.kind}|${spec.section ?? ""}|${spec.label}|${spec.part ?? ""}`;
 }
 
 /**

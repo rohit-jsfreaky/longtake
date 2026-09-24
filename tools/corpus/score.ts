@@ -19,6 +19,8 @@ export type ReadSpec = {
   options?: { label: string }[];
   searchable?: boolean;
   section?: string;
+  /** The piece of a split answer this box takes — "Month"; `label` is then the whole question. */
+  part?: string;
 };
 
 /** Truth joined to specs by element (see `joinTruth` in tests/corpus/load.ts). */
@@ -153,10 +155,11 @@ export function scoreRead(fields: TruthField[], specs: ReadSpec[], join: ReadJoi
     extras.push({ id: spec.id, label: spec.label, ...(duplicateOf ? { duplicateOf } : {}) });
   }
 
-  // Two questions the agent sees under the same words, in the same section.
+  // Two questions the agent sees under the same words, in the same section. The three boxes of one
+  // date of birth are told apart by their parts.
   const seen = new Map<string, number>();
   for (const spec of specs) {
-    const key = `${comparable(spec.section ?? "")}\u0000${comparable(spec.label)}`;
+    const key = `${comparable(spec.section ?? "")}\u0000${comparable(spec.label)}\u0000${spec.part ?? ""}`;
     seen.set(key, (seen.get(key) ?? 0) + 1);
   }
   for (const count of seen.values()) if (count > 1) counts.ambiguous += count;

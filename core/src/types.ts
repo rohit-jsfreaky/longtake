@@ -104,7 +104,21 @@ export type FieldSpec = {
   searchable?: boolean;
   /** A slider's range, as the page declares it. */
   range?: { min: number; max: number; step: number };
+  /**
+   * The piece of the answer this box takes, when one question is split across boxes — "Month" of
+   * "What is your date of birth?". `label` is then the whole question. IRCC labels its three
+   * date boxes "Year", "Month", "Day" for screen readers only; read alone, two of them had no
+   * question at all, and with the question alone, three boxes would have had the same name.
+   * Show a field to a person or the model through `fieldName`, which carries both.
+   */
+  part?: string;
 };
+
+/** What to call a field to a person or the model: its question, and the piece it takes, if any. */
+export function fieldName(spec: Pick<FieldSpec, "id" | "label" | "part">): string {
+  const question = (spec.label || spec.id).replace(/\s*\*\s*$/, "").trim();
+  return spec.part ? `${question} — ${spec.part}` : question;
+}
 
 /** Live elements, keyed by `FieldSpec.id`. Never serialised, never leaves the page. */
 export type FieldHandles = Map<string, HTMLElement>;

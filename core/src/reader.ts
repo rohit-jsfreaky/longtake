@@ -23,6 +23,7 @@
 
 import {
   choiceGroup,
+  choiceKey,
   closeWidget,
   deepQueryAll,
   exclusively,
@@ -249,8 +250,58 @@ function isInside(el: Element, selector: string): boolean {
  *
  * `from` holds the elements the words were read from — where a star drawn by the stylesheet
  * would be (`drawsAStar`). Empty when the words came from an attribute.
+ *
+ * A label that names only a piece of an answer — "Date", "Month" — is not the question. The
+ * question is the one over the boxes together (`wholeQuestion`), and when there are several boxes
+ * the piece is kept as `part`. A box can also carry both: IRCC's year box has the question as one
+ * label and "Year" as another, for screen readers.
  */
-function labelOf(el: Element): { text: string; from: Element[] } {
+function labelOf(el: Element): { text: string; from: Element[]; part?: string } {
+  const own = ownLabelOf(el);
+  const piece = (text: string) => text !== "" && PART_ONLY.test(cleanLabel(text));
+  if (!piece(own.text)) {
+    const labels = Array.from((el as HTMLInputElement).labels ?? []).map(textOf);
+    const part = labels.length > 1 ? labels.find(piece) : undefined;
+    return part ? { ...own, part: cleanLabel(part) } : own;
+  }
+  const whole = wholeQuestion(el);
+  if (!whole) return own;
+  return whole.boxes > 1 ? { text: whole.text, from: whole.from, part: cleanLabel(own.text) } : { text: whole.text, from: whole.from };
+}
+
+/** The most boxes one answer is split across — a date's three, a phone's four. More is a section. */
+const MOST_PARTS = 4;
+
+/**
+ * The question over a box whose own label names only a piece of the answer. A group the author
+ * named around it first: Google Forms labels its date box "Date" and puts "Date of Birth" on the
+ * group; GOV.UK puts its question in the legend over "Day", "Month", "Year". Else the smallest
+ * block holding the pieces, and the first label in it that names more than a piece: IRCC sets
+ * "What is your date of birth?" over three boxes labelled "Year", "Month", "Day".
+ */
+function wholeQuestion(el: Element): { text: string; from: Element[]; boxes: number } | null {
+  const fieldsIn = (node: Element) => Array.from(node.querySelectorAll(CANDIDATE_SELECTOR)).filter(isAField);
+  const whole = (text: string) => text !== "" && !PART_ONLY.test(cleanLabel(text));
+
+  const group = el.parentElement?.closest("[aria-labelledby], [aria-label], fieldset");
+  if (group) {
+    const boxes = fieldsIn(group).length;
+    const named = boxes <= MOST_PARTS ? labelOf(group) : null;
+    if (named && whole(named.text)) return { text: named.text, from: named.from, boxes };
+  }
+
+  let block = el.parentElement;
+  while (block && fieldsIn(block).length < 2) block = block.parentElement;
+  if (!block) return null;
+  const fields = fieldsIn(block);
+  if (fields.length > MOST_PARTS) return null;
+  const before = (node: Node) => (fields[0]!.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_PRECEDING) !== 0;
+  const label = Array.from(block.querySelectorAll("label, legend")).find((node) => before(node) && whole(textOf(node)));
+  return label ? { text: textOf(label), from: [label], boxes: fields.length } : null;
+}
+
+/** The name this box carries itself, by the rules below. */
+function ownLabelOf(el: Element): { text: string; from: Element[] } {
   const doc = el.ownerDocument;
   const root = el.getRootNode() as Document | ShadowRoot;
 
@@ -271,14 +322,6 @@ function labelOf(el: Element): { text: string; from: Element[] } {
     const shown = parts.filter((part) => isVisible(part) && worded(part));
     const chosen = question.length > 0 ? question : shown.length > 0 ? shown : parts;
     const text = chosen.map(textOf).join(" ");
-    // A label that names only a part — Google Forms labels its date box "Date" and puts "Date of
-    // Birth" on the group around it. Two date questions would both be "Date", and neither is
-    // what the person is being asked. The group's name is the question.
-    if (text && PART_ONLY.test(cleanLabel(text))) {
-      const group = el.parentElement?.closest("[aria-labelledby], [aria-label], fieldset");
-      const outer = group ? labelOf(group) : null;
-      if (outer?.text) return outer;
-    }
     if (text) return { text, from: chosen };
   }
 
@@ -482,9 +525,13 @@ function optionsOf(el: Element): FieldOption[] | undefined {
   const tag = el.tagName.toLowerCase();
 
   if (tag === "select") {
-    const options = Array.from((el as HTMLSelectElement).options)
-      .filter((option) => option.value !== "" || textOf(option) !== "")
-      .map((option) => ({ value: option.value, label: textOf(option) || option.value }));
+    const all = Array.from((el as HTMLSelectElement).options).filter((option) => option.value !== "" || textOf(option) !== "");
+    // A choice is something a person can pick that answers the question. `<option value="">Please
+    // Select</option>` submits nothing — it is "no answer", the HTML placeholder — and a disabled or
+    // hidden option cannot be picked. Left in, "Please Select" sat in the tool's enum of answers.
+    // A select whose options all submit nothing is unusual, not empty: keep them.
+    const picks = all.filter((option) => option.value !== "" && !option.disabled && !option.hidden);
+    const options = (picks.length > 0 ? picks : all).map((option) => ({ value: option.value, label: textOf(option) || option.value }));
     return options.length > 0 ? options : undefined;
   }
 
@@ -600,7 +647,7 @@ export function readForm(
   const handles: FieldHandles = new Map();
   const usedIds = new Set<string>();
   /** Radios and same-named checkboxes collapse into one field, so remember what we have seen. */
-  const groups = new Map<string, FieldSpec>();
+  const groups = new Map<Element | string, FieldSpec>();
 
   const takeId = (preferred: string, index: number): string => {
     const base = slugify(preferred) || `field_${index + 1}`;
@@ -667,7 +714,7 @@ export function readForm(
 
     const visible = isVisible(el);
     const kind = kindOf(el);
-    const { text: rawLabel, from: labelledFrom } = labelOf(el);
+    const { text: rawLabel, from: labelledFrom, part } = labelOf(el);
     const label = cleanLabel(rawLabel);
     // Google Forms sets no `required` and no `aria-required` on a text answer: the only mark is
     // the asterisk on its question. Read as optional, a required question was never asked.
@@ -694,9 +741,10 @@ export function readForm(
     // Radios, and checkboxes sharing a name, are one question with several answers — the very set
     // the writer will look for again (`choiceGroup`), so what is read as one field can be written
     // as one: Jotform's `industry[other]` joins `industry[]` here and there alike.
-    if ((kind === "radio" || kind === "checkbox") && name) {
-      const members = tag === "input" ? choiceGroup(el) : [];
-      const groupKey = `${kind}:${members[0]?.getAttribute("name") ?? name}`;
+    const members = (kind === "radio" || kind === "checkbox") && tag === "input" ? choiceGroup(el) : [];
+    if ((kind === "radio" || kind === "checkbox") && (name || members.length > 1)) {
+      // Keyed by the group's first box, not its name: Tally's boxes have none.
+      const groupKey: Element | string = members[0] ?? `${kind}:${name}`;
       const siblings =
         tag === "input"
           ? members.filter((other) => candidates.includes(other) && kindOf(other) === kind)
@@ -706,7 +754,8 @@ export function readForm(
       if (isGroup) {
         const existing = groups.get(groupKey);
         const option: FieldOption = {
-          value: (el as HTMLInputElement).value || label,
+          // What tells this box from the others in its group — the writer finds it by the same.
+          value: tag === "input" ? choiceKey(el, members) : (el as HTMLInputElement).value || label,
           label: label || (el as HTMLInputElement).value,
         };
 
@@ -750,7 +799,7 @@ export function readForm(
     // model reads while deciding where each spoken phrase belongs, so `desired_salary` is worth
     // far more than `question_69292246` — and meaningless `name` attributes are the norm on
     // real ATS forms. The name is the fallback, and the element id the fallback's fallback.
-    const id = takeId(label || name || el.id, index);
+    const id = takeId(part && label ? `${label} ${part}` : label || name || el.id, index);
     const spec: FieldSpec = {
       id,
       label,
@@ -758,6 +807,7 @@ export function readForm(
       required:
         Boolean((el as HTMLInputElement).required) || el.getAttribute("aria-required") === "true" || starred,
     };
+    if (part) spec.part = part;
 
     const selector = uniqueSelector(el, ownerDocumentOf(root));
     if (selector) spec.selector = selector;
