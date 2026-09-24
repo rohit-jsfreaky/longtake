@@ -74,6 +74,13 @@ const CANDIDATE_SELECTOR = [
 /** Input types that are a control, not an answer. */
 const NON_ANSWER_TYPES = new Set(["submit", "button", "reset", "image", "hidden"]);
 
+/** Is this something a person answers? Page data, buttons, and controls nobody can reach are not. */
+function isAField(node: Element): boolean {
+  if (node.tagName === "INPUT" && NON_ANSWER_TYPES.has(((node as HTMLInputElement).type || "text").toLowerCase())) return false;
+  if (node.getAttribute("tabindex") === "-1" && node.closest("[aria-hidden='true']")) return false;
+  return isVisible(node);
+}
+
 /** Labels that mean a long spoken answer, and so earn a Dictation pass of their own. */
 const LONG_FORM_LABEL = /cover letter|why (do|are|would)|tell us|describe|excites|about your|in your own words|summar/i;
 
@@ -99,9 +106,19 @@ const LONG_FORM_MIN_MAXLENGTH = 1000;
 /** A typeable dropdown with at least this many choices is searched, not picked from. */
 const SEARCH_NOT_SCROLL = 50;
 
+/**
+ * Text as a person sees it: white space run together, and nothing at either end that draws
+ * nothing. Luma sets a zero-width space before every input; U+200B is not white space to `\s` or
+ * `trim()`, and "​" was read as the phone number's question. Inside a word such characters
+ * stay — Hindi joins and parts its letters with them, and emoji are built with them.
+ */
+function tidy(raw: string): string {
+  return raw.replace(/\s+/g, " ").replace(/^[\s\p{Cf}]+|[\s\p{Cf}]+$/gu, "");
+}
+
 function textOf(el: Element | null | undefined): string {
   if (!el) return "";
-  return ((el as HTMLElement).innerText ?? el.textContent ?? "").replace(/\s+/g, " ").trim();
+  return tidy((el as HTMLElement).innerText ?? el.textContent ?? "");
 }
 
 /**
@@ -112,10 +129,93 @@ function textOf(el: Element | null | undefined): string {
  */
 function labelTextWithoutControls(label: Element): string {
   const clone = label.cloneNode(true) as Element;
+  // Controls, and whatever widgets sit inside the label too: Workable wraps the phone's country
+  // picker in the phone's label, and its 244 countries were being read as the question.
   clone
-    .querySelectorAll("input, textarea, select, option, [role='combobox'], [contenteditable]")
+    .querySelectorAll(
+      "input, textarea, select, option, [role='combobox'], [role='listbox'], [role='option'], [role='menu'], [contenteditable]",
+    )
     .forEach((node) => node.remove());
-  return (clone.textContent ?? "").replace(/\s+/g, " ").trim();
+  return tidy(clone.textContent ?? "");
+}
+
+/** Widgets whose text is their own, never a question's: remove or skip them in a label. */
+const WIDGETS =
+  "input, textarea, select, option, [role='combobox'], [role='listbox'], [role='option'], [role='menu'], [contenteditable]";
+
+function shownText(node: Node): boolean {
+  const parent = node.parentElement as HTMLElement | null;
+  return Boolean(parent) && !(parent!.checkVisibility && !parent!.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }));
+}
+
+/**
+ * The words of a label wrapped around its control: only what is shown, never another widget's, and
+ * — for a box you type into — only what comes before it. Lever wraps a whole question in one
+ * `<label>`, dropdown included, and "Current location" came out as "Current location ✱No location
+ * found. Try entering a different locationLoading". A checkbox's words follow it ("☐ I agree"), so
+ * for a checkable everything shown counts.
+ */
+function wrappingLabelText(label: Element, control: Element): string {
+  const type = (control.getAttribute("type") ?? "").toLowerCase();
+  const checkable = control.tagName === "INPUT" && (type === "checkbox" || type === "radio");
+  const parts: string[] = [];
+  const walker = label.ownerDocument.createTreeWalker(label, NodeFilter.SHOW_TEXT);
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    const widget = node.parentElement?.closest(WIDGETS);
+    if (widget && label.contains(widget)) continue;
+    if (!shownText(node)) continue;
+    if (!checkable && !(control.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_PRECEDING)) continue;
+    const text = tidy(node.textContent ?? "");
+    if (text) parts.push(text);
+  }
+  return parts.join(" ").trim() || labelTextWithoutControls(label);
+}
+
+/**
+ * The question in a field's own block, for pages that set the question beside the control with
+ * nothing tying them together — Lever writes it in a div above, Ashby in a `<label for>` whose id
+ * the control does not carry.
+ *
+ * The block is the smallest one around the control (or around all of a group's choices) that
+ * holds no other field — so a section heading shared by several fields is never taken. In it, what
+ * comes BEFORE the control: a `<label>` that labels none of the choices, or else the visible
+ * text. Only before: hints ("Area Code", "example@example.com") and dropdown messages ("No
+ * location found") come after it.
+ */
+function ownBlockQuestion(members: Element[], isOtherField: (node: Element) => boolean): string {
+  const first = members[0];
+  if (!first) return "";
+  const ours = (node: Node) => members.some((member) => member === node || member.contains(node) || (node instanceof Element && node.contains(member) && node.tagName === "LABEL"));
+  const before = (node: Node) => (first.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_PRECEDING) !== 0;
+  const labelsAChoice = (label: HTMLLabelElement) => members.some((member) => label.contains(member) || (member.id !== "" && label.htmlFor === member.id));
+
+  let block: Element | null = first.parentElement;
+  while (block && !members.every((member) => block!.contains(member))) block = block.parentElement;
+  for (let hops = 0; block && hops < 4; hops++, block = block.parentElement) {
+    if (Array.from(block.querySelectorAll(CANDIDATE_SELECTOR)).some((node) => isOtherField(node) && !ours(node))) return "";
+
+    const orphan = Array.from(block.querySelectorAll("label")).find((label) => before(label) && !labelsAChoice(label) && textOf(label));
+    if (orphan) return textOf(orphan);
+
+    // The first block of text before the control is the question; a block after that is its
+    // description (Lever: "Which university…?" then "Please select \"Other\" if…"). Inline pieces of
+    // the first block — its ✱ — belong to it.
+    const counts = (node: Node) => before(node) && !ours(node) && shownText(node) && tidy(node.textContent ?? "") !== "";
+    const walker = block.ownerDocument.createTreeWalker(block, NodeFilter.SHOW_TEXT);
+    let first: Node | null = null;
+    for (let node = walker.nextNode(); node && !first; node = walker.nextNode()) if (counts(node)) first = node;
+    if (first) {
+      const view = block.ownerDocument.defaultView;
+      let holder = first.parentElement!;
+      while (holder !== block && holder.parentElement && /^(inline|contents)/.test(view?.getComputedStyle(holder).display ?? "")) holder = holder.parentElement;
+      const parts: string[] = [];
+      const inner = block.ownerDocument.createTreeWalker(holder, NodeFilter.SHOW_TEXT);
+      for (let node = inner.nextNode(); node; node = inner.nextNode()) if (counts(node)) parts.push(tidy(node.textContent ?? ""));
+      const text = parts.join(" ").trim();
+      if (text) return text.slice(0, 400);
+    }
+  }
+  return "";
 }
 
 /**
@@ -154,11 +254,19 @@ function labelOf(el: Element): string {
   // 1. aria-labelledby — the author naming the label explicitly.
   const labelledBy = el.getAttribute("aria-labelledby");
   if (labelledBy) {
-    const text = labelledBy
+    const parts = labelledBy
       .split(/\s+/)
-      .map((id) => textOf(root.querySelector(`#${CSS.escape(id)}`) ?? doc?.getElementById(id)))
-      .filter(Boolean)
-      .join(" ");
+      .map((id) => root.querySelector(`#${CSS.escape(id)}`) ?? doc?.getElementById(id))
+      .filter((part): part is Element => part !== null && textOf(part) !== "");
+    // aria-labelledby often strings several things together; the question is the part a person
+    // reads as one — shown on screen, set before the control, and more than a number. MS Forms adds
+    // "Single line text." for screen readers only; Jotform adds the hint under the box
+    // ("example@example.com"); Typeform prefixes the question's number ("1").
+    const before = (part: Element) => (el.compareDocumentPosition(part) & Node.DOCUMENT_POSITION_PRECEDING) !== 0;
+    const worded = (part: Element) => !/^[\s\d.):#-]*$/.test(textOf(part));
+    const question = parts.filter((part) => isVisible(part) && before(part) && worded(part));
+    const shown = parts.filter((part) => isVisible(part) && worded(part));
+    const text = (question.length > 0 ? question : shown.length > 0 ? shown : parts).map(textOf).join(" ");
     // A label that names only a part — Google Forms labels its date box "Date" and puts "Date of
     // Birth" on the group around it. Two date questions would both be "Date", and neither is
     // what the person is being asked. The group's name is the question.
@@ -171,7 +279,7 @@ function labelOf(el: Element): string {
   }
 
   // 2. aria-label — the author writing the label out.
-  const ariaLabel = el.getAttribute("aria-label")?.trim();
+  const ariaLabel = tidy(el.getAttribute("aria-label") ?? "");
   if (ariaLabel) return ariaLabel;
 
   // 3. <label for="…">. Searched from the element's own root so it works inside a shadow tree.
@@ -190,7 +298,7 @@ function labelOf(el: Element): string {
   //    own value.
   const wrapping = el.closest("label");
   if (wrapping) {
-    const text = labelTextWithoutControls(wrapping);
+    const text = wrappingLabelText(wrapping, el);
     if (text) return text;
   }
 
@@ -199,10 +307,15 @@ function labelOf(el: Element): string {
   const legendText = textOf(legend);
   if (legendText) return legendText;
 
+  // 5b. The field's own block — a question set beside the control with nothing tying them. Before
+  //     the placeholder: Lever's is "Type your response", Ashby's "Start typing...".
+  const own = ownBlockQuestion([el], isAField);
+  if (own) return own;
+
   // 6. The author's fallbacks.
-  const placeholder = el.getAttribute("placeholder")?.trim();
+  const placeholder = tidy(el.getAttribute("placeholder") ?? "");
   if (placeholder) return placeholder;
-  const title = el.getAttribute("title")?.trim();
+  const title = tidy(el.getAttribute("title") ?? "");
   if (title) return title;
 
   // 7. Last resort: the nearest text sitting above the control. Bounded, because walking far
@@ -261,7 +374,7 @@ function containerName(container: Element): string {
       .join(" ");
     if (text) return text;
   }
-  const ariaLabel = container.getAttribute("aria-label")?.trim();
+  const ariaLabel = tidy(container.getAttribute("aria-label") ?? "");
   if (ariaLabel) return ariaLabel;
   return container.localName === "fieldset" ? textOf(container.querySelector(":scope > legend")) : "";
 }
@@ -279,11 +392,19 @@ function groupRequired(el: Element, question: string): boolean {
 const PART_ONLY = /^(date|time|day|month|year|hour|minute|dd|mm|yyyy|hh)$/i;
 
 /** A label ending in an asterisk marks a required question — the web's near-universal convention. */
-const STARRED = /[*✱]\s*$/;
+const STARRED = /^[\s\p{Cf}]*[*✱]|[*✱][\s\p{Cf}]*$/u; // at either end: Workable writes "* Phone"
 
 /** `Country*` and `Are you a veteran? *` are the same question. Drop the required marker. */
 function cleanLabel(raw: string): string {
-  return raw.replace(/[\s*✱]+$/g, "").replace(/\s+/g, " ").trim();
+  return tidy(
+    raw
+      .replace(/[\s\p{Cf}*✱]+$/u, "")
+      .replace(/^[\s\p{Cf}*✱]+/u, "")
+      // A question's number is its place in the form, not its words: MS Forms' "1. First Name" is
+      // asked as "First Name". Only a number followed by "." or ")" and a space — "2.5 GPA" and
+      // "18+ years" keep theirs.
+      .replace(/^\s*\d{1,3}[.)]\s+(?=\S)/, ""),
+  );
 }
 
 function kindOf(el: Element): FieldKind {
@@ -575,7 +696,9 @@ export function readForm(
         // using it for the group's id produced `yes_i_am_authorized` as the name of a question
         // actually called "Work authorization". The id and the label have to come from the same
         // place or the model is answering a question it cannot see.
-        const question = groupQuestion(el);
+        // A named container first; else the group's own block (Lever's and Ashby's groups have
+        // neither a legend nor a label, and came out named "cards[1c71…][field0]").
+        const question = groupQuestion(el) || ownBlockQuestion(siblings.length > 0 ? siblings : [el], isAField);
         const groupLabel = cleanLabel(question || name);
 
         const spec: FieldSpec = {

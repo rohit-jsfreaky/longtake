@@ -12,7 +12,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { readAx, recordOptions } from "./capture";
-import { runSteps } from "./steps";
+import { runSteps, settle } from "./steps";
 import { OFFLINE, replayFromHar } from "./replay-har";
 import { HAR, type AxCapture, type AxControl, type Meta, type Step } from "./types";
 
@@ -22,8 +22,8 @@ export type Fidelity = { id: string; ok: boolean; captured: number; replayed: nu
 export async function readPageAgain(context: BrowserContext, url: string, steps: Step[] = []): Promise<AxCapture> {
   const page = await context.newPage();
   await page.goto(url, { waitUntil: "load", timeout: 60_000 });
-  await page.waitForTimeout(2500);
   await runSteps(page, steps);
+  await settle(page);
   const ax = await readAx(page, await context.newCDPSession(page));
   await recordOptions(page, ax.controls);
   return ax;

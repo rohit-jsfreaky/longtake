@@ -16,7 +16,7 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { cleanRecording } from "./replay-har";
-import { runSteps } from "./steps";
+import { runSteps, settle } from "./steps";
 import { HAR, type Step, type AxCapture, type AxControl, type Category, type Meta } from "./types";
 
 export type CaptureOptions = {
@@ -511,8 +511,8 @@ export async function capture(url: string, id: string, options: CaptureOptions):
     // A form fetched after load — Ashby shows "Fetching application form" long after the network
     // first goes quiet. Wait for something to answer, then for the page to settle.
     await page.waitForSelector(ANSWERABLE, { timeout: 20_000 }).catch(() => undefined);
-    await page.waitForTimeout(1500);
     await runSteps(page, options.before);
+    await settle(page);
 
     const cdp = await context.newCDPSession(page);
     const ax = await readAx(page, cdp);

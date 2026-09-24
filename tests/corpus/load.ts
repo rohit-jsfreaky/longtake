@@ -14,7 +14,7 @@ import { join, resolve } from "node:path";
 
 import { HAR, type AxCapture, type FillPlan, type Locator, type Meta, type Truth } from "../../tools/corpus/types";
 import { replayFromHar } from "../../tools/corpus/replay-har";
-import { runSteps } from "../../tools/corpus/steps";
+import { runSteps, settle } from "../../tools/corpus/steps";
 import type { ReadJoin, ReadSpec } from "../../tools/corpus/score";
 import { PROBE } from "../helpers";
 
@@ -47,11 +47,55 @@ export function corpusForms(): CorpusForm[] {
 /** What the page tried to send while we worked on it. Every scorer asserts these stay empty. */
 export type Sent = { submits: string[]; posts: string[] };
 
+type Located = Element | null | "elsewhere";
+
 declare global {
   interface Window {
     __corpusSent?: string[];
     __corpusSession?: InstanceType<Window["__longtake"]["LongtakeSession"]>;
+    __corpusFind?: (locator: Locator) => Located;
   }
+}
+
+/**
+ * Runs in the page: find a captured control again. By id first; by structure when the id is one the
+ * framework made afresh on this load. "elsewhere" when it sits inside another origin's frame — there,
+ * but not reachable from this page.
+ */
+function installFinder(): void {
+  const inHops = (root: Document | ShadowRoot, hops: string[]): Element | null => {
+    let scope: Document | ShadowRoot | null = root;
+    let el: Element | null = null;
+    for (const [i, css] of hops.entries()) {
+      if (!scope) return null;
+      el = scope.querySelector(css);
+      if (!el) return null;
+      if (i < hops.length - 1) scope = el.shadowRoot;
+    }
+    return el;
+  };
+  const follow = (locator: { frames: string[]; path: string[] }): Located => {
+    let doc: Document | null = document;
+    for (const frame of locator.frames) {
+      const iframe: HTMLIFrameElement | null = doc ? (inHops(doc, frame.split(" >> ")) as HTMLIFrameElement | null) : null;
+      if (!iframe) return null;
+      try {
+        doc = iframe.contentDocument;
+      } catch {
+        doc = null;
+      }
+      if (!doc) return "elsewhere";
+    }
+    return inHops(doc!, locator.path);
+  };
+  // Not `instanceof Element`: an element inside a frame is an instance of that frame's Element.
+  const isElement = (found: Located): found is Element => found !== null && found !== "elsewhere";
+  window.__corpusFind = (locator) => {
+    const own = follow(locator);
+    if (isElement(own) || !locator.plain) return own;
+    const plain = follow(locator.plain);
+    return isElement(plain) ? plain : own ?? plain;
+  };
 }
 
 /** Load the form offline, inject `core/`, and start counting anything that tries to leave. */
@@ -77,18 +121,36 @@ export async function openForm(page: Page, form: CorpusForm): Promise<Sent> {
       seen.push(`form.submit(): ${describe(this)}`);
     };
   });
+  await page.addInitScript(installFinder);
   await page.goto(form.meta.url, { waitUntil: "load", timeout: 60_000 });
-  await page.waitForTimeout(1500);
   await runSteps(page, form.meta.before);
-  // The product reads again whenever its page changes; a scorer reads once, so it waits for the
-  // page to stop changing first. Under a full corpus run Reddit drew its demographic section after
-  // the first read — the consent box came out "not read", and its locator "lost". It waits on a
-  // request: while one is in flight the DOM is quiet, so both have to be settled.
-  await page.waitForLoadState("networkidle", { timeout: 15_000 }).catch(() => undefined);
-  await quiet(page, 1000, 10_000);
+  // The product reads again whenever its page changes; a scorer reads once, so it reads the page
+  // that was captured — see `whenCaptured` — once that has stopped changing.
+  await whenCaptured(page, form);
+  await settle(page);
   await page.addScriptTag({ path: PROBE });
   await page.waitForFunction(() => Boolean(window.__longtake));
   return sent;
+}
+
+/**
+ * Wait for the page to be the one that was captured: every control seen then, found again.
+ *
+ * Nothing the page does says a framework is finished. Under a full corpus run Reddit's app sat
+ * for 2.5 s after its last script — network idle, DOM still, idle callbacks firing (React
+ * hydrates in chunks and yields between them) — and only then loaded its captcha and drew the
+ * phone picker and the consent box. 4 reads in 20 came before them. The capture knows what the
+ * finished page holds, so that is what is waited for; a control still missing after `maxMs` is
+ * really lost, and the load spec says so.
+ */
+async function whenCaptured(page: Page, form: CorpusForm, maxMs = 20_000): Promise<void> {
+  await page
+    .waitForFunction(
+      (locators) => locators.every((locator) => window.__corpusFind!(locator) !== null),
+      form.ax.controls.map((control) => control.locator),
+      { timeout: maxMs, polling: 250 },
+    )
+    .catch(() => undefined);
 }
 
 /** Collect what the page tried to send so far. */
@@ -127,37 +189,8 @@ export async function joinTruth(page: Page, fields: Locator[][]): Promise<ReadJo
     const handles = window.__longtake.last!.handles;
     const stale = [...handles.values()].filter((handle) => !handle.isConnected).length;
 
-    const inHops = (root: Document | ShadowRoot, hops: string[]): Element | null => {
-      let scope: Document | ShadowRoot | null = root;
-      let el: Element | null = null;
-      for (const [i, css] of hops.entries()) {
-        if (!scope) return null;
-        el = scope.querySelector(css);
-        if (!el) return null;
-        if (i < hops.length - 1) scope = el.shadowRoot;
-      }
-      return el;
-    };
-    const blocked = new Set<{ frames: string[]; path: string[] }>();
-    const follow = (locator: { frames: string[]; path: string[] }): Element | null => {
-      let doc: Document | null = document;
-      for (const frame of locator.frames) {
-        const iframe: HTMLIFrameElement | null = doc ? (inHops(doc, frame.split(" >> ")) as HTMLIFrameElement | null) : null;
-        try {
-          doc = iframe?.contentDocument ?? null;
-        } catch {
-          doc = null;
-        }
-        // The frame is there, but its document is another origin's: not reachable from this page.
-        if (iframe && !doc) blocked.add(locator);
-      }
-      return doc ? inHops(doc, locator.path) : null;
-    };
-    // By id first; by structure when the id is one the framework made afresh on this load.
-    const resolveLocator = (locator: { frames: string[]; path: string[]; plain?: { frames: string[]; path: string[] } }) =>
-      follow(locator) ?? (locator.plain ? follow(locator.plain) : null);
-
-    const elements = fields.map((locators) => locators.map(resolveLocator));
+    const located = fields.map((locators) => locators.map((locator) => window.__corpusFind!(locator)));
+    const elements = located.map((all) => all.map((one) => (one === "elsewhere" ? null : one)));
     const size = (el: Element) => el.querySelectorAll("*").length;
     /** How closely a handle is this field: lower is closer, -1 is not at all. */
     const closeness = (handle: Element, els: (Element | null)[]) => {
@@ -183,7 +216,8 @@ export async function joinTruth(page: Page, fields: Locator[][]): Promise<ReadJo
     for (const [id, handle] of handles) {
       touches[id] = elements.flatMap((els, i) => (closeness(handle, els) >= 0 ? [i] : []));
     }
-    const otherOrigin = fields.map((locators) => blocked.has(locators[0]!) || (locators[0]!.plain ? blocked.has(locators[0]!.plain) : false));
+    // Inside another origin's frame: there, but not reachable from this page.
+    const otherOrigin = located.map((all) => all[0] === "elsewhere");
     return { best, touches, found: elements.map((els) => els[0] !== null), otherOrigin, stale };
   }, fields);
 }
@@ -261,27 +295,4 @@ export async function freshen(page: Page): Promise<boolean> {
     window.__longtake.last = session.read!;
     return true;
   });
-}
-
-/** Resolve once the page has gone `quietMs` without a DOM change — or after `maxMs`, whichever first. */
-export async function quiet(page: Page, quietMs: number, maxMs: number): Promise<void> {
-  await page.evaluate(
-    ({ quietMs, maxMs }) =>
-      new Promise<void>((done) => {
-        let timer = setTimeout(finish, quietMs);
-        const hardStop = setTimeout(finish, maxMs);
-        const observer = new MutationObserver(() => {
-          clearTimeout(timer);
-          timer = setTimeout(finish, quietMs);
-        });
-        observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true });
-        function finish() {
-          clearTimeout(timer);
-          clearTimeout(hardStop);
-          observer.disconnect();
-          done();
-        }
-      }),
-    { quietMs, maxMs },
-  );
 }

@@ -300,18 +300,77 @@
     "[role='switch']"
   ].join(",");
   var NON_ANSWER_TYPES = /* @__PURE__ */ new Set(["submit", "button", "reset", "image", "hidden"]);
+  function isAField(node) {
+    if (node.tagName === "INPUT" && NON_ANSWER_TYPES.has((node.type || "text").toLowerCase())) return false;
+    if (node.getAttribute("tabindex") === "-1" && node.closest("[aria-hidden='true']")) return false;
+    return isVisible(node);
+  }
   var LONG_FORM_LABEL = /cover letter|why (do|are|would)|tell us|describe|excites|about your|in your own words|summar/i;
   var TRAP_NAME = /honey ?pot|\bhp\b|bot ?(field|check|trap)|leave (this )?blank|do not fill/i;
   var LONG_FORM_MIN_MAXLENGTH = 1e3;
   var SEARCH_NOT_SCROLL = 50;
+  function tidy(raw) {
+    return raw.replace(/\s+/g, " ").replace(/^[\s\p{Cf}]+|[\s\p{Cf}]+$/gu, "");
+  }
   function textOf(el) {
     if (!el) return "";
-    return (el.innerText ?? el.textContent ?? "").replace(/\s+/g, " ").trim();
+    return tidy(el.innerText ?? el.textContent ?? "");
   }
   function labelTextWithoutControls(label) {
     const clone = label.cloneNode(true);
-    clone.querySelectorAll("input, textarea, select, option, [role='combobox'], [contenteditable]").forEach((node) => node.remove());
-    return (clone.textContent ?? "").replace(/\s+/g, " ").trim();
+    clone.querySelectorAll(
+      "input, textarea, select, option, [role='combobox'], [role='listbox'], [role='option'], [role='menu'], [contenteditable]"
+    ).forEach((node) => node.remove());
+    return tidy(clone.textContent ?? "");
+  }
+  var WIDGETS = "input, textarea, select, option, [role='combobox'], [role='listbox'], [role='option'], [role='menu'], [contenteditable]";
+  function shownText(node) {
+    const parent = node.parentElement;
+    return Boolean(parent) && !(parent.checkVisibility && !parent.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }));
+  }
+  function wrappingLabelText(label, control) {
+    const type = (control.getAttribute("type") ?? "").toLowerCase();
+    const checkable = control.tagName === "INPUT" && (type === "checkbox" || type === "radio");
+    const parts = [];
+    const walker = label.ownerDocument.createTreeWalker(label, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      const widget = node.parentElement?.closest(WIDGETS);
+      if (widget && label.contains(widget)) continue;
+      if (!shownText(node)) continue;
+      if (!checkable && !(control.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_PRECEDING)) continue;
+      const text2 = tidy(node.textContent ?? "");
+      if (text2) parts.push(text2);
+    }
+    return parts.join(" ").trim() || labelTextWithoutControls(label);
+  }
+  function ownBlockQuestion(members, isOtherField) {
+    const first = members[0];
+    if (!first) return "";
+    const ours = (node) => members.some((member) => member === node || member.contains(node) || node instanceof Element && node.contains(member) && node.tagName === "LABEL");
+    const before = (node) => (first.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_PRECEDING) !== 0;
+    const labelsAChoice = (label) => members.some((member) => label.contains(member) || member.id !== "" && label.htmlFor === member.id);
+    let block = first.parentElement;
+    while (block && !members.every((member) => block.contains(member))) block = block.parentElement;
+    for (let hops = 0; block && hops < 4; hops++, block = block.parentElement) {
+      if (Array.from(block.querySelectorAll(CANDIDATE_SELECTOR)).some((node) => isOtherField(node) && !ours(node))) return "";
+      const orphan = Array.from(block.querySelectorAll("label")).find((label) => before(label) && !labelsAChoice(label) && textOf(label));
+      if (orphan) return textOf(orphan);
+      const counts = (node) => before(node) && !ours(node) && shownText(node) && tidy(node.textContent ?? "") !== "";
+      const walker = block.ownerDocument.createTreeWalker(block, NodeFilter.SHOW_TEXT);
+      let first2 = null;
+      for (let node = walker.nextNode(); node && !first2; node = walker.nextNode()) if (counts(node)) first2 = node;
+      if (first2) {
+        const view = block.ownerDocument.defaultView;
+        let holder = first2.parentElement;
+        while (holder !== block && holder.parentElement && /^(inline|contents)/.test(view?.getComputedStyle(holder).display ?? "")) holder = holder.parentElement;
+        const parts = [];
+        const inner = block.ownerDocument.createTreeWalker(holder, NodeFilter.SHOW_TEXT);
+        for (let node = inner.nextNode(); node; node = inner.nextNode()) if (counts(node)) parts.push(tidy(node.textContent ?? ""));
+        const text2 = parts.join(" ").trim();
+        if (text2) return text2.slice(0, 400);
+      }
+    }
+    return "";
   }
   function isInside(el, selector) {
     let node = el;
@@ -335,7 +394,12 @@
     const root = el.getRootNode();
     const labelledBy = el.getAttribute("aria-labelledby");
     if (labelledBy) {
-      const text2 = labelledBy.split(/\s+/).map((id) => textOf(root.querySelector(`#${CSS.escape(id)}`) ?? doc?.getElementById(id))).filter(Boolean).join(" ");
+      const parts = labelledBy.split(/\s+/).map((id) => root.querySelector(`#${CSS.escape(id)}`) ?? doc?.getElementById(id)).filter((part) => part !== null && textOf(part) !== "");
+      const before = (part) => (el.compareDocumentPosition(part) & Node.DOCUMENT_POSITION_PRECEDING) !== 0;
+      const worded = (part) => !/^[\s\d.):#-]*$/.test(textOf(part));
+      const question = parts.filter((part) => isVisible(part) && before(part) && worded(part));
+      const shown2 = parts.filter((part) => isVisible(part) && worded(part));
+      const text2 = (question.length > 0 ? question : shown2.length > 0 ? shown2 : parts).map(textOf).join(" ");
       if (text2 && PART_ONLY.test(cleanLabel(text2))) {
         const group = el.parentElement?.closest("[aria-labelledby], [aria-label], fieldset");
         const outer = group ? labelOf(group) : "";
@@ -343,7 +407,7 @@
       }
       if (text2) return text2;
     }
-    const ariaLabel = el.getAttribute("aria-label")?.trim();
+    const ariaLabel = tidy(el.getAttribute("aria-label") ?? "");
     if (ariaLabel) return ariaLabel;
     if (el.id) {
       const forLabel = root.querySelector(`label[for="${CSS.escape(el.id)}"]`);
@@ -352,15 +416,17 @@
     }
     const wrapping = el.closest("label");
     if (wrapping) {
-      const text2 = labelTextWithoutControls(wrapping);
+      const text2 = wrappingLabelText(wrapping, el);
       if (text2) return text2;
     }
     const legend = el.closest("fieldset")?.querySelector("legend");
     const legendText = textOf(legend);
     if (legendText) return legendText;
-    const placeholder = el.getAttribute("placeholder")?.trim();
+    const own = ownBlockQuestion([el], isAField);
+    if (own) return own;
+    const placeholder = tidy(el.getAttribute("placeholder") ?? "");
     if (placeholder) return placeholder;
-    const title = el.getAttribute("title")?.trim();
+    const title = tidy(el.getAttribute("title") ?? "");
     if (title) return title;
     let node = el;
     for (let hops = 0; node && hops < 4; hops++) {
@@ -396,7 +462,7 @@
       const text2 = labelledBy.split(/\s+/).map((id) => textOf(root.querySelector(`#${CSS.escape(id)}`) ?? container.ownerDocument?.getElementById(id))).filter(Boolean).join(" ");
       if (text2) return text2;
     }
-    const ariaLabel = container.getAttribute("aria-label")?.trim();
+    const ariaLabel = tidy(container.getAttribute("aria-label") ?? "");
     if (ariaLabel) return ariaLabel;
     return container.localName === "fieldset" ? textOf(container.querySelector(":scope > legend")) : "";
   }
@@ -405,9 +471,11 @@
     return container?.getAttribute("aria-required") === "true" || STARRED.test(question);
   }
   var PART_ONLY = /^(date|time|day|month|year|hour|minute|dd|mm|yyyy|hh)$/i;
-  var STARRED = /[*✱]\s*$/;
+  var STARRED = /^[\s\p{Cf}]*[*✱]|[*✱][\s\p{Cf}]*$/u;
   function cleanLabel(raw) {
-    return raw.replace(/[\s*✱]+$/g, "").replace(/\s+/g, " ").trim();
+    return tidy(
+      raw.replace(/[\s\p{Cf}*✱]+$/u, "").replace(/^[\s\p{Cf}*✱]+/u, "").replace(/^\s*\d{1,3}[.)]\s+(?=\S)/, "")
+    );
   }
   function kindOf(el) {
     const tag = el.tagName.toLowerCase();
@@ -561,7 +629,7 @@
             if (el.required) existing.required = true;
             return;
           }
-          const question = groupQuestion(el);
+          const question = groupQuestion(el) || ownBlockQuestion(siblings.length > 0 ? siblings : [el], isAField);
           const groupLabel = cleanLabel(question || name);
           const spec2 = {
             id: takeId(groupLabel || name, index),

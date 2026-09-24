@@ -201,7 +201,13 @@ test.describe("React portals", () => {
 });
 
 test.describe("forms that have not drawn yet", () => {
+  // The page's clock is held (install keeps time running; only pauseAt stops it, and only ahead of
+  // the running clock), so "too early" is a fact of the test, not a race a busy machine can lose —
+  // it did lose it once, reading at 5.6 s. The real second's wait below is that slow machine.
   test("a read taken too early sees nothing", async ({ page }) => {
+    const start = new Date("2026-01-01T00:00:00Z");
+    await page.clock.install({ time: start });
+    await page.clock.pauseAt(new Date(start.getTime() + 1000));
     await load(
       page,
       `<div id="slot">Loading…</div>
@@ -209,6 +215,7 @@ test.describe("forms that have not drawn yet", () => {
          document.getElementById('slot').innerHTML = '<label for="late">Arrived late</label><input id="late">';
        }, 400);</script>`,
     );
+    await page.waitForTimeout(1000);
     expect((await read(page)).specs).toHaveLength(0);
   });
 
