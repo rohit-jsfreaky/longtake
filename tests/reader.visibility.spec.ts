@@ -330,3 +330,30 @@ test.describe("a widget's input made transparent by the widget", () => {
     expect((await read(page)).specs).toHaveLength(0);
   });
 });
+
+/**
+ * Workable's address autofill-catchers: 42 px inputs nobody can see, `aria-hidden` and out of the
+ * tab order. The agent was being handed "city", "postcode" and "country" to fill.
+ */
+test.describe("hidden from keyboard and screen readers", () => {
+  test("an input both aria-hidden and tabindex=-1 is not a question", async ({ page }) => {
+    await load(
+      page,
+      `<label>Address <input name="address"></label>
+       <div style="width:0;height:42px"><input aria-hidden="true" tabindex="-1" name="city" style="width:42px;height:42px"></div>`,
+    );
+    const result = await read(page);
+    expect(result.specs.map((s) => s.label)).toEqual(["Address"]);
+    expect(result.skipped).toContainEqual({ label: "city", reason: "hidden from keyboard and screen readers" });
+  });
+
+  test("aria-hidden alone does not hide a field — a modal may hide the page behind it", async ({ page }) => {
+    await load(page, `<div aria-hidden="true"><label>Full name <input name="name"></label></div>`);
+    expect((await read(page)).specs).toHaveLength(1);
+  });
+
+  test("tabindex=-1 alone does not hide a field", async ({ page }) => {
+    await load(page, `<label>Full name <input name="name" tabindex="-1"></label>`);
+    expect((await read(page)).specs).toHaveLength(1);
+  });
+});

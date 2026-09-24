@@ -80,6 +80,12 @@ export async function openForm(page: Page, form: CorpusForm): Promise<Sent> {
   await page.goto(form.meta.url, { waitUntil: "load", timeout: 60_000 });
   await page.waitForTimeout(1500);
   await runSteps(page, form.meta.before);
+  // The product reads again whenever its page changes; a scorer reads once, so it waits for the
+  // page to stop changing first. Under a full corpus run Reddit drew its demographic section after
+  // the first read — the consent box came out "not read", and its locator "lost". It waits on a
+  // request: while one is in flight the DOM is quiet, so both have to be settled.
+  await page.waitForLoadState("networkidle", { timeout: 15_000 }).catch(() => undefined);
+  await quiet(page, 1000, 10_000);
   await page.addScriptTag({ path: PROBE });
   await page.waitForFunction(() => Boolean(window.__longtake));
   return sent;
@@ -255,4 +261,27 @@ export async function freshen(page: Page): Promise<boolean> {
     window.__longtake.last = session.read!;
     return true;
   });
+}
+
+/** Resolve once the page has gone `quietMs` without a DOM change — or after `maxMs`, whichever first. */
+export async function quiet(page: Page, quietMs: number, maxMs: number): Promise<void> {
+  await page.evaluate(
+    ({ quietMs, maxMs }) =>
+      new Promise<void>((done) => {
+        let timer = setTimeout(finish, quietMs);
+        const hardStop = setTimeout(finish, maxMs);
+        const observer = new MutationObserver(() => {
+          clearTimeout(timer);
+          timer = setTimeout(finish, quietMs);
+        });
+        observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true });
+        function finish() {
+          clearTimeout(timer);
+          clearTimeout(hardStop);
+          observer.disconnect();
+          done();
+        }
+      }),
+    { quietMs, maxMs },
+  );
 }

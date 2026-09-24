@@ -31,8 +31,11 @@ export function problemsIn(truth: Truth, verifying: boolean): string[] {
       if (!KINDS.includes(field.kind)) problems.push(`${at}: kind "${field.kind}" is not one of ${KINDS.join(", ")}`);
       if (!SUBJECTS.includes(field.subject)) problems.push(`${at}: subject "${field.subject}"`);
       if (!SCOPES.includes(field.scope)) problems.push(`${at}: scope "${field.scope}"`);
-      if (verifying && !field.question.trim()) problems.push(`${field.key}: no question — what does a person read here?`);
-      if (verifying && ["select", "radio", "multiselect"].includes(field.kind) && !field.options?.labels.length) {
+      // A hidden field asks nobody anything; a list that fills as you type has no choices to list.
+      if (verifying && !field.honeypot && !field.question.trim()) problems.push(`${field.key}: no question — what does a person read here?`);
+      // …and a list whose choices exist but were not recorded says so (`complete: false`).
+      const unlisted = field.options?.searchable || field.options?.complete === false;
+      if (verifying && !field.honeypot && ["select", "radio", "multiselect"].includes(field.kind) && !field.options?.labels.length && !unlisted) {
         problems.push(`${at}: a ${field.kind} with no options`);
       }
     }
@@ -41,6 +44,12 @@ export function problemsIn(truth: Truth, verifying: boolean): string[] {
 }
 
 const OUTCOMES = ["written", "refused", "held"];
+
+/**
+ * One judgement a first pass made about the truth, for the verifier to confirm on the page:
+ * which fields, what was decided, and why. `corpus/<id>/checks.json`.
+ */
+export type Check = { keys: string[]; decided: string; why: string };
 
 /** What is wrong with a fill plan before it can be saved (or, with `verifying`, stamped). */
 export function problemsInPlan(plan: FillPlan, truth: Truth, verifying: boolean): string[] {
@@ -89,7 +98,11 @@ export async function review(id: string, dir = "corpus", port = 4477, reviewer?:
         const fill: FillPlan = await access(join(base, "fill.json"))
           .then(() => readFile(join(base, "fill.json"), "utf8").then((text) => JSON.parse(text) as FillPlan))
           .catch(() => ({ cases: [], verified: null }));
-        return send(200, "application/json", JSON.stringify({ meta: meta as Meta, ax: ax as AxCapture, truth: truth as Truth, fill, by }));
+        // The calls a first pass made that a person should look at — each with why.
+        const checks: Check[] = await readFile(join(base, "checks.json"), "utf8")
+          .then((text) => JSON.parse(text) as Check[])
+          .catch(() => []);
+        return send(200, "application/json", JSON.stringify({ meta: meta as Meta, ax: ax as AxCapture, truth: truth as Truth, fill, checks, by }));
       }
       if (req.method === "PUT" && req.url === "/api/fill") {
         let body = "";

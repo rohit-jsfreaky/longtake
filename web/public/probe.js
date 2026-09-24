@@ -527,6 +527,10 @@
       }
       if (el.disabled) return;
       if (el.readOnly) return;
+      if (el.getAttribute("tabindex") === "-1" && el.closest("[aria-hidden='true']")) {
+        skipped.push({ label: el.getAttribute("name") || kindOf(el), reason: "hidden from keyboard and screen readers" });
+        return;
+      }
       const visible = isVisible(el);
       const kind = kindOf(el);
       const rawLabel = labelOf(el);
@@ -870,6 +874,10 @@
       const on = el.querySelector("[aria-checked='true']");
       return on ? (on.getAttribute("aria-label") ?? on.textContent ?? "").trim() || null : null;
     }
+    if (tag === "select" && el.multiple) {
+      const picked = Array.from(el.selectedOptions).map((option) => option.textContent?.trim() || option.value);
+      return picked.length > 0 ? picked : null;
+    }
     if (spec.kind === "multiselect" && tag === "input") {
       const boxes = choiceGroup(el);
       const ticked = boxes.filter((box) => box.checked).map((box) => spec.options?.find((option) => option.value === box.value)?.label ?? box.value);
@@ -1104,6 +1112,15 @@
           choices: labels
         };
       }
+      if (el.tagName.toLowerCase() === "select" && el.multiple) {
+        const select = el;
+        const wantedValues2 = new Set(chosen.map((c) => c.value));
+        for (const option of Array.from(select.options)) option.selected = wantedValues2.has(option.value);
+        announce(select, ["input", "change"]);
+        const now = Array.from(select.selectedOptions);
+        const wrote2 = chosen.map((c) => c.label).join(", ");
+        return now.length === wantedValues2.size && now.every((option) => wantedValues2.has(option.value)) ? { fieldId: id, status: "written", wrote: wrote2 } : { fieldId: id, status: "rejected-by-page", wrote: wrote2, found: now.map((option) => option.textContent?.trim() ?? "").join(", ") };
+      }
       if (spec.custom && spec.kind === "multiselect") {
         const already = readValue(spec, el);
         const onShow = new Set(Array.isArray(already) ? already.map(normalise) : []);
@@ -1145,7 +1162,9 @@
           pressChoice(box, shouldCheck);
         }
       }
-      return { fieldId: id, status: "written", wrote: chosen.map((c) => c.label).join(", ") };
+      const wrote = chosen.map((c) => c.label).join(", ");
+      const off = boxes.filter((box) => box.checked !== wantedValues.includes(box.value));
+      return off.length === 0 && boxes.length > 0 ? { fieldId: id, status: "written", wrote } : { fieldId: id, status: "rejected-by-page", wrote, found: boxes.filter((box) => box.checked).map((box) => box.value).join(", ") };
     }
     if (spec.kind === "checkbox") {
       const yes = readAsYesOrNo(spoken.value);
@@ -1268,6 +1287,12 @@
         await confirmed(() => el.getAttribute("aria-checked") !== "true");
       }
       return el.getAttribute("aria-checked") === "true" ? cannot("The switch would not turn off.") : { fieldId: id, status: "cleared" };
+    }
+    if (tag === "select" && el.multiple) {
+      const select = el;
+      for (const option of Array.from(select.options)) option.selected = false;
+      announce(select, ["input", "change"]);
+      return select.selectedOptions.length === 0 ? { fieldId: id, status: "cleared" } : cannot("The form put a choice back.");
     }
     if (tag === "select") {
       const select = el;

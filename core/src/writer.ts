@@ -400,6 +400,11 @@ export function readValue(spec: FieldSpec, el: HTMLElement): FieldValue {
     return on ? (on.getAttribute("aria-label") ?? on.textContent ?? "").trim() || null : null;
   }
 
+  if (tag === "select" && (el as HTMLSelectElement).multiple) {
+    const picked = Array.from((el as HTMLSelectElement).selectedOptions).map((option) => option.textContent?.trim() || option.value);
+    return picked.length > 0 ? picked : null;
+  }
+
   if (spec.kind === "multiselect" && tag === "input") {
     const boxes = choiceGroup(el);
     const ticked = boxes
@@ -802,6 +807,21 @@ async function writeOne(
       };
     }
 
+    // A native <select multiple>: each choice is selected on the element itself. It used to fall
+    // into the checkbox-group path below, find no checkboxes, and report "written" with nothing
+    // chosen — the agent told the person it was in; the page held nothing.
+    if (el.tagName.toLowerCase() === "select" && (el as HTMLSelectElement).multiple) {
+      const select = el as HTMLSelectElement;
+      const wantedValues = new Set(chosen.map((c) => c.value));
+      for (const option of Array.from(select.options)) option.selected = wantedValues.has(option.value);
+      announce(select, ["input", "change"]);
+      const now = Array.from(select.selectedOptions);
+      const wrote = chosen.map((c) => c.label).join(", ");
+      return now.length === wantedValues.size && now.every((option) => wantedValues.has(option.value))
+        ? { fieldId: id, status: "written", wrote }
+        : { fieldId: id, status: "rejected-by-page", wrote, found: now.map((option) => option.textContent?.trim() ?? "").join(", ") };
+    }
+
     // A group built out of divs is pressed, not assigned.
     if (spec.custom && spec.kind === "multiselect") {
       // A tag picker: one pick per answer, each confirmed. Already-picked ones are skipped — most
@@ -860,7 +880,12 @@ async function writeOne(
         pressChoice(box, shouldCheck);
       }
     }
-    return { fieldId: id, status: "written", wrote: chosen.map((c) => c.label).join(", ") };
+    // Read back, as everywhere else: "written" is a claim about the page, not about our presses.
+    const wrote = chosen.map((c) => c.label).join(", ");
+    const off = boxes.filter((box) => box.checked !== wantedValues.includes(box.value));
+    return off.length === 0 && boxes.length > 0
+      ? { fieldId: id, status: "written", wrote }
+      : { fieldId: id, status: "rejected-by-page", wrote, found: boxes.filter((box) => box.checked).map((box) => box.value).join(", ") };
   }
 
   // ── A lone checkbox, or a div wearing role="checkbox" / role="switch" ────────────
@@ -1078,6 +1103,14 @@ async function clearOne(spec: FieldSpec, el: HTMLElement): Promise<ClearOutcome>
     return el.getAttribute("aria-checked") === "true"
       ? cannot("The switch would not turn off.")
       : { fieldId: id, status: "cleared" };
+  }
+
+  // ── A <select multiple>: nothing selected is its empty state ─────────────────────
+  if (tag === "select" && (el as HTMLSelectElement).multiple) {
+    const select = el as HTMLSelectElement;
+    for (const option of Array.from(select.options)) option.selected = false;
+    announce(select, ["input", "change"]);
+    return select.selectedOptions.length === 0 ? { fieldId: id, status: "cleared" } : cannot("The form put a choice back.");
   }
 
   // ── A real <select>: back to its empty option, if it has one ───────────────────

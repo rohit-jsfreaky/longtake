@@ -471,3 +471,54 @@ test.describe("an array-named group and its Other", () => {
     expect((await read(page)).specs).toHaveLength(2);
   });
 });
+
+/**
+ * A native <select multiple> — USDA QuickStats has seven. It fell into the checkbox-group path,
+ * found no checkboxes, and reported "written" with nothing chosen: the agent said it was in.
+ */
+test.describe("a native <select multiple>", () => {
+  const LIST = `<label for="c">Commodity</label>
+    <select id="c" name="commodity" multiple size="4"><option>CORN</option><option>WHEAT</option><option>RICE</option></select>`;
+  const selected = (page: import("@playwright/test").Page) =>
+    page.evaluate(() => Array.from((document.getElementById("c") as HTMLSelectElement).selectedOptions).map((o) => o.textContent));
+
+  test("the choices are really selected, and only then called written", async ({ page }) => {
+    await load(page, LIST);
+    const [outcome] = await readThenWrite(page, [{ fieldId: "commodity", value: ["WHEAT", "RICE"], evidence: "wheat and rice" }]);
+    expect(outcome!.status).toBe("written");
+    expect(await selected(page)).toEqual(["WHEAT", "RICE"]);
+  });
+
+  test("an answer replaces what was picked before", async ({ page }) => {
+    await load(page, LIST);
+    await page.selectOption("#c", ["CORN"]);
+    await readThenWrite(page, [{ fieldId: "commodity", value: ["RICE"], evidence: "just rice" }]);
+    expect(await selected(page)).toEqual(["RICE"]);
+  });
+
+  test("it can be emptied", async ({ page }) => {
+    await load(page, LIST);
+    await page.selectOption("#c", ["CORN", "WHEAT"]);
+    const result = await page.evaluate(async () => {
+      const core = window.__longtake;
+      const read = core.readForm();
+      return core.clearValues(read.specs, read.handles, ["commodity"]);
+    });
+    expect((result as { status: string }[])[0]!.status).toBe("cleared");
+    expect(await selected(page)).toEqual([]);
+  });
+});
+
+test.describe("a checkbox group is read back after it is pressed", () => {
+  test("a box the page will not let be ticked is not reported as written", async ({ page }) => {
+    await load(
+      page,
+      `<fieldset><legend>Tools</legend>
+         <label><input type="checkbox" name="tools" value="claude"> Claude</label>
+         <label><input type="checkbox" name="tools" value="cursor" onclick="return false"> Cursor</label>
+       </fieldset>`,
+    );
+    const [outcome] = await readThenWrite(page, [{ fieldId: "tools", value: ["Cursor"], evidence: "cursor" }]);
+    expect(outcome!.status).toBe("rejected-by-page");
+  });
+});

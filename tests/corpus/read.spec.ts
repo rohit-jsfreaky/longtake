@@ -12,7 +12,10 @@ import { expect, test } from "@playwright/test";
 import { locatorsOf, scoreRead } from "../../tools/corpus/score";
 import { corpusForms, joinTruth, openForm, readLikeTheProduct, saveResult, sentSoFar } from "./load";
 
-const forms = corpusForms().filter((form) => form.truth?.verified);
+// `CORPUS_UNVERIFIED=1` also reads forms whose truth nobody has checked yet — to find mistakes in
+// the draft, never to score: those results are not saved.
+const drafting = process.env.CORPUS_UNVERIFIED === "1";
+const forms = corpusForms().filter((form) => form.truth && (form.truth.verified || drafting));
 
 for (const form of forms) {
   test(`${form.id} — reading`, async ({ page }) => {
@@ -38,10 +41,20 @@ for (const form of forms) {
     expect(fields.filter((_, i) => !join.found[i]).map((f) => f.key), "truth fields whose element is gone").toEqual([]);
 
     const result = scoreRead(fields, specs, join);
-    saveResult("read", form.id, { ...result, elsewhere });
+    if (!form.truth!.verified) {
+      test.info().annotations.push({ type: "unverified read", description: JSON.stringify({ counts: result.counts, elsewhere }) });
+    } else {
+      saveResult("read", form.id, { ...result, elsewhere });
+    }
     // Per run, beside the saved file (which the next run overwrites) — so a flaky field shows up.
     const wrong = result.rows.filter((row) => row.problems.length > 0).map((row) => `${row.key}: ${row.problems.join("; ")}`);
     if (wrong.length > 0) test.info().annotations.push({ type: "read wrong", description: wrong.join(" | ") });
+    // A field there on the page but not read: say what the reader set aside, and why, at the moment
+    // it read — the only evidence of a field that was hidden then and shown by the time we joined.
+    if (result.rows.some((row) => row.problems.includes("not read at all"))) {
+      const skipped = await page.evaluate(() => window.__longtake.last?.skipped ?? []);
+      test.info().annotations.push({ type: "skipped at read", description: JSON.stringify(skipped) });
+    }
 
     expect(result.counts.honeypotLeaks, "a honeypot became something the model can fill").toBe(0);
     expect(await sentSoFar(page, sent)).toEqual({ submits: [], posts: [] });

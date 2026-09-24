@@ -507,6 +507,16 @@ export function readForm(
     if ((el as HTMLInputElement).disabled) return;
     if ((el as HTMLInputElement).readOnly) return;
 
+    // Taken out of the keyboard's reach AND hidden from screen readers: the author has said, twice,
+    // that no person is meant to use it. Workable's address autofill-catchers (city, postcode,
+    // country) are exactly this — 42 px boxes nobody can see, and the agent was being handed them
+    // to fill. Either mark alone is ordinary (a modal hides the page behind it; a radio group
+    // takes its unselected radios out of the tab order); both together never are.
+    if (el.getAttribute("tabindex") === "-1" && el.closest("[aria-hidden='true']")) {
+      skipped.push({ label: el.getAttribute("name") || kindOf(el), reason: "hidden from keyboard and screen readers" });
+      return;
+    }
+
     const visible = isVisible(el);
     const kind = kindOf(el);
     const rawLabel = labelOf(el);

@@ -71,6 +71,18 @@
   #fields { padding: 16px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
   #problems { display: none; border: 1px solid #e9d08f; background: var(--warn-soft); color: #5c3b00; border-radius: var(--radius); padding: 10px 14px; }
   #problems.show { display: block; }
+  button:disabled { opacity: 0.45; cursor: not-allowed; }
+  button:disabled:active { transform: none; }
+  .checks-card { border-color: var(--warn); }
+  .checks-card h3 { margin: 0; font-size: 14px; }
+  .checks-card ol { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+  li.check { display: grid; grid-template-columns: auto 1fr; gap: 10px; padding: 8px; border-radius: 6px; cursor: pointer; transition: background-color 150ms ease; }
+  li.check:hover { background: var(--bg); }
+  li.check input { margin-top: 3px; }
+  li.check .decided { font-weight: 500; }
+  li.check .why { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  li.check .keys { color: var(--accent); font-size: 11px; margin-top: 3px; }
+  li.check.done .decided, li.check.done .why { color: var(--muted); }
   #problems ul { margin: 4px 0 0; padding-left: 18px; }
 
   .card {
@@ -120,6 +132,11 @@
 <main>
   <div id="shot-pane"><div id="shot"><img id="img" src="/shot.png" alt="The form as captured"></div></div>
   <div id="fields">
+    <div id="checks" class="card checks-card" hidden>
+      <div class="row"><h3>Check these first</h3><span class="spacer"></span><span id="checks-count" class="chip warn"></span></div>
+      <p class="ax">A first pass made these calls. Click one to see it on the page and below, fix the field if it is wrong, then tick it. <b>Mark verified</b> unlocks when every one is ticked — everything else agreed across Chrome, the reader and the page.</p>
+      <ol id="checks-list"></ol>
+    </div>
     <div id="problems"></div>
     <div id="cards"></div>
     <h2>This page</h2>
@@ -413,6 +430,51 @@ $("verify-plan").onclick = () => savePlan(true);
 
 $("save").onclick = () => save(false);
 $("verify").onclick = () => save(true);
+
+// ── The first pass's calls, to confirm on the page ────────────────────────────────
+let checks = [];
+const ticked = new Set();
+const tickKey = () => "longtake-checks:" + data.meta.id;
+function remember() { try { localStorage.setItem(tickKey(), JSON.stringify([...ticked])); } catch {} }
+function recall() { try { for (const i of JSON.parse(localStorage.getItem(tickKey()) || "[]")) ticked.add(i); } catch {} }
+
+function updateChecks() {
+  const left = checks.length - ticked.size;
+  $("checks-count").textContent = left ? left + " to check" : "all checked";
+  $("checks-count").className = "chip " + (left ? "warn" : "ok");
+  $("verify").disabled = left > 0;
+  $("verify").title = left ? "Tick every item under 'Check these first' first" : "";
+  document.querySelectorAll("li.check").forEach((li, i) => li.classList.toggle("done", ticked.has(i)));
+}
+
+function renderChecks() {
+  if (checks.length === 0) { $("checks").hidden = true; return; }
+  $("checks").hidden = false;
+  const cardNumber = (key) => { const n = truth.pages[0].fields.findIndex((f) => f.key === key); return n >= 0 ? "#" + (n + 1) : key + " (removed)"; };
+  $("checks-list").replaceChildren(...checks.map((check, i) => {
+    const tick = el("input", { type: "checkbox", checked: ticked.has(i), title: "I looked at it on the page" });
+    tick.onclick = (event) => {
+      event.stopPropagation();
+      if (tick.checked) ticked.add(i); else ticked.delete(i);
+      remember();
+      updateChecks();
+    };
+    const item = el("li", { className: "check" },
+      tick,
+      el("div", {},
+        el("div", { className: "decided", textContent: check.decided }),
+        el("div", { className: "why", textContent: check.why }),
+        el("div", { className: "keys", textContent: "Card " + check.keys.map(cardNumber).join(", ") + " — click to show" })));
+    item.onclick = () => {
+      document.querySelectorAll(".hot").forEach((n) => n.classList.remove("hot"));
+      check.keys.forEach((key, j) => hot(key, true, j === 0 ? "card" : undefined));
+      const box = document.querySelector('.box[data-key="' + check.keys[0] + '"]');
+      if (box) box.scrollIntoView({ block: "center" });
+    };
+    return item;
+  }));
+  updateChecks();
+}
 $("img").onload = drawBoxes;
 window.addEventListener("beforeunload", (event) => { if (dirty || planDirty) event.preventDefault(); });
 window.addEventListener("keydown", (event) => {
@@ -427,9 +489,12 @@ fetch("/api/form").then((r) => r.json()).then((got) => {
   $("url").textContent = got.meta.url;
   $("url").href = got.meta.url;
   plan = got.fill;
+  checks = got.checks || [];
+  recall();
   fillPageBox();
   render();
   renderPlan();
+  renderChecks();
   setDirty(false);
 });
 </script>
