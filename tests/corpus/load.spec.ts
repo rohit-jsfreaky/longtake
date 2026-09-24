@@ -21,14 +21,18 @@ for (const form of forms) {
     test.skip(!form.meta.fillable, "replay does not reproduce this page — read-only form");
     const sent = await openForm(page, form);
     await readAsIs(page);
-    const { best, found } = await joinTruth(
+    const { best, found, otherOrigin } = await joinTruth(
       page,
       form.ax.controls.map((c) => [c.locator]),
     );
     const at = (i: number) => [...form.ax.controls[i]!.locator.frames, ...form.ax.controls[i]!.locator.path].join(" | ");
 
-    const lost = found.flatMap((ok, i) => (ok ? [] : [at(i)]));
+    // Inside another origin's frame (a Terms widget, a captcha) the page cannot look — the
+    // extension reads such a frame from inside it. Out of reach here, not lost.
+    const lost = found.flatMap((ok, i) => (ok || otherOrigin[i] ? [] : [at(i)]));
     expect(lost, "locators that no longer resolve").toEqual([]);
+    const elsewhere = otherOrigin.filter(Boolean).length;
+    if (elsewhere > 0) test.info().annotations.push({ type: "in other origins' frames", description: String(elsewhere) });
 
     // A radio or checkbox group is read when any of its choices is part of a field we read.
     const groupRead = new Set<string>();

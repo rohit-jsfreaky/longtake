@@ -47,6 +47,8 @@ export type Meta = {
   before?: Step[];
   category: Category;
   platform: string;
+  /** The browser the capture ran in — some sites turn one away and not another. */
+  capturedWith?: string;
   capturedAt: string;
   reachableWithoutLogin: boolean;
   /** False when offline replay does not reproduce the page — reading is scored off the MHTML only. */
@@ -55,7 +57,12 @@ export type Meta = {
 };
 
 /** Where an element is: a CSS path per iframe hop, then per shadow-root hop. */
-export type Locator = { frames: string[]; path: string[] };
+export type Locator = {
+  frames: string[];
+  path: string[];
+  /** The same element by structure alone — for ids a framework makes afresh on every load. */
+  plain?: { frames: string[]; path: string[] };
+};
 
 /** One interactive node of Chrome's accessibility tree, joined to the DOM it came from. */
 export type AxControl = {
@@ -75,6 +82,11 @@ export type AxControl = {
   dom: { tag: string; type?: string; id?: string; name?: string; multiple?: boolean; visible: boolean };
   /** For radios and checkboxes: the group they answer together, and that group's question. */
   group?: { key: string; label: string };
+  /**
+   * False for a control Chrome's accessibility tree leaves out — hidden from everyone: a honeypot,
+   * or a branch of a conditional form not taken. Named from its source, not by Chrome.
+   */
+  inAxTree?: false;
   /** Where it sits on the full-page screenshot, for the human review. */
   box?: { x: number; y: number; w: number; h: number };
 };

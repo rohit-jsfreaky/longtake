@@ -22,6 +22,7 @@
  */
 
 import {
+  choiceGroup,
   closeWidget,
   deepQueryAll,
   exclusively,
@@ -218,6 +219,13 @@ function labelOf(el: Element): string {
   }
 
   return "";
+}
+
+/** A trigger for a menu — `aria-haspopup="menu"`, or `"true"`, which ARIA defines as the same. */
+function isMenuButton(el: Element): boolean {
+  const popup = el.getAttribute("aria-haspopup");
+  const role = el.getAttribute("role");
+  return (popup === "menu" || popup === "true") && role !== "combobox" && role !== "listbox";
 }
 
 /** What holds a set of radios or checkboxes and can say what question they answer. */
@@ -461,8 +469,18 @@ export function readForm(
     }
   };
 
+  // Does this page keep its questions inside a <form>? Then a menu button outside every form is
+  // the page's own chrome (see below).
+  const formsHoldFields = candidates.some((el) => el.closest("form") && !isMenuButton(el));
+
   candidates.forEach((el, index) => {
     const tag = el.tagName.toLowerCase();
+
+    // A menu button is two-faced: `aria-haspopup="menu"` opens a list of actions (Help, Share) as
+    // often as a hand-rolled picker. On a page that keeps its questions in a <form>, one outside
+    // every form is not among them — Google Forms' "help and feedback" button was being asked as
+    // a question. Pages with no form keep the old reading: there, a menu button may be the picker.
+    if (formsHoldFields && isMenuButton(el) && !el.closest("form")) return;
 
     // The text box of an "Other:" choice lives inside its radio group. It is part of that answer,
     // not a question of its own — read as one, the agent asked for "Other response" by name.
@@ -515,12 +533,16 @@ export function readForm(
       return;
     }
 
-    // Radios, and checkboxes sharing a name, are one question with several answers.
+    // Radios, and checkboxes sharing a name, are one question with several answers — the very set
+    // the writer will look for again (`choiceGroup`), so what is read as one field can be written
+    // as one: Jotform's `industry[other]` joins `industry[]` here and there alike.
     if ((kind === "radio" || kind === "checkbox") && name) {
-      const groupKey = `${kind}:${name}`;
-      const siblings = candidates.filter(
-        (other) => other.getAttribute("name") === name && kindOf(other) === kind,
-      );
+      const members = tag === "input" ? choiceGroup(el) : [];
+      const groupKey = `${kind}:${members[0]?.getAttribute("name") ?? name}`;
+      const siblings =
+        tag === "input"
+          ? members.filter((other) => candidates.includes(other) && kindOf(other) === kind)
+          : candidates.filter((other) => other.getAttribute("name") === name && kindOf(other) === kind);
       const isGroup = kind === "radio" || siblings.length > 1;
 
       if (isGroup) {

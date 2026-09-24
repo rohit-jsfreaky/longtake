@@ -15,6 +15,7 @@ import { chromium, type Browser, type CDPSession, type Frame, type Locator, type
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
+import { cleanRecording } from "./replay-har";
 import { runSteps } from "./steps";
 import { HAR, type Step, type AxCapture, type AxControl, type Category, type Meta } from "./types";
 
@@ -24,6 +25,12 @@ export type CaptureOptions = {
   platform: string;
   /** Attach to the Chrome on :9222 instead of launching one. */
   cdp?: boolean;
+  /**
+   * Which browser to capture with. Bot walls differ: SmartRecruiters (DataDome) turns away
+   * Playwright's bundled Chromium and lets Google Chrome through; HealthCare.gov (Akamai) was seen
+   * doing the opposite. Chrome by default — it is what the tests replay in.
+   */
+  browser?: "chrome" | "chromium";
   /** Search boxes to type into during capture, so the replay has their results: css → queries. */
   queries?: Record<string, string[]>;
   /** Clicks that reveal a conditional form's fields, done before anything is read. */
@@ -69,13 +76,13 @@ type AxNode = {
  * hop) and what it is in the DOM. A path uses a unique id where there is one, else nth-of-type.
  */
 const DESCRIBE = `function () {
-  const cssPath = (node) => {
+  const cssPath = (node, useIds) => {
     const parts = [];
     let n = node;
     while (n && n.nodeType === 1) {
       const tag = n.tagName.toLowerCase();
       const root = n.getRootNode();
-      if (n.id && /^[A-Za-z][\\w-]*$/.test(n.id) && root.querySelectorAll('#' + CSS.escape(n.id)).length === 1) {
+      if (useIds && n.id &&/^[A-Za-z][\\w-]*$/.test(n.id) && root.querySelectorAll('#' + CSS.escape(n.id)).length === 1) {
         parts.unshift('#' + CSS.escape(n.id));
         break;
       }
@@ -87,11 +94,14 @@ const DESCRIBE = `function () {
     }
     return parts.join(' > ');
   };
-  const shadowPath = (el) => {
+  // Two ways back to every element: by id where it has a unique one — sturdy when a live page
+  // gains an element the replay lacks — and by structure alone, for ids a framework makes afresh
+  // on every load (Typeform's, Workable's).
+  const shadowPath = (el, useIds = true) => {
     const path = [];
     let node = el;
     for (;;) {
-      path.unshift(cssPath(node));
+      path.unshift(cssPath(node, useIds));
       const root = node.getRootNode();
       if (root instanceof ShadowRoot) node = root.host; else break;
     }
@@ -107,10 +117,12 @@ const DESCRIBE = `function () {
     if (!host.includes('-') && !ATTACHABLE.includes(host)) return { internal: true };
   }
   const frames = [];
+  const plainFrames = [];
   try {
     let win = el.ownerDocument.defaultView;
     while (win && win.frameElement) {
       frames.unshift(shadowPath(win.frameElement).join(' >> '));
+      plainFrames.unshift(shadowPath(win.frameElement, false).join(' >> '));
       win = win.frameElement.ownerDocument.defaultView;
     }
   } catch (e) {}
@@ -147,7 +159,7 @@ const DESCRIBE = `function () {
   return {
     order,
     box,
-    locator: { frames, path: shadowPath(el) },
+    locator: { frames, path: shadowPath(el), plain: { frames: plainFrames, path: shadowPath(el, false) } },
     dom: {
       tag,
       type: el.getAttribute('type') || undefined,
@@ -157,6 +169,9 @@ const DESCRIBE = `function () {
       visible,
     },
     selectOptions: tag === 'select' ? Array.from(el.options).map((o) => o.textContent.trim()).filter(Boolean) : undefined,
+    // For controls outside the accessibility tree, which Chrome names nothing: what a person
+    // reading the source would call it.
+    plainLabel: ((el.labels && el.labels[0] && el.labels[0].textContent) || el.getAttribute('aria-label') || el.getAttribute('placeholder') || el.getAttribute('name') || '').replace(/\\s+/g, ' ').trim(),
     group: groupOf(el),
   };
   // The question a radio or checkbox belongs to: its fieldset's legend, or its radiogroup's name.
@@ -238,12 +253,19 @@ export async function readAx(page: Page, cdp: CDPSession): Promise<AxCapture> {
       result: {
         value:
           | { internal: true }
-          | { order: number[]; box: AxControl["box"]; locator: AxControl["locator"]; dom: AxControl["dom"]; selectOptions?: string[]; group?: AxControl["group"] };
+          | { order: number[]; box: AxControl["box"]; locator: AxControl["locator"]; dom: AxControl["dom"]; selectOptions?: string[]; group?: AxControl["group"]; plainLabel?: string };
       };
     };
     // Part of a native control's insides: the control itself is its own node in the tree.
     return "internal" in result.value ? null : result.value;
   };
+
+  /** A locator read inside an out-of-process frame, made to start from the page. */
+  const prefixed = (prefix: readonly string[], locator: AxControl["locator"]): AxControl["locator"] => ({
+    frames: [...prefix, ...locator.frames],
+    path: locator.path,
+    ...(locator.plain ? { plain: { frames: [...prefix, ...locator.plain.frames], path: locator.plain.path } } : {}),
+  });
 
   // Chrome lists the tree in its own order; a person reads the page top to bottom.
   const byOrder = <T>(items: [number[], T][]) => {
@@ -260,6 +282,7 @@ export async function readAx(page: Page, cdp: CDPSession): Promise<AxCapture> {
   for (const [session, list, framePrefix, offset] of [[cdp, nodes, [], { x: 0, y: 0 }] as const, ...oopif]) {
     const theseControls: [number[], AxControl][] = [];
     const theseButtons: [number[], AxCapture["buttons"][number]][] = [];
+    const inTree = new Set(list.filter((node) => !node.ignored && node.backendDOMNodeId).map((node) => node.backendDOMNodeId!));
     for (const node of list) {
       if (node.ignored || !node.backendDOMNodeId) continue;
       const role = String(node.role?.value ?? "");
@@ -270,7 +293,7 @@ export async function readAx(page: Page, cdp: CDPSession): Promise<AxCapture> {
         if (described?.dom.visible) {
           theseButtons.push([
             described.order,
-            { name, locator: { frames: [...framePrefix, ...described.locator.frames], path: described.locator.path } },
+            { name, locator: prefixed(framePrefix, described.locator) },
           ]);
         }
         continue;
@@ -291,16 +314,82 @@ export async function readAx(page: Page, cdp: CDPSession): Promise<AxCapture> {
         ...(node.value?.value !== undefined && node.value.value !== "" ? { value: String(node.value.value) } : {}),
         ...(described.selectOptions ? { options: described.selectOptions } : {}),
         ...(described.group ? { group: described.group } : {}),
-        locator: { frames: [...framePrefix, ...described.locator.frames], path: described.locator.path },
+        locator: prefixed(framePrefix, described.locator),
         dom: described.dom,
         box: shift(described.box, offset),
       };
       theseControls.push([described.order, control]);
     }
+
+    // Controls the accessibility tree leaves out — hidden from everyone, a person included. That
+    // is where honeypots live: GOV.UK's `giraffe` ("This field is for robots only") sits in an
+    // aria-hidden box, so a capture made of the tree alone never saw a single trap.
+    for (const backendNodeId of await formControlsIn(session)) {
+      if (inTree.has(backendNodeId)) continue;
+      const described = await describe(session, backendNodeId).catch(() => null);
+      if (!described) continue;
+      const { tag, type } = described.dom;
+      theseControls.push([
+        described.order,
+        {
+          role: tag === "select" ? "combobox" : type === "checkbox" || type === "radio" ? type : "textbox",
+          name: described.plainLabel ?? "",
+          required: false,
+          inAxTree: false,
+          ...(described.selectOptions ? { options: described.selectOptions } : {}),
+          ...(described.group ? { group: described.group } : {}),
+          locator: prefixed(framePrefix, described.locator),
+          dom: described.dom,
+          box: shift(described.box, offset),
+        },
+      ]);
+    }
     controls.push(...byOrder(theseControls));
     buttons.push(...byOrder(theseButtons));
   }
   return { url: page.url(), title: await page.title(), controls, buttons };
+}
+
+/** Anything a person could answer — what a capture waits to see before it reads. */
+const ANSWERABLE = [
+  "input:not([type=hidden]):not([type=submit]):not([type=button])",
+  "select",
+  "textarea",
+  "[role=combobox]",
+  "[role=radio]",
+  "[role=checkbox]",
+  "[contenteditable=true]",
+].join(", ");
+
+/** Types that carry no answer: page data, buttons, and files (attached by the person, never by voice). */
+const NOT_ANSWERS = new Set(["hidden", "submit", "button", "reset", "image", "file"]);
+
+type DomNode = {
+  backendNodeId: number;
+  nodeName: string;
+  attributes?: string[];
+  children?: DomNode[];
+  shadowRoots?: DomNode[];
+  contentDocument?: DomNode;
+};
+
+/** Every input, select and textarea in the session's DOM — shadow roots and same-process frames included. */
+async function formControlsIn(session: CDPSession): Promise<number[]> {
+  const { root } = (await session.send("DOM.getDocument", { depth: -1, pierce: true })) as { root: DomNode };
+  const found: number[] = [];
+  const walk = (node: DomNode) => {
+    const tag = node.nodeName.toLowerCase();
+    if (tag === "input" || tag === "select" || tag === "textarea") {
+      const attrs = node.attributes ?? [];
+      const typeAt = attrs.findIndex((value, i) => i % 2 === 0 && value.toLowerCase() === "type");
+      const type = typeAt >= 0 ? (attrs[typeAt + 1] ?? "").toLowerCase() : "";
+      if (tag !== "input" || !NOT_ANSWERS.has(type)) found.push(node.backendNodeId);
+    }
+    for (const child of [...(node.children ?? []), ...(node.shadowRoots ?? [])]) walk(child);
+    if (node.contentDocument) walk(node.contentDocument);
+  };
+  walk(root);
+  return found;
 }
 
 /** Frames in another process (cross-origin iframes) need a CDP session of their own. */
@@ -334,11 +423,26 @@ async function readOutOfProcessFrames(page: Page): Promise<OutOfProcess[]> {
 async function frameSelector(frame: Frame): Promise<string | null> {
   const element = await frame.frameElement().catch(() => null);
   if (!element) return null;
+  // By where the frame sits, not by its `src`: hCaptcha puts a fresh `_channel` in its frames'
+  // addresses on every load, so a locator built from `src` never found them again.
   return element.evaluate((node) => {
-    const el = node as Element;
-    if (el.id) return `#${CSS.escape(el.id)}`;
-    const src = el.getAttribute("src");
-    return src ? `iframe[src="${src.replace(/"/g, '\\"')}"]` : "iframe";
+    const parts: string[] = [];
+    for (let n: Element | null = node as Element; n; n = n.parentElement) {
+      const root = n.getRootNode() as Document | ShadowRoot;
+      if (n.id && root.querySelectorAll(`#${CSS.escape(n.id)}`).length === 1) {
+        parts.unshift(`#${CSS.escape(n.id)}`);
+        break;
+      }
+      const parent: Element | null = n.parentElement;
+      const tag = n.tagName.toLowerCase();
+      if (!parent) {
+        parts.unshift(tag);
+        break;
+      }
+      const same = Array.from(parent.children).filter((c) => c.tagName === n!.tagName);
+      parts.unshift(same.length > 1 ? `${tag}:nth-of-type(${same.indexOf(n) + 1})` : tag);
+    }
+    return parts.join(" > ");
   });
 }
 
@@ -395,7 +499,7 @@ export async function capture(url: string, id: string, options: CaptureOptions):
 
   const browser: Browser = options.cdp
     ? await chromium.connectOverCDP("http://127.0.0.1:9222")
-    : await chromium.launch({ channel: "chrome", headless: true });
+    : await chromium.launch({ ...(options.browser === "chromium" ? {} : { channel: "chrome" }), headless: true });
   const context = await browser.newContext({
     viewport: { width: 1280, height: 1000 },
     recordHar: { path: join(dir, HAR), mode: "full", content: "attach" },
@@ -404,6 +508,9 @@ export async function capture(url: string, id: string, options: CaptureOptions):
   let controls = 0;
   try {
     await page.goto(url, { waitUntil: "networkidle", timeout: 90_000 }).catch(() => page.waitForLoadState("load"));
+    // A form fetched after load — Ashby shows "Fetching application form" long after the network
+    // first goes quiet. Wait for something to answer, then for the page to settle.
+    await page.waitForSelector(ANSWERABLE, { timeout: 20_000 }).catch(() => undefined);
     await page.waitForTimeout(1500);
     await runSteps(page, options.before);
 
@@ -432,6 +539,7 @@ export async function capture(url: string, id: string, options: CaptureOptions):
       url,
       category: options.category,
       platform: options.platform,
+      capturedWith: options.cdp ? "chrome (port 9222)" : (options.browser ?? "chrome"),
       ...(options.before?.length ? { before: options.before } : {}),
       capturedAt: new Date().toISOString(),
       reachableWithoutLogin: true,
@@ -445,5 +553,6 @@ export async function capture(url: string, id: string, options: CaptureOptions):
     if (!options.cdp) await browser.close();
   }
   await stripSessions(join(dir, HAR));
+  cleanRecording(join(dir, HAR));
   return { dir, controls };
 }

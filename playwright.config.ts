@@ -51,7 +51,9 @@ export default defineConfig({
     {
       name: "corpus",
       testMatch: /corpus[\\/].*\.spec\.ts$/,
-      use: { bypassCSP: true },
+      // No network at all: a request the recording does not answer goes to a proxy that does not
+      // exist, and fails — a replay can never quietly fetch the live site (tools/corpus/replay-har.ts).
+      use: { bypassCSP: true, launchOptions: { proxy: { server: "http://127.0.0.1:9" } } },
       // A real page, a full read with every dropdown opened, then ten answers that each wait for
       // the page to settle: 14–28 s on a quiet machine. The 30 s default is for one small page —
       // at it, a busy machine cut runs off mid-navigation ("ERR_ABORTED; frame detached").

@@ -12,7 +12,8 @@ import type { Page } from "@playwright/test";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
-import { HAR, REPLAYED, type AxCapture, type FillPlan, type Locator, type Meta, type Truth } from "../../tools/corpus/types";
+import { HAR, type AxCapture, type FillPlan, type Locator, type Meta, type Truth } from "../../tools/corpus/types";
+import { replayFromHar } from "../../tools/corpus/replay-har";
 import { runSteps } from "../../tools/corpus/steps";
 import type { ReadJoin, ReadSpec } from "../../tools/corpus/score";
 import { PROBE } from "../helpers";
@@ -56,7 +57,7 @@ declare global {
 /** Load the form offline, inject `core/`, and start counting anything that tries to leave. */
 export async function openForm(page: Page, form: CorpusForm): Promise<Sent> {
   const sent: Sent = { submits: [], posts: [] };
-  await page.routeFromHAR(join(form.dir, HAR), { notFound: "abort", url: REPLAYED });
+  await replayFromHar(page, join(form.dir, HAR));
   page.on("request", (request) => {
     // Analytics beacons post on their own; a navigation that posts is a form being sent.
     if (request.method() === "POST" && request.isNavigationRequest()) sent.posts.push(request.url());
@@ -115,7 +116,7 @@ export async function readAsIs(page: Page): Promise<ReadSpec[]> {
  * read replaces the very elements the read holds, and then nothing can join. The product re-reads
  * when its page changes (the conductor watches for it); so does the caller, on `stale > 0`.
  */
-export async function joinTruth(page: Page, fields: Locator[][]): Promise<ReadJoin & { found: boolean[]; stale: number }> {
+export async function joinTruth(page: Page, fields: Locator[][]): Promise<ReadJoin & { found: boolean[]; otherOrigin: boolean[]; stale: number }> {
   return page.evaluate((fields) => {
     const handles = window.__longtake.last!.handles;
     const stale = [...handles.values()].filter((handle) => !handle.isConnected).length;
@@ -131,18 +132,24 @@ export async function joinTruth(page: Page, fields: Locator[][]): Promise<ReadJo
       }
       return el;
     };
-    const resolveLocator = (locator: { frames: string[]; path: string[] }): Element | null => {
+    const blocked = new Set<{ frames: string[]; path: string[] }>();
+    const follow = (locator: { frames: string[]; path: string[] }): Element | null => {
       let doc: Document | null = document;
       for (const frame of locator.frames) {
         const iframe: HTMLIFrameElement | null = doc ? (inHops(doc, frame.split(" >> ")) as HTMLIFrameElement | null) : null;
         try {
           doc = iframe?.contentDocument ?? null;
         } catch {
-          doc = null; // another origin: not reachable from here
+          doc = null;
         }
+        // The frame is there, but its document is another origin's: not reachable from this page.
+        if (iframe && !doc) blocked.add(locator);
       }
       return doc ? inHops(doc, locator.path) : null;
     };
+    // By id first; by structure when the id is one the framework made afresh on this load.
+    const resolveLocator = (locator: { frames: string[]; path: string[]; plain?: { frames: string[]; path: string[] } }) =>
+      follow(locator) ?? (locator.plain ? follow(locator.plain) : null);
 
     const elements = fields.map((locators) => locators.map(resolveLocator));
     const size = (el: Element) => el.querySelectorAll("*").length;
@@ -170,7 +177,8 @@ export async function joinTruth(page: Page, fields: Locator[][]): Promise<ReadJo
     for (const [id, handle] of handles) {
       touches[id] = elements.flatMap((els, i) => (closeness(handle, els) >= 0 ? [i] : []));
     }
-    return { best, touches, found: elements.map((els) => els[0] !== null), stale };
+    const otherOrigin = fields.map((locators) => blocked.has(locators[0]!) || (locators[0]!.plain ? blocked.has(locators[0]!.plain) : false));
+    return { best, touches, found: elements.map((els) => els[0] !== null), otherOrigin, stale };
   }, fields);
 }
 

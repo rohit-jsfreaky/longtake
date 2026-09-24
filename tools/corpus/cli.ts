@@ -1,12 +1,13 @@
 /**
  * `npm run corpus:<command> -- <args>`
  *
- *   capture <id> <url> --category job --platform greenhouse [--cdp] [--query "<css>=a|b|c"]
+ *   capture <id> <url> --category job --platform greenhouse [--cdp] [--browser chromium] [--query "<css>=a|b|c"]
  *                      [--click "radio:Organization Representative"]   repeatable, done before reading
  *   seed    <id>        writes an unverified truth.json from ax.json (never over a verified one)
  *   check   <id>        does the offline replay reproduce the page?
  *   review  <id> [--port 4477] [--by "name"]   a local page to correct the truth and mark it verified
  *   drift   [<id>…]     has the live site changed its form? Reads only; every form when no id
+ *   clean   <id>|all    drop the empty recordings prefetches left (capture does this itself now)
  *
  * Every command works on `corpus/<id>/` — the private corpus repo, cloned into `corpus/`.
  */
@@ -18,9 +19,10 @@ import { capture } from "./capture";
 import { checkReplay } from "./check";
 import { corpusIds, driftMarkdown, driftOf } from "./drift";
 import { review } from "./review";
+import { cleanRecording } from "./replay-har";
 import { parseStep } from "./steps";
 import { seedTruth } from "./seed";
-import type { AxCapture, Category, Truth } from "./types";
+import { HAR, type AxCapture, type Category, type Truth } from "./types";
 
 const DIR = process.env.CORPUS_DIR ?? "corpus";
 
@@ -68,6 +70,7 @@ async function main(): Promise<void> {
       category: (flag(rest, "category") ?? "other") as Category,
       platform: flag(rest, "platform") ?? "unknown",
       cdp: rest.includes("--cdp"),
+      ...(flag(rest, "browser") === "chromium" ? { browser: "chromium" as const } : {}),
       queries,
       before: rest.flatMap((arg, i) => (arg === "--click" && rest[i + 1] ? [parseStep(rest[i + 1]!)] : [])),
       ...(flag(rest, "notes") ? { notes: flag(rest, "notes") } : {}),
@@ -97,6 +100,13 @@ async function main(): Promise<void> {
     const result = await checkReplay(id, DIR);
     console.log(`${id}: replay ${result.ok ? "OK" : "BROKEN"} — ${result.captured} controls captured, ${result.replayed} on replay`);
     for (const problem of result.problems.slice(0, 20)) console.log(`  ${problem}`);
+    return;
+  }
+
+  if (command === "clean") {
+    // Once, over recordings made before capture cleaned them itself.
+    const ids = id === "all" ? await corpusIds(DIR) : [id];
+    for (const each of ids) console.log(`${each}: dropped ${cleanRecording(join(DIR, each, HAR))} empty prefetch recordings`);
     return;
   }
 

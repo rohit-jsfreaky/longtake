@@ -13,7 +13,8 @@ import { join } from "node:path";
 
 import { readAx, recordOptions } from "./capture";
 import { runSteps } from "./steps";
-import { HAR, REPLAYED, type AxCapture, type Meta, type Step } from "./types";
+import { OFFLINE, replayFromHar } from "./replay-har";
+import { HAR, type AxCapture, type AxControl, type Meta, type Step } from "./types";
 
 export type Fidelity = { id: string; ok: boolean; captured: number; replayed: number; problems: string[] };
 
@@ -31,10 +32,13 @@ export async function readPageAgain(context: BrowserContext, url: string, steps:
 /** Every control of the capture, looked for again: missing, changed, or with other choices. */
 export function compareAx(captured: AxCapture, now: AxCapture): string[] {
   const problems: string[] = [];
-  const where = (c: { locator: { frames: string[]; path: string[] } }) => [...c.locator.frames, ...c.locator.path].join(" | ");
+  const where = (c: AxControl) => [...c.locator.frames, ...c.locator.path].join(" | ");
+  const plainly = (c: AxControl) => (c.locator.plain ? [...c.locator.plain.frames, ...c.locator.plain.path].join(" | ") : null);
   const again = new Map(now.controls.map((c) => [where(c), c]));
+  // By id first; by structure when an id is one a framework makes afresh on every load.
+  const againPlainly = new Map(now.controls.filter(plainly).map((c) => [plainly(c)!, c]));
   for (const control of captured.controls) {
-    const other = again.get(where(control));
+    const other = again.get(where(control)) ?? (plainly(control) ? againPlainly.get(plainly(control)!) : undefined);
     if (!other) problems.push(`missing: ${control.role} "${control.name}" at ${where(control)}`);
     else if (other.role !== control.role || other.name !== control.name) {
       problems.push(`changed: ${control.role} "${control.name}" → ${other.role} "${other.name}"`);
@@ -50,9 +54,9 @@ export async function checkReplay(id: string, dir = "corpus"): Promise<Fidelity>
   const meta = JSON.parse(await readFile(join(base, "meta.json"), "utf8")) as Meta;
   const captured = JSON.parse(await readFile(join(base, "ax.json"), "utf8")) as AxCapture;
 
-  const browser = await chromium.launch({ channel: "chrome", headless: true });
+  const browser = await chromium.launch({ channel: "chrome", headless: true, proxy: OFFLINE });
   const context = await browser.newContext({ viewport: { width: 1280, height: 1000 } });
-  await context.routeFromHAR(join(base, HAR), { notFound: "abort", url: REPLAYED });
+  await replayFromHar(context, join(base, HAR));
   let problems: string[];
   let replayed: AxCapture | null = null;
   try {

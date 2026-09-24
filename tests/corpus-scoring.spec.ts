@@ -10,6 +10,7 @@ import { join } from "node:path";
 
 import { report } from "../tools/corpus/report";
 import { scoreRead, type ReadSpec } from "../tools/corpus/score";
+import { closest } from "../tools/corpus/replay-har";
 import { tokenF1 } from "../tools/corpus/text";
 import type { TruthField } from "../tools/corpus/types";
 
@@ -149,5 +150,30 @@ test.describe("the report", () => {
     expect(baseline.read.a.found).toBe(1);
     expect(baseline.read.b.found).toBe(0.5);
     expect(baseline.read.__total__.found).toBe(0.75);
+  });
+});
+
+test.describe("replaying a recording", () => {
+  const recorded = (rest: string, size: number) =>
+    ({ rest, full: size > 0, entry: { request: { method: "GET", url: "" }, response: { status: 200, headers: [], content: { size } } } }) as Parameters<typeof closest>[0][number];
+
+  test("an exact match is served", () => {
+    const pick = closest([recorded("?v=1 ", 10), recorded("?v=2 ", 10)], "?v=2 ");
+    expect(pick.rest).toBe("?v=2 ");
+  });
+
+  test("a prefetch's empty recording loses to the full one of the same URL", () => {
+    // Chrome never hands over a prefetch's body: Workable left 26 empty copies beside the real ones.
+    const pick = closest([recorded(" ", 0), recorded(" ", 23214)], " ");
+    expect(pick.full).toBe(true);
+  });
+
+  test("a fresh cache-buster is answered by the closest recording", () => {
+    const pick = closest([recorded("?other=1 ", 5), recorded("?cache-bust=1790266202361 ", 487907)], "?cache-bust=1790266308243 ");
+    expect(pick.rest).toBe("?cache-bust=1790266202361 ");
+  });
+
+  test("an empty recording is still served when it is the only one", () => {
+    expect(closest([recorded(" ", 0)], " ").full).toBe(false);
   });
 });

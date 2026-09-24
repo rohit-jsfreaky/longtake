@@ -221,6 +221,26 @@ test.describe("dropdowns that are not <select>", () => {
     expect(spec.custom).toBe(true);
   });
 
+  // Google Forms: its "help and feedback" menu button sits outside the <form> and was being asked
+  // as a question.
+  test("a menu button outside the form is the page's own chrome, when the page keeps its questions in a form", async ({ page }) => {
+    await load(
+      page,
+      `<form><label>Full name <input name="name"></label></form>
+       <button aria-haspopup="menu" aria-label="help and feedback" style="width:40px;height:40px">?</button>`,
+    );
+    expect((await read(page)).specs.map((s) => s.label)).toEqual(["Full name"]);
+  });
+
+  test("…while a menu button inside the form is still a picker", async ({ page }) => {
+    await load(
+      page,
+      `<form><label>Full name <input name="name"></label>
+         <div role="button" aria-haspopup="menu" aria-label="Seniority" style="width:120px;height:30px">Pick</div></form>`,
+    );
+    expect((await read(page)).specs.map((s) => s.label)).toEqual(["Full name", "Seniority"]);
+  });
+
   test("role is read BEFORE tag, so a combobox input is never mistaken for text", async ({ page }) => {
     await load(page, `<input type="text" role="combobox" aria-label="City">`);
     expect(only(await read(page)).kind).not.toBe("text");

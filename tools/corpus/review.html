@@ -286,7 +286,7 @@ function card(field, i) {
   node.append(el("div", { className: "checks" },
     check("Required", field.required, (v) => (field.required = v)),
     check("Long answer", field.longForm, (v) => (field.longForm = v)),
-    check("Honeypot — a person never sees it", field.honeypot, (v) => (field.honeypot = v)),
+    check("Hidden — never filled (a honeypot, or a branch not taken)", field.honeypot, (v) => (field.honeypot = v)),
   ));
   return node;
 }

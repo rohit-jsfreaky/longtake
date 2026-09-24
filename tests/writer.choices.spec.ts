@@ -423,3 +423,51 @@ test.describe("a choice named in what was said", () => {
     expect(outcome!.status).toBe("refused");
   });
 });
+
+/**
+ * Jotform's "Other": `industry[]` and `industry[other]` are one array on the server and one
+ * question on the page. Read by the name alone, "Other" was a field of its own, and the group
+ * could never be answered with it.
+ */
+test.describe("an array-named group and its Other", () => {
+  const INDUSTRY = `
+    <div role="group" aria-labelledby="q"><span id="q">Industry</span>
+      <label><input type="checkbox" name="industry[]" value="Performing Arts"> Performing Arts</label>
+      <label><input type="checkbox" name="industry[]" value="Motion Picture"> Motion Picture</label>
+      <label><input type="checkbox" name="industry[other]" value="other"> Other</label>
+    </div>`;
+
+  test("is one field with every choice, Other included", async ({ page }) => {
+    await load(page, INDUSTRY);
+    const { specs } = await read(page);
+    expect(specs).toHaveLength(1);
+    expect(specs[0]!.label).toBe("Industry");
+    expect(specs[0]!.options!.map((o) => o.label)).toEqual(["Performing Arts", "Motion Picture", "Other"]);
+  });
+
+  test("Other can be ticked through it", async ({ page }) => {
+    await load(page, INDUSTRY);
+    const [outcome] = await readThenWrite(page, [{ fieldId: "industry", value: ["Other"], evidence: "other" }]);
+    expect(outcome!.status).toBe("written");
+    expect(await page.isChecked("input[name='industry[other]']")).toBe(true);
+    expect(await page.isChecked("input[value='Motion Picture']")).toBe(false);
+  });
+
+  test("two questions that only share an array prefix stay two", async ({ page }) => {
+    await load(
+      page,
+      `<fieldset><legend>Terms</legend><label><input type="checkbox" name="user[terms]"> I accept the terms</label></fieldset>
+       <fieldset><legend>News</legend><label><input type="checkbox" name="user[news]"> Send me news</label></fieldset>`,
+    );
+    expect((await read(page)).specs).toHaveLength(2);
+  });
+
+  test("array names outside any named group are not joined", async ({ page }) => {
+    await load(
+      page,
+      `<label><input type="checkbox" name="prefs[email]"> Email me</label>
+       <label><input type="checkbox" name="prefs[sms]"> Text me</label>`,
+    );
+    expect((await read(page)).specs).toHaveLength(2);
+  });
+});

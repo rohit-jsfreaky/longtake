@@ -102,6 +102,31 @@
     visit(root);
     return found;
   }
+  function choiceGroup(el) {
+    const input = el;
+    const type = (el.getAttribute("type") ?? "").toLowerCase();
+    const name = el.getAttribute("name");
+    if (!name || type !== "radio" && type !== "checkbox") return [input];
+    const root = el.getRootNode();
+    const base = arrayBase(name);
+    const group = base ? namedGroupOf(el) : null;
+    return Array.from(root.querySelectorAll(`input[type="${type}"]`)).filter((other) => {
+      const otherName = other.getAttribute("name");
+      if (otherName === name) return true;
+      return group !== null && otherName !== null && arrayBase(otherName) === base && namedGroupOf(other) === group;
+    });
+  }
+  function arrayBase(name) {
+    const bracket = name.indexOf("[");
+    return bracket > 0 ? name.slice(0, bracket) : null;
+  }
+  function namedGroupOf(el) {
+    for (let node = el.parentElement?.closest("fieldset, [role='radiogroup'], [role='group']"); node; node = node.parentElement?.closest("fieldset, [role='radiogroup'], [role='group']")) {
+      if (node.hasAttribute("aria-labelledby") || node.hasAttribute("aria-label")) return node;
+      if (node.localName === "fieldset" && node.querySelector(":scope > legend")) return node;
+    }
+    return null;
+  }
   function isVisible(el) {
     if (paintedOnScreen(el)) return true;
     if (declaresItselfInteractive(el) && ownOpacity(el) === 0) {
@@ -349,6 +374,11 @@
     }
     return "";
   }
+  function isMenuButton(el) {
+    const popup = el.getAttribute("aria-haspopup");
+    const role = el.getAttribute("role");
+    return (popup === "menu" || popup === "true") && role !== "combobox" && role !== "listbox";
+  }
   var GROUP_CONTAINER = "fieldset, [role='radiogroup'], [role='group']";
   function groupQuestion(el) {
     let container = el.parentElement?.closest(GROUP_CONTAINER) ?? null;
@@ -481,8 +511,10 @@
         }
       }
     };
+    const formsHoldFields = candidates.some((el) => el.closest("form") && !isMenuButton(el));
     candidates.forEach((el, index) => {
       const tag = el.tagName.toLowerCase();
+      if (formsHoldFields && isMenuButton(el) && !el.closest("form")) return;
       const typed = tag === "textarea" || tag === "input" && !/^(radio|checkbox)$/i.test(el.type);
       if (typed && el.parentElement?.closest("[role='radiogroup']")) return;
       if (el.getAttribute("role") === "radiogroup" && !el.querySelector("[role='radio']") && el.querySelector("input[type='radio']")) {
@@ -510,10 +542,9 @@
         return;
       }
       if ((kind === "radio" || kind === "checkbox") && name) {
-        const groupKey = `${kind}:${name}`;
-        const siblings = candidates.filter(
-          (other) => other.getAttribute("name") === name && kindOf(other) === kind
-        );
+        const members = tag === "input" ? choiceGroup(el) : [];
+        const groupKey = `${kind}:${members[0]?.getAttribute("name") ?? name}`;
+        const siblings = tag === "input" ? members.filter((other) => candidates.includes(other) && kindOf(other) === kind) : candidates.filter((other) => other.getAttribute("name") === name && kindOf(other) === kind);
         const isGroup = kind === "radio" || siblings.length > 1;
         if (isGroup) {
           const existing = groups.get(groupKey);
@@ -824,12 +855,8 @@
     return "";
   }
   function radioGroup(el) {
-    const name = el.getAttribute("name");
-    const root = el.getRootNode();
-    if (!name) return el.tagName.toLowerCase() === "input" ? [el] : [];
-    return Array.from(
-      root.querySelectorAll(`input[type="radio"][name="${CSS.escape(name)}"]`)
-    );
+    if (el.tagName.toLowerCase() !== "input") return [];
+    return choiceGroup(el);
   }
   var PLACEHOLDER = /^(select|choose|pick|please (select|choose)|none selected)\b|^-+.*-+$|(\.\.\.|…)$/i;
   function readValue(spec, el) {
@@ -844,9 +871,7 @@
       return on ? (on.getAttribute("aria-label") ?? on.textContent ?? "").trim() || null : null;
     }
     if (spec.kind === "multiselect" && tag === "input") {
-      const name = el.getAttribute("name");
-      const root = el.getRootNode();
-      const boxes = name ? Array.from(root.querySelectorAll(`input[type="checkbox"][name="${CSS.escape(name)}"]`)) : [el];
+      const boxes = choiceGroup(el);
       const ticked = boxes.filter((box) => box.checked).map((box) => spec.options?.find((option) => option.value === box.value)?.label ?? box.value);
       return ticked.length > 0 ? ticked : null;
     }
@@ -1112,13 +1137,7 @@
         pressChoice(target, true);
         return target.checked ? { fieldId: id, status: "written", wrote: chosen[0].label } : { fieldId: id, status: "rejected-by-page", wrote: chosen[0].label, found: "" };
       }
-      const name = el.getAttribute("name");
-      const root = el.getRootNode();
-      const boxes = name ? Array.from(
-        root.querySelectorAll(
-          `input[type="checkbox"][name="${CSS.escape(name)}"]`
-        )
-      ) : [el];
+      const boxes = choiceGroup(el);
       const wantedValues = chosen.map((c) => c.value);
       for (const box of boxes) {
         const shouldCheck = wantedValues.includes(box.value);
@@ -1239,9 +1258,7 @@
       return radioGroup(el).some((radio) => radio.checked) ? cannot("The form put the choice back \u2014 it will not let this be left unanswered.") : { fieldId: id, status: "cleared" };
     }
     if ((spec.kind === "multiselect" || spec.kind === "checkbox") && tag === "input") {
-      const name = el.getAttribute("name");
-      const root = el.getRootNode();
-      const boxes = name ? Array.from(root.querySelectorAll(`input[type="checkbox"][name="${CSS.escape(name)}"]`)) : [el];
+      const boxes = choiceGroup(el);
       for (const box of boxes) pressChoice(box, false);
       return boxes.some((box) => box.checked) ? cannot("The form would not let this be unticked.") : { fieldId: id, status: "cleared" };
     }

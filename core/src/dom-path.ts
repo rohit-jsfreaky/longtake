@@ -202,6 +202,47 @@ export function deepQueryAll(root: Document | ShadowRoot | Element, selector: st
 }
 
 /**
+ * The radios or checkboxes that answer one question together with `el` — for the reader, which
+ * turns them into one field, and the writer, which has to find every one of them again.
+ *
+ * HTML's rule is the name: one `name`, one question. Forms that post to PHP-style back ends add
+ * one more: `industry[]` and `industry[other]` arrive on the server as the same array, and Jotform
+ * gives every group's "Other" choice exactly such a name. Read by the name alone, "Other" became a
+ * question of its own. Such names are joined — but only inside the same named group, so two
+ * questions that happen to share an array prefix (`user[terms]`, `user[news]`) stay apart.
+ */
+export function choiceGroup(el: Element): HTMLInputElement[] {
+  const input = el as HTMLInputElement;
+  const type = (el.getAttribute("type") ?? "").toLowerCase();
+  const name = el.getAttribute("name");
+  if (!name || (type !== "radio" && type !== "checkbox")) return [input];
+
+  const root = el.getRootNode() as Document | ShadowRoot;
+  const base = arrayBase(name);
+  const group = base ? namedGroupOf(el) : null;
+  return Array.from(root.querySelectorAll<HTMLInputElement>(`input[type="${type}"]`)).filter((other) => {
+    const otherName = other.getAttribute("name");
+    if (otherName === name) return true;
+    return group !== null && otherName !== null && arrayBase(otherName) === base && namedGroupOf(other) === group;
+  });
+}
+
+/** `industry[]` and `industry[other]` → `industry`; a plain name has no array base. */
+function arrayBase(name: string): string | null {
+  const bracket = name.indexOf("[");
+  return bracket > 0 ? name.slice(0, bracket) : null;
+}
+
+/** The nearest fieldset or ARIA group that says what it is — the question a set of choices answers. */
+function namedGroupOf(el: Element): Element | null {
+  for (let node = el.parentElement?.closest("fieldset, [role='radiogroup'], [role='group']"); node; node = node.parentElement?.closest("fieldset, [role='radiogroup'], [role='group']")) {
+    if (node.hasAttribute("aria-labelledby") || node.hasAttribute("aria-label")) return node;
+    if (node.localName === "fieldset" && node.querySelector(":scope > legend")) return node;
+  }
+  return null;
+}
+
+/**
  * Is this element actually on screen for a person to fill in?
  *
  * Deliberately strict. An input that a person cannot see is either decoration or a trap, and

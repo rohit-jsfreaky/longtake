@@ -32,7 +32,7 @@
  * difference between a demo that looks like it works and a form that is actually filled in.
  */
 
-import { closeWidget, deepQueryAll, exclusively, openWidget, optionNodes, ownsOptions, pressOption } from "./dom-path";
+import { choiceGroup, closeWidget, deepQueryAll, exclusively, openWidget, optionNodes, ownsOptions, pressOption } from "./dom-path";
 import type { FieldHandles, FieldSpec, SpokenValue } from "./types";
 
 export type WriteOutcome =
@@ -360,13 +360,9 @@ function renderedText(el: HTMLElement): string {
 
 /** Every radio sharing this one's name, wherever in the document they live. */
 function radioGroup(el: HTMLElement): HTMLInputElement[] {
-  const name = el.getAttribute("name");
-  const root = el.getRootNode() as Document | ShadowRoot;
   // Tag name, not `instanceof` — see `readBack` for why an iframe breaks the latter.
-  if (!name) return el.tagName.toLowerCase() === "input" ? [el as HTMLInputElement] : [];
-  return Array.from(
-    root.querySelectorAll<HTMLInputElement>(`input[type="radio"][name="${CSS.escape(name)}"]`),
-  );
+  if (el.tagName.toLowerCase() !== "input") return [];
+  return choiceGroup(el);
 }
 
 /** What a field holds: text, the chosen option(s), a tick — or `null` when it is empty. */
@@ -405,11 +401,7 @@ export function readValue(spec: FieldSpec, el: HTMLElement): FieldValue {
   }
 
   if (spec.kind === "multiselect" && tag === "input") {
-    const name = el.getAttribute("name");
-    const root = el.getRootNode() as Document | ShadowRoot;
-    const boxes = name
-      ? Array.from(root.querySelectorAll<HTMLInputElement>(`input[type="checkbox"][name="${CSS.escape(name)}"]`))
-      : [el as HTMLInputElement];
+    const boxes = choiceGroup(el);
     const ticked = boxes
       .filter((box) => box.checked)
       .map((box) => spec.options?.find((option) => option.value === box.value)?.label ?? box.value);
@@ -859,15 +851,7 @@ async function writeOne(
         : { fieldId: id, status: "rejected-by-page", wrote: chosen[0]!.label, found: "" };
     }
 
-    const name = el.getAttribute("name");
-    const root = el.getRootNode() as Document | ShadowRoot;
-    const boxes = name
-      ? Array.from(
-          root.querySelectorAll<HTMLInputElement>(
-            `input[type="checkbox"][name="${CSS.escape(name)}"]`,
-          ),
-        )
-      : [el as HTMLInputElement];
+    const boxes = choiceGroup(el);
 
     const wantedValues = chosen.map((c) => c.value);
     for (const box of boxes) {
@@ -1079,11 +1063,7 @@ async function clearOne(spec: FieldSpec, el: HTMLElement): Promise<ClearOutcome>
 
   // ── Checkboxes: untick them the way a person does ─────────────────────────────
   if ((spec.kind === "multiselect" || spec.kind === "checkbox") && tag === "input") {
-    const name = el.getAttribute("name");
-    const root = el.getRootNode() as Document | ShadowRoot;
-    const boxes = name
-      ? Array.from(root.querySelectorAll<HTMLInputElement>(`input[type="checkbox"][name="${CSS.escape(name)}"]`))
-      : [el as HTMLInputElement];
+    const boxes = choiceGroup(el);
     for (const box of boxes) pressChoice(box, false);
     return boxes.some((box) => box.checked)
       ? cannot("The form would not let this be unticked.")

@@ -12,7 +12,15 @@ import { join } from "node:path";
 
 type Counts = Record<string, number>;
 type Row = { key: string; question: string; problems: string[] };
-type Stored = { id: string; at: string; counts: Counts; rows: Row[]; extras?: { id: string; label: string; duplicateOf?: string }[] };
+type Stored = {
+  id: string;
+  at: string;
+  counts: Counts;
+  rows: Row[];
+  extras?: { id: string; label: string; duplicateOf?: string }[];
+  /** Truth fields inside another origin's frame — out of the page's reach, not scored. */
+  elsewhere?: number;
+};
 
 type Metric = {
   key: string;
@@ -148,6 +156,12 @@ export function report(options: {
     }
     for (const id of baseForms) {
       if (!stored.some((s) => s.id === id)) failures.push(`${id}: in the ${scorer.title} baseline, but no result this run`);
+    }
+
+    const elsewhere = stored.reduce((n, s) => n + (s.elsewhere ?? 0), 0);
+    if (elsewhere > 0) {
+      lines.push("");
+      lines.push(`${elsewhere} field${elsewhere === 1 ? "" : "s"} sit inside other origins' frames — not scored until the corpus reads inside frames.`);
     }
 
     lines.push("");

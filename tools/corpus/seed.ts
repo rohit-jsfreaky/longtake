@@ -107,6 +107,7 @@ function field(key: string, control: AxControl, kind: FieldKind, question: strin
     subject: "self",
     scope: "remember",
     longForm: kind === "textarea",
-    honeypot: !control.dom.visible,
+    // Hidden from a person — off screen, or not even in the accessibility tree — means never filled.
+    honeypot: !control.dom.visible || control.inAxTree === false,
   };
 }
