@@ -20,7 +20,15 @@ type Stored = {
   extras?: { id: string; label: string; duplicateOf?: string }[];
   /** Truth fields inside another origin's frame — out of the page's reach, not scored. */
   elsewhere?: number;
+  /** Who stamped what this form is scored against: the truth, and for filling the plan too. */
+  checkedBy?: string[];
 };
+
+/**
+ * Checked by Claude, not by a person. Such a key is a second opinion, not a person's: when one of
+ * these forms gets worse, the key is the first suspect. The review tool stamps Claude as "claude …".
+ */
+const byClaude = (form: Stored) => (form.checkedBy ?? []).some((by) => by.startsWith("claude"));
 
 type Metric = {
   key: string;
@@ -143,7 +151,7 @@ export function report(options: {
 
     for (const form of stored) {
       const was = base[form.id];
-      lines.push(`| ${form.id} | ${scorer.metrics.map((m) => show(m, m.value(form.counts), was?.[m.key])).join(" | ")} |`);
+      lines.push(`| ${form.id}${byClaude(form) ? " †" : ""} | ${scorer.metrics.map((m) => show(m, m.value(form.counts), was?.[m.key])).join(" | ")} |`);
       for (const metric of scorer.metrics) {
         const value = metric.value(form.counts);
         if (metric.gate && value !== null && value !== 0) gateFailures.push(`${form.id}: ${metric.label} is ${value}, must be 0`);
@@ -156,6 +164,11 @@ export function report(options: {
     }
     for (const id of baseForms) {
       if (!stored.some((s) => s.id === id)) failures.push(`${id}: in the ${scorer.title} baseline, but no result this run`);
+    }
+
+    if (stored.some(byClaude)) {
+      lines.push("");
+      lines.push("† Answer key checked by Claude, not by a person — when one of these gets worse, suspect the key first.");
     }
 
     const elsewhere = stored.reduce((n, s) => n + (s.elsewhere ?? 0), 0);

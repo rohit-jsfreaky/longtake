@@ -399,46 +399,47 @@
       const worded = (part) => !/^[\s\d.):#-]*$/.test(textOf(part));
       const question = parts.filter((part) => isVisible(part) && before(part) && worded(part));
       const shown2 = parts.filter((part) => isVisible(part) && worded(part));
-      const text2 = (question.length > 0 ? question : shown2.length > 0 ? shown2 : parts).map(textOf).join(" ");
+      const chosen = question.length > 0 ? question : shown2.length > 0 ? shown2 : parts;
+      const text2 = chosen.map(textOf).join(" ");
       if (text2 && PART_ONLY.test(cleanLabel(text2))) {
         const group = el.parentElement?.closest("[aria-labelledby], [aria-label], fieldset");
-        const outer = group ? labelOf(group) : "";
-        if (outer) return outer;
+        const outer = group ? labelOf(group) : null;
+        if (outer?.text) return outer;
       }
-      if (text2) return text2;
+      if (text2) return { text: text2, from: chosen };
     }
     const ariaLabel = tidy(el.getAttribute("aria-label") ?? "");
-    if (ariaLabel) return ariaLabel;
+    if (ariaLabel) return { text: ariaLabel, from: [] };
     if (el.id) {
       const forLabel = root.querySelector(`label[for="${CSS.escape(el.id)}"]`);
       const text2 = textOf(forLabel);
-      if (text2) return text2;
+      if (text2) return { text: text2, from: [forLabel] };
     }
     const wrapping = el.closest("label");
     if (wrapping) {
       const text2 = wrappingLabelText(wrapping, el);
-      if (text2) return text2;
+      if (text2) return { text: text2, from: [wrapping] };
     }
     const legend = el.closest("fieldset")?.querySelector("legend");
     const legendText = textOf(legend);
-    if (legendText) return legendText;
+    if (legendText) return { text: legendText, from: [legend] };
     const own = ownBlockQuestion([el], isAField);
-    if (own) return own;
+    if (own) return { text: own, from: [] };
     const placeholder = tidy(el.getAttribute("placeholder") ?? "");
-    if (placeholder) return placeholder;
+    if (placeholder) return { text: placeholder, from: [] };
     const title = tidy(el.getAttribute("title") ?? "");
-    if (title) return title;
+    if (title) return { text: title, from: [] };
     let node = el;
     for (let hops = 0; node && hops < 4; hops++) {
       let sibling = node.previousElementSibling;
       while (sibling) {
         const text2 = textOf(sibling);
-        if (text2 && text2.length <= 120) return text2;
+        if (text2 && text2.length <= 120) return { text: text2, from: [sibling] };
         sibling = sibling.previousElementSibling;
       }
       node = node.parentElement;
     }
-    return "";
+    return { text: "", from: [] };
   }
   function isMenuButton(el) {
     const popup = el.getAttribute("aria-haspopup");
@@ -472,6 +473,20 @@
   }
   var PART_ONLY = /^(date|time|day|month|year|hour|minute|dd|mm|yyyy|hh)$/i;
   var STARRED = /^[\s\p{Cf}]*[*✱]|[*✱][\s\p{Cf}]*$/u;
+  function drawsAStar(sources) {
+    const starAlone = /^[\s\p{Cf}]*[*✱][\s\p{Cf}]*$/u;
+    return sources.some((source) => {
+      const view = source.ownerDocument.defaultView;
+      if (!view) return false;
+      const nodes = [source, ...Array.from(source.querySelectorAll("*")).slice(0, 60)];
+      return nodes.some(
+        (node) => ["::before", "::after"].some((pseudo) => {
+          const drawn = /^"(.*)"$/.exec(view.getComputedStyle(node, pseudo).content)?.[1] ?? "";
+          return starAlone.test(drawn) && node.checkVisibility?.() !== false;
+        })
+      );
+    });
+  }
   function cleanLabel(raw) {
     return tidy(
       raw.replace(/[\s\p{Cf}*✱]+$/u, "").replace(/^[\s\p{Cf}*✱]+/u, "").replace(/^\s*\d{1,3}[.)]\s+(?=\S)/, "")
@@ -601,9 +616,9 @@
       }
       const visible = isVisible(el);
       const kind = kindOf(el);
-      const rawLabel = labelOf(el);
+      const { text: rawLabel, from: labelledFrom } = labelOf(el);
       const label = cleanLabel(rawLabel);
-      const starred = STARRED.test(rawLabel);
+      const starred = STARRED.test(rawLabel) || drawsAStar(labelledFrom);
       const name = el.getAttribute("name") ?? "";
       if (!visible) {
         skipped.push({ label: label || name || kind, reason: "not visible on the page" });

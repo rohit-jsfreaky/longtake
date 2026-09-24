@@ -246,8 +246,11 @@ function isInside(el: Element, selector: string): boolean {
  * The name a person would call this field, resolved roughly the way a screen reader would.
  *
  * Order matters: what the page author declared beats what we can infer from the layout.
+ *
+ * `from` holds the elements the words were read from — where a star drawn by the stylesheet
+ * would be (`drawsAStar`). Empty when the words came from an attribute.
  */
-function labelOf(el: Element): string {
+function labelOf(el: Element): { text: string; from: Element[] } {
   const doc = el.ownerDocument;
   const root = el.getRootNode() as Document | ShadowRoot;
 
@@ -266,27 +269,28 @@ function labelOf(el: Element): string {
     const worded = (part: Element) => !/^[\s\d.):#-]*$/.test(textOf(part));
     const question = parts.filter((part) => isVisible(part) && before(part) && worded(part));
     const shown = parts.filter((part) => isVisible(part) && worded(part));
-    const text = (question.length > 0 ? question : shown.length > 0 ? shown : parts).map(textOf).join(" ");
+    const chosen = question.length > 0 ? question : shown.length > 0 ? shown : parts;
+    const text = chosen.map(textOf).join(" ");
     // A label that names only a part — Google Forms labels its date box "Date" and puts "Date of
     // Birth" on the group around it. Two date questions would both be "Date", and neither is
     // what the person is being asked. The group's name is the question.
     if (text && PART_ONLY.test(cleanLabel(text))) {
       const group = el.parentElement?.closest("[aria-labelledby], [aria-label], fieldset");
-      const outer = group ? labelOf(group) : "";
-      if (outer) return outer;
+      const outer = group ? labelOf(group) : null;
+      if (outer?.text) return outer;
     }
-    if (text) return text;
+    if (text) return { text, from: chosen };
   }
 
   // 2. aria-label — the author writing the label out.
   const ariaLabel = tidy(el.getAttribute("aria-label") ?? "");
-  if (ariaLabel) return ariaLabel;
+  if (ariaLabel) return { text: ariaLabel, from: [] };
 
   // 3. <label for="…">. Searched from the element's own root so it works inside a shadow tree.
   if (el.id) {
     const forLabel = root.querySelector(`label[for="${CSS.escape(el.id)}"]`);
     const text = textOf(forLabel);
-    if (text) return text;
+    if (text) return { text, from: [forLabel!] };
   }
 
   // 4. A <label> wrapped around the control, with the control's own text taken back out.
@@ -299,24 +303,24 @@ function labelOf(el: Element): string {
   const wrapping = el.closest("label");
   if (wrapping) {
     const text = wrappingLabelText(wrapping, el);
-    if (text) return text;
+    if (text) return { text, from: [wrapping] };
   }
 
   // 5. A fieldset's legend — how radio groups are almost always named.
   const legend = el.closest("fieldset")?.querySelector("legend");
   const legendText = textOf(legend);
-  if (legendText) return legendText;
+  if (legendText) return { text: legendText, from: [legend!] };
 
   // 5b. The field's own block — a question set beside the control with nothing tying them. Before
   //     the placeholder: Lever's is "Type your response", Ashby's "Start typing...".
   const own = ownBlockQuestion([el], isAField);
-  if (own) return own;
+  if (own) return { text: own, from: [] };
 
   // 6. The author's fallbacks.
   const placeholder = tidy(el.getAttribute("placeholder") ?? "");
-  if (placeholder) return placeholder;
+  if (placeholder) return { text: placeholder, from: [] };
   const title = tidy(el.getAttribute("title") ?? "");
-  if (title) return title;
+  if (title) return { text: title, from: [] };
 
   // 7. Last resort: the nearest text sitting above the control. Bounded, because walking far
   //    enough up any page will always find *something*, and it will be wrong.
@@ -325,13 +329,13 @@ function labelOf(el: Element): string {
     let sibling = node.previousElementSibling;
     while (sibling) {
       const text = textOf(sibling);
-      if (text && text.length <= 120) return text;
+      if (text && text.length <= 120) return { text, from: [sibling] };
       sibling = sibling.previousElementSibling;
     }
     node = node.parentElement;
   }
 
-  return "";
+  return { text: "", from: [] };
 }
 
 /** A trigger for a menu — `aria-haspopup="menu"`, or `"true"`, which ARIA defines as the same. */
@@ -393,6 +397,29 @@ const PART_ONLY = /^(date|time|day|month|year|hour|minute|dd|mm|yyyy|hh)$/i;
 
 /** A label ending in an asterisk marks a required question — the web's near-universal convention. */
 const STARRED = /^[\s\p{Cf}]*[*✱]|[*✱][\s\p{Cf}]*$/u; // at either end: Workable writes "* Phone"
+
+/**
+ * A required star drawn by the stylesheet rather than written. MS Forms puts
+ * `::after { content: " * " }` on an empty span beside the question: every person sees it,
+ * `innerText` does not, and every required MS Forms question was read as optional.
+ */
+function drawsAStar(sources: Element[]): boolean {
+  const starAlone = /^[\s\p{Cf}]*[*✱][\s\p{Cf}]*$/u;
+  return sources.some((source) => {
+    const view = source.ownerDocument.defaultView;
+    if (!view) return false;
+    // Bounded: a question is a line or two, and each style lookup costs.
+    const nodes = [source, ...Array.from(source.querySelectorAll("*")).slice(0, 60)];
+    return nodes.some((node) =>
+      ["::before", "::after"].some((pseudo) => {
+        // Only a quoted string is drawn text — not `none`, a counter or an image — and only a star
+        // standing alone: an arrow or an empty spacer is decoration.
+        const drawn = /^"(.*)"$/.exec(view.getComputedStyle(node, pseudo).content)?.[1] ?? "";
+        return starAlone.test(drawn) && (node as HTMLElement).checkVisibility?.() !== false;
+      }),
+    );
+  });
+}
 
 /** `Country*` and `Are you a veteran? *` are the same question. Drop the required marker. */
 function cleanLabel(raw: string): string {
@@ -640,11 +667,11 @@ export function readForm(
 
     const visible = isVisible(el);
     const kind = kindOf(el);
-    const rawLabel = labelOf(el);
+    const { text: rawLabel, from: labelledFrom } = labelOf(el);
     const label = cleanLabel(rawLabel);
     // Google Forms sets no `required` and no `aria-required` on a text answer: the only mark is
     // the asterisk on its question. Read as optional, a required question was never asked.
-    const starred = STARRED.test(rawLabel);
+    const starred = STARRED.test(rawLabel) || drawsAStar(labelledFrom);
     const name = el.getAttribute("name") ?? "";
 
     // ── Kept out of the schema entirely, rather than flagged inside it ──────────────

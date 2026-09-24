@@ -44,7 +44,7 @@ for (const form of forms) {
     if (!form.truth!.verified) {
       test.info().annotations.push({ type: "unverified read", description: JSON.stringify({ counts: result.counts, elsewhere }) });
     } else {
-      saveResult("read", form.id, { ...result, elsewhere });
+      saveResult("read", form.id, { ...result, elsewhere, checkedBy: [form.truth!.verified.by] });
     }
     // Per run, beside the saved file (which the next run overwrites) — so a flaky field shows up.
     const wrong = result.rows.filter((row) => row.problems.length > 0).map((row) => `${row.key}: ${row.problems.join("; ")}`);

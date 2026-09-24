@@ -89,15 +89,26 @@ test.describe("reading, scored", () => {
 test.describe("the report", () => {
   const counts = { fields: 10, found: 10, specs: 10, duplicates: 0, extras: 0, honeypotLeaks: 0, labelExact: 9, labelF1: 9.5, kindRight: 10, requiredTP: 4, requiredFP: 0, requiredFN: 0, choiceFields: 2, optionsF1: 2, searchableRight: 2, ambiguous: 0 };
 
-  function run(forms: Record<string, Partial<typeof counts>>, update: boolean | "accept-worse" = false, baselineDir?: string) {
+  function run(forms: Record<string, Partial<typeof counts>>, update: boolean | "accept-worse" = false, baselineDir?: string, checkedBy: Record<string, string[]> = {}) {
     const results = mkdtempSync(join(tmpdir(), "longtake-results-"));
     const corpus = baselineDir ?? mkdtempSync(join(tmpdir(), "longtake-corpus-"));
     mkdirSync(join(results, "read"), { recursive: true });
     for (const [id, changes] of Object.entries(forms)) {
-      writeFileSync(join(results, "read", `${id}.json`), JSON.stringify({ id, at: "", counts: { ...counts, ...changes }, rows: [], extras: [] }));
+      writeFileSync(join(results, "read", `${id}.json`), JSON.stringify({ id, at: "", counts: { ...counts, ...changes }, rows: [], extras: [], checkedBy: checkedBy[id] }));
     }
     return { ...report({ results, corpus, update: update === true ? "better" : update }), corpus };
   }
+
+  test("a form whose answer key no person checked is marked, and the mark is explained once", () => {
+    const { markdown } = run({ a: {}, b: {}, c: {} }, false, undefined, {
+      a: ["claude (for rohit-jsfreaky)"],
+      b: ["rohit-jsfreaky"],
+      c: ["claude (for rohit-jsfreaky)"],
+    });
+    expect(markdown).toContain("| a † |");
+    expect(markdown).toContain("| b |");
+    expect(markdown.split("checked by Claude, not by a person")).toHaveLength(2);
+  });
 
   test("with no baseline, nothing can have got worse", () => {
     expect(run({ a: {} }).failures).toEqual([]);

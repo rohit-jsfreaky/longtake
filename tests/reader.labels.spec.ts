@@ -352,4 +352,29 @@ test.describe("what a label's words are", () => {
     await load(page, `<label for="f">${hindi}</label><input id="f">`);
     expect(only(await read(page)).label).toBe(hindi);
   });
+
+  // MS Forms draws its star with the stylesheet — `::after { content: " * " }` on an empty span. A
+  // person sees it; `innerText` does not, and every required MS Forms question read as optional.
+  test("a star drawn by the stylesheet marks the question required", async ({ page }) => {
+    await load(
+      page,
+      `<style>.star::after { content: " * "; color: #a4262c }</style>
+       <div id="q" style="display:flex"><span>1.</span><span>First Name</span><span class="star" role="note" aria-label="Required to answer"></span></div>
+       <input aria-labelledby="q" placeholder="Enter your answer">`,
+    );
+    const spec = only(await read(page));
+    expect(spec.label).toBe("First Name");
+    expect(spec.required).toBe(true);
+  });
+
+  test("…while other drawn decoration does not", async ({ page }) => {
+    await load(
+      page,
+      `<style>.icon::before { content: "→" } .gap::after { content: "" }</style>
+       <label for="f"><span class="icon"></span>City<span class="gap"></span></label><input id="f">`,
+    );
+    const spec = only(await read(page));
+    expect(spec.label).toBe("City");
+    expect(spec.required).toBe(false);
+  });
 });
