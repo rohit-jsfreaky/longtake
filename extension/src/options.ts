@@ -117,7 +117,8 @@ function factRow(fact: Fact): HTMLElement {
   const row = el("div", { className: "row" });
   row.dataset.fact = fact.id;
 
-  const what = el("div", { className: "what" }, label);
+  // The vocabulary is written to be spoken ("first name"); on a page, a name starts a line.
+  const what = el("div", { className: "what" }, label.charAt(0).toUpperCase() + label.slice(1));
   if (fact.sensitive) what.append(el("span", { className: "chip", textContent: "personal" }));
   const { node, read } = editor(fact, label);
   const value = el("div", { className: "value" }, node);

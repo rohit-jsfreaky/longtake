@@ -13,6 +13,14 @@
  * the host itself is never re-styled after it is added. Badges are placed in a fixed layer by each
  * field's `getBoundingClientRect` — plus the frame's own offset for a field in a same-origin iframe —
  * and follow scrolling and resizing.
+ *
+ * ## Only where the field can be seen
+ *
+ * A fixed layer draws over everything, so a field scrolled out of a box that scrolls on its own — a
+ * modal, a side panel, the demo's browser frame on our own site — still had a rectangle, and its
+ * badge floated over whatever was there: "Spoken" across a headline. So each field is held to every
+ * box around it that clips (any `overflow` but visible), and to each frame's window: the badge sits
+ * on the part of the field that shows, and a field that does not show has none.
  */
 
 import type { FieldHandles } from "./types";
@@ -60,29 +68,103 @@ const STYLE = `
 @media (prefers-reduced-motion: reduce) { .badge, .flash { transition: none; animation: none; } }
 `;
 
-/** Where an element sits in the top page's viewport, through any same-origin frames around it. */
-export function viewportRect(el: Element, top: Document): DOMRect | null {
-  let rect = el.getBoundingClientRect();
-  let x = rect.left;
-  let y = rect.top;
-  let doc = el.ownerDocument;
-  while (doc && doc !== top) {
-    const frame = doc.defaultView?.frameElement;
-    if (!frame) return null; // another origin's frame: its fields are badged from inside it
-    const outer = frame.getBoundingClientRect();
-    x += outer.left + (frame as HTMLElement).clientLeft;
-    y += outer.top + (frame as HTMLElement).clientTop;
-    doc = frame.ownerDocument;
-  }
-  rect = new DOMRect(x, y, rect.width, rect.height);
-  return rect;
+type Box = { left: number; top: number; right: number; bottom: number };
+
+/** One step out from a field: a box that clips it, or the frame it sits in. */
+type Step = { clip: Element; x: boolean; y: boolean } | { frame: HTMLElement };
+
+/** The parent in the flat tree: out of a shadow root to its host. */
+function parentOf(el: Element): Element | null {
+  if (el.parentElement) return el.parentElement;
+  const root = el.getRootNode();
+  return root instanceof ShadowRoot ? root.host : null;
 }
+
+/**
+ * Everything between a field and the top page that can hide part of it, in order. A fixed element
+ * escapes the boxes around it, so the walk skips to its frame.
+ */
+function clipChain(el: Element, top: Document): Step[] {
+  const steps: Step[] = [];
+  let at: Element | null = el;
+  let doc = el.ownerDocument;
+  while (at) {
+    const style: CSSStyleDeclaration | undefined = doc.defaultView?.getComputedStyle(at);
+    const next: Element | null = style?.position === "fixed" ? null : parentOf(at);
+    if (next && next !== doc.documentElement && next !== doc.body) {
+      const own = doc.defaultView?.getComputedStyle(next);
+      const x = !!own && own.overflowX !== "visible";
+      const y = !!own && own.overflowY !== "visible";
+      if (x || y) steps.push({ clip: next, x, y });
+    }
+    at = next;
+    if (!at || at === doc.documentElement) {
+      if (doc === top) break;
+      const frame = doc.defaultView?.frameElement as HTMLElement | null;
+      if (!frame) break;
+      steps.push({ frame });
+      at = frame;
+      doc = frame.ownerDocument;
+    }
+  }
+  return steps;
+}
+
+/**
+ * The part of a field that can be seen, in the top page's viewport, and the field's whole box
+ * there — or null when none of it shows.
+ */
+function seen(el: Element, chain: Step[]): { whole: Box; shown: Box } | null {
+  const r = el.getBoundingClientRect();
+  let whole: Box = { left: r.left, top: r.top, right: r.right, bottom: r.bottom };
+  const view = el.ownerDocument.defaultView;
+  let shown: Box = { left: 0, top: 0, right: view?.innerWidth ?? Infinity, bottom: view?.innerHeight ?? Infinity };
+  shown = cut(shown, whole, true, true);
+  for (const step of chain) {
+    if ("clip" in step) {
+      const b = step.clip.getBoundingClientRect();
+      const inner = step.clip as HTMLElement;
+      const left = b.left + inner.clientLeft;
+      const top_ = b.top + inner.clientTop;
+      shown = cut(shown, { left, top: top_, right: left + inner.clientWidth, bottom: top_ + inner.clientHeight }, step.x, step.y);
+    } else {
+      const b = step.frame.getBoundingClientRect();
+      const dx = b.left + step.frame.clientLeft;
+      const dy = b.top + step.frame.clientTop;
+      whole = move(whole, dx, dy);
+      shown = move(shown, dx, dy);
+      shown = cut(shown, { left: dx, top: dy, right: dx + step.frame.clientWidth, bottom: dy + step.frame.clientHeight }, true, true);
+      const outer = step.frame.ownerDocument.defaultView;
+      shown = cut(shown, { left: 0, top: 0, right: outer?.innerWidth ?? Infinity, bottom: outer?.innerHeight ?? Infinity }, true, true);
+    }
+    if (shown.right - shown.left < 1 || shown.bottom - shown.top < 1) return null;
+  }
+  return shown.right - shown.left < 1 || shown.bottom - shown.top < 1 ? null : { whole, shown };
+}
+
+function cut(a: Box, b: Box, x: boolean, y: boolean): Box {
+  return {
+    left: x ? Math.max(a.left, b.left) : a.left,
+    right: x ? Math.min(a.right, b.right) : a.right,
+    top: y ? Math.max(a.top, b.top) : a.top,
+    bottom: y ? Math.min(a.bottom, b.bottom) : a.bottom,
+  };
+}
+
+function move(a: Box, dx: number, dy: number): Box {
+  return { left: a.left + dx, right: a.right + dx, top: a.top + dy, bottom: a.bottom + dy };
+}
+
+/** How far below the top of what shows a badge's middle sits, when the field's own top is hidden. */
+const BADGE_HALF = 10;
 
 export class Overlay {
   private readonly host: HTMLElement;
   private readonly layer: HTMLElement;
   private readonly detailBox: HTMLElement;
   private badges = new Map<string, { el: HTMLElement; badge: Badge }>();
+  /** Each field's clipping boxes, found once per `show` — a scroll moves boxes, it does not add them. */
+  private chains = new WeakMap<Element, Step[]>();
   private frame = 0;
   private readonly place = () => {
     cancelAnimationFrame(this.frame);
@@ -119,6 +201,7 @@ export class Overlay {
 
   /** Show exactly these badges. */
   show(badges: Badge[]): void {
+    this.chains = new WeakMap();
     const wanted = new Map(badges.map((badge) => [badge.fieldId, badge]));
     for (const [id, shown] of this.badges) {
       if (!wanted.has(id)) {
@@ -175,13 +258,16 @@ export class Overlay {
     const handles = this.handles();
     for (const [id, { el }] of this.badges) {
       const field = handles.get(id);
-      const rect = field && field.isConnected ? viewportRect(field, this.doc) : null;
-      const visible = rect && rect.width > 0 && rect.height > 0;
-      el.style.display = visible ? "" : "none";
-      if (!visible) continue;
-      // The badge's right edge on the field's right edge, straddling its top border.
-      el.style.left = `${rect.right}px`;
-      el.style.top = `${rect.top}px`;
+      let chain = field && this.chains.get(field);
+      if (field?.isConnected && !chain) this.chains.set(field, (chain = clipChain(field, this.doc)));
+      const where = field?.isConnected && chain ? seen(field, chain) : null;
+      el.style.display = where ? "" : "none";
+      if (!where) continue;
+      // The badge's right edge on the field's right edge, straddling its top border — or, when the
+      // top is hidden, just inside the top of what shows.
+      const { whole, shown } = where;
+      el.style.left = `${Math.min(whole.right, shown.right)}px`;
+      el.style.top = `${whole.top >= shown.top ? whole.top : Math.min(shown.top + BADGE_HALF, shown.bottom)}px`;
     }
   }
 

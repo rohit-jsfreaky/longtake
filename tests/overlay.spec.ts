@@ -64,11 +64,12 @@ test("a badge sits on its field's corner, and follows it when the page scrolls",
   expect(Math.abs(b!.y - r.top)).toBeLessThanOrEqual(2);
 
   await page.evaluate(() => window.scrollBy(0, 240));
-  await page.waitForTimeout(100);
-  b = await badge(page, "full_name");
   r = await rect(page, "#n");
-  expect(Math.abs(b!.y - r.top)).toBeLessThanOrEqual(2);
   expect(r.top).toBeLessThan(100); // it really moved
+  // Placed on the next frame after the scroll; on a busy machine that frame can be late.
+  await expect.poll(async () => Math.abs((await badge(page, "full_name"))!.y - r.top)).toBeLessThanOrEqual(2);
+  b = await badge(page, "full_name");
+  expect(b!.shown).toBe(true);
 });
 
 test("a field that is not answered has no badge; one waiting or not in says so", async ({ page }) => {
@@ -109,6 +110,47 @@ test("a field inside a same-origin iframe is badged where it shows on the page",
   });
   expect(Math.abs(out.at.x - out.x)).toBeLessThanOrEqual(2);
   expect(Math.abs(out.at.y - out.y)).toBeLessThanOrEqual(2);
+});
+
+// The landing page's demo: the form sits in a browser frame that scrolls on its own. Scrolled out
+// of it, "Spoken" floated over the headline above the frame.
+test("a field scrolled out of a box that scrolls on its own has no badge; half in, the badge stays inside the box", async ({ page }) => {
+  await load(
+    page,
+    `<h1 style="height:200px;margin:0">Headline</h1>
+     <div id="box" style="height:200px;overflow-y:auto;border:3px solid #ccc;width:420px">
+       <label for="a">First</label><input id="a" style="display:block;width:300px;height:40px">
+       <div style="height:120px"></div>
+       <label for="b">Second</label><input id="b" style="display:block;width:300px;height:40px">
+       <div style="height:600px"></div>
+     </div>`,
+  );
+  const out = await page.evaluate(async () => {
+    const L = window.__longtake;
+    const box = document.getElementById("box")!;
+    const handles = new Map([
+      ["a", document.getElementById("a") as HTMLElement],
+      ["b", document.getElementById("b") as HTMLElement],
+    ]);
+    const overlay = new L.Overlay(document, () => handles);
+    overlay.show([
+      { fieldId: "a", state: "spoken", detail: "" },
+      { fieldId: "b", state: "spoken", detail: "" },
+    ]);
+    const before = overlay.positions();
+    // "a" leaves the box entirely; "b" is cut through the middle by the box's top edge.
+    const b = document.getElementById("b")!;
+    box.scrollTop = b.offsetTop - box.offsetTop + 20;
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    const after = overlay.positions();
+    const top = box.getBoundingClientRect().top + box.clientTop;
+    overlay.destroy();
+    return { before, after, top };
+  });
+  expect(out.before.a!.shown).toBe(true);
+  expect(out.after.a!.shown).toBe(false);
+  expect(out.after.b!.shown).toBe(true);
+  expect(out.after.b!.y).toBeGreaterThan(out.top); // inside the box, not over the headline
 });
 
 test("the badges never make our own watcher re-read the form, and the reader never sees them", async ({ page }) => {

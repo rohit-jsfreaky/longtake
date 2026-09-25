@@ -1288,27 +1288,59 @@ async function harvestAll(read: FormRead, settleMs: number): Promise<FormRead> {
     return true;
   };
 
-  const silent: [FieldSpec, HTMLElement][] = [];
-  for (const spec of read.specs) {
-    if (spec.kind !== "select" && spec.kind !== "multiselect") continue;
-    if (spec.options && spec.options.length > 0) continue; // a real <select> already gave them up
-
+  const toPress = read.specs.flatMap((spec) => {
+    if (spec.kind !== "select" && spec.kind !== "multiselect") return [];
+    if (spec.options && spec.options.length > 0) return []; // a real <select> already gave them up
     const el = read.handles.get(spec.id);
-    if (!el || !el.isConnected) continue;
-    if (!(await pressAndRead(spec, el, false))) silent.push([spec, el]);
-  }
+    return el && el.isConnected ? [[spec, el] as [FieldSpec, HTMLElement]] : [];
+  });
+  if (toPress.length === 0) return read;
 
-  // A widget that did not react at all has not said it has no options. A server-rendered page
-  // shows its widgets before its scripts bring them to life: on a busy machine Greenhouse's
-  // dropdowns stayed dead for eight seconds after load, and each was read as a list that fills
-  // as you type — so no choices, and no picker for a phone's "+91". Ask them once more, after the
-  // rest, before deciding.
-  if (silent.length > 0) {
-    await whenSettled(doc, 350, 3000);
-    for (const [spec, el] of silent) if (el.isConnected) await pressAndRead(spec, el, true);
-  }
+  const putBack = holdPlace(doc, toPress.map(([, el]) => el));
+  try {
+    const silent: [FieldSpec, HTMLElement][] = [];
+    for (const [spec, el] of toPress) if (el.isConnected && !(await pressAndRead(spec, el, false))) silent.push([spec, el]);
 
+    // A widget that did not react at all has not said it has no options. A server-rendered page
+    // shows its widgets before its scripts bring them to life: on a busy machine Greenhouse's
+    // dropdowns stayed dead for eight seconds after load, and each was read as a list that fills
+    // as you type — so no choices, and no picker for a phone's "+91". Ask them once more, after
+    // the rest, before deciding.
+    if (silent.length > 0) {
+      await whenSettled(doc, 350, 3000);
+      for (const [spec, el] of silent) if (el.isConnected) await pressAndRead(spec, el, true);
+    }
+  } finally {
+    putBack();
+  }
   return read;
+}
+
+/**
+ * Reading the options is ours to do, not the person's to watch: put the page back as it was.
+ *
+ * Each widget is scrolled into reach before it is pressed, and focused. Nothing put them back, so
+ * pressing Start on a long application left the page — or the box it scrolls in — at the last
+ * dropdown, with the focus in it: on the landing page's demo the form jumped to "Disability status"
+ * before a word was said. So every box that scrolls around a widget, and the window, is noted
+ * before the first press and returned after the last, and the focus goes back where it was.
+ */
+function holdPlace(doc: Document, widgets: HTMLElement[]): () => void {
+  const view = doc.defaultView;
+  const scrolled = new Map<Element, [number, number]>();
+  for (const widget of widgets) {
+    for (let at: Element | null = widget; at; at = at.parentElement ?? ((at.getRootNode() as ShadowRoot).host || null)) {
+      if (scrolled.has(at)) break;
+      if (at.scrollHeight > at.clientHeight || at.scrollWidth > at.clientWidth) scrolled.set(at, [at.scrollLeft, at.scrollTop]);
+    }
+  }
+  const page: [number, number] = [view?.scrollX ?? 0, view?.scrollY ?? 0];
+  const focused = doc.activeElement as HTMLElement | null;
+  return () => {
+    for (const [el, [left, top]] of scrolled) if (el.isConnected && (el.scrollLeft !== left || el.scrollTop !== top)) el.scrollTo({ left, top, behavior: "instant" });
+    if (view && (view.scrollX !== page[0] || view.scrollY !== page[1])) view.scrollTo({ left: page[0], top: page[1], behavior: "instant" });
+    if (focused && focused !== doc.body && focused.isConnected && doc.activeElement !== focused) focused.focus?.({ preventScroll: true });
+  };
 }
 
 /**

@@ -9,9 +9,11 @@ import { Reveal } from "@/components/motion";
  * borrowed customer list on a product whose whole pitch is "it never makes
  * anything up" would be the worst possible opening line.
  *
- * So it says what is true — the form systems it has actually been run against.
+ * So it says what is true — the form systems it has actually been run against: each name here has
+ * a real form captured from it in the test corpus, read and filled on every change. Workday was
+ * listed once and is not among them — it asks for a login before the form — so it is gone.
  */
-const SYSTEMS = ["Greenhouse", "Lever", "Workday", "Ashby", "Typeform", "Google Forms"];
+const SYSTEMS = ["Greenhouse", "Lever", "Ashby", "Workable", "Google Forms", "Typeform", "Jotform", "Microsoft Forms", "Tally"];
 
 export function LogoRow() {
   return (

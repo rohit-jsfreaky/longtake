@@ -67,7 +67,7 @@ export default function FillPage() {
     <main className="mx-auto grid max-w-6xl gap-8 p-6 lg:grid-cols-[1fr_380px]">
       <section>
         <header className="mb-4">
-          <h1 className="text-2xl font-semibold">Longtake — Phase 2</h1>
+          <h1 className="text-2xl font-semibold">Longtake — workbench</h1>
           <p className="mt-1 text-sm text-neutral-500">
             Press start and just talk. The tool below is built from this form at runtime, and the
             same code filled a live Reddit application without a line of it knowing about either.
@@ -104,7 +104,7 @@ export default function FillPage() {
         </div>
 
         {error && (
-          <p className="rounded-md border border-red-300 bg-red-50 p-3 text-sm text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
+          <p className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-300">
             {error}
           </p>
         )}

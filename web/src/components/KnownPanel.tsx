@@ -63,7 +63,7 @@ function FactRow({ fact, store }: { fact: Fact; store: ProfileStore }) {
   return (
     <div className="mb-2 flex items-start gap-2">
       <div className="min-w-0 flex-1">
-        <span className="font-medium">{sayFact(fact)}</span>
+        <span className="inline-block font-medium first-letter:uppercase">{sayFact(fact)}</span>
         {fact.sensitive && <span className="ml-1 rounded border border-amber-300 px-1 text-[9px] text-amber-700 dark:border-amber-800 dark:text-amber-400">personal</span>}
         <input
           aria-label={sayFact(fact)}

@@ -301,8 +301,8 @@ test.describe("a long picker you type into", () => {
       const spec = s.state().fields[0]!.spec;
       // The value's own schema has no enum: what they say is searched for. (`how` has its own
       // three words — that is the agent saying how it heard them, not a list of schools.)
-      const field = s.tools()[0]!.parameters.properties![spec.id] as { properties: { value: object } };
-      const value = JSON.stringify(field.properties.value);
+      const field = s.tools()[0]!.parameters.properties![spec.id]!;
+      const value = JSON.stringify(field.properties!.value);
       return { searchable: spec.searchable, enum: value.includes('"enum"') ? value : null };
     });
     expect(r.searchable).toBe(true);

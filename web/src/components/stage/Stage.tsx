@@ -14,6 +14,7 @@ import { ActsafeMembership } from "./ActsafeMembership";
 import { DiscordApplication } from "./DiscordApplication";
 import { GleanApplication } from "./GleanApplication";
 import { GoogleFormVolunteer } from "./GoogleFormVolunteer";
+import { StageReview } from "./StageReview";
 
 /**
  * The real forms on the page, and why each one is here.
@@ -105,8 +106,19 @@ export function Stage() {
     start,
     stop,
     forgetEverything,
+    review,
+    focus,
     log,
   } = useLongtake({ root });
+
+  /**
+   * Once the call stops, the panel turns to what to check before sending — the conversation is a
+   * tap away. `null` until someone picks, so a new call starts on the conversation again.
+   */
+  const [picked, setPicked] = useState<"talk" | "review" | null>(null);
+  const reviewCount = review.reduce((n, group) => n + group.items.length, 0);
+  const canReview = !live && turns.length > 0 && reviewCount > 0;
+  const showing = canReview ? (picked ?? "review") : "talk";
 
   /**
    * `?debug` on the page adds a button that copies the whole session — every frame, every tool
@@ -132,8 +144,9 @@ export function Stage() {
   const feedRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     const feed = feedRef.current;
-    if (feed) feed.scrollTop = feed.scrollHeight;
-  }, [turns, partial]);
+    // The review reads from the top; the conversation from its newest line.
+    if (feed) feed.scrollTop = showing === "review" ? 0 : feed.scrollHeight;
+  }, [turns, partial, showing]);
 
   // Off the page, not off this session's writes — answers brought back from an earlier form are
   // in the boxes too, and a counter that ignored them read "6 / 14" on a form with eleven filled.
@@ -147,7 +160,7 @@ export function Stage() {
           ? "Reconnecting…"
           : live
           ? "Stop"
-          : "Hold to talk";
+          : "Start talking";
 
   return (
     <Section id="try">
@@ -160,9 +173,9 @@ export function Stage() {
             <span className="text-paper/45">not one we made up.</span>
           </h2>
           <p className="mt-6 max-w-[52ch] text-[16px] leading-relaxed text-dim" data-reveal>
-            Two live forms, copied unchanged — a Greenhouse job application, and a Jotform that
-            grows new questions as you answer. The labels, the order and every option are theirs.
-            Press the microphone and it tells you what the form needs.
+            Four live forms, copied unchanged — two Greenhouse job applications, a Google Form with
+            three pages, and a Jotform that grows new questions as you answer. The labels, the order
+            and every option are theirs. Press the microphone and it tells you what the form needs.
           </p>
         </Reveal>
 
@@ -172,7 +185,7 @@ export function Stage() {
               only ever gets longer, and with an auto height it pushed the whole
               section open turn by turn until the page was several screens tall.
               Fixed frame, scrolling contents — the same rule as the browser. */}
-          <div className="grid gap-4 lg:grid-cols-[1.5fr_1fr]" data-reveal>
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1.5fr_1fr]" data-reveal>
             <div className="flex flex-col gap-3">
               {/* Locked while a call is live: the agent is holding a tool built from the form on
                   screen, and swapping the form underneath it mid-sentence helps nobody. */}
@@ -214,13 +227,34 @@ export function Stage() {
               data-longtake-ignore
             >
               <div className="flex items-center justify-between gap-3">
-                <span className="text-[13px] font-medium text-paper">What Longtake heard</span>
+                {canReview ? (
+                  <div className="flex gap-1 text-[13px]" role="tablist" aria-label="Conversation or review">
+                    {(["review", "talk"] as const).map((tab) => (
+                      <button
+                        key={tab}
+                        role="tab"
+                        aria-selected={showing === tab}
+                        onClick={() => setPicked(tab)}
+                        className={`press rounded-full px-3 py-1 transition-colors ${
+                          showing === tab ? "bg-ink text-paper" : "text-faint hover:text-dim"
+                        }`}
+                      >
+                        {tab === "review" ? `Look it over · ${reviewCount}` : "Conversation"}
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <span className="text-[13px] font-medium text-paper">What Longtake heard</span>
+                )}
                 <RecordDot live={status === "live"} />
               </div>
 
-              <div className="shrink-0 rounded-xl border border-hair bg-ink px-4 py-2">
-                <Waveform live={status === "live"} className="h-9" />
-              </div>
+              {/* The review has no voice to draw; its list gets the room. */}
+              {showing === "talk" && (
+                <div className="shrink-0 rounded-xl border border-hair bg-ink px-4 py-2">
+                  <Waveform live={status === "live"} className="h-9" />
+                </div>
+              )}
 
               {/* What was actually said, newest last. Falls back to the instruction when
                   nothing has been said yet, so the panel is never an empty box.
@@ -232,7 +266,9 @@ export function Stage() {
                 // and the conversation is the thing a person is here to watch.
                 className="min-h-[10rem] flex-1 space-y-3 overflow-y-auto text-[13.5px] leading-relaxed"
               >
-                {turns.length === 0 && !partial ? (
+                {showing === "review" ? (
+                  <StageReview groups={review} focus={focus} />
+                ) : turns.length === 0 && !partial ? (
                   <p className="text-dim">
                     Your words appear here as you speak. It tells you what the form needs, fills
                     what you say, and asks before it guesses.
@@ -255,13 +291,12 @@ export function Stage() {
 
               {/* Everything the person may need to act on, in one strip with its own height
                   limit — so however many notices there are, they scroll here instead of eating
-                  the conversation above. */}
+                  the conversation above. The review already lists every one of them, so beside it
+                  only a problem with the call itself is shown. */}
               {(error ||
                 status === "reconnecting" ||
-                needsYou.length > 0 ||
-                waiting.length > 0 ||
-                fromMemory.length > 0 ||
-                filled > 0) && (
+                (showing === "talk" &&
+                  (needsYou.length > 0 || waiting.length > 0 || fromMemory.length > 0 || filled > 0))) && (
                 <div className="max-h-[7.5rem] shrink-0 space-y-2 overflow-y-auto text-[12.5px] leading-snug">
                   {/* The microphone stays open through a drop and nothing said is lost, so the one
                       thing worth telling the person is to carry on. */}
@@ -280,58 +315,62 @@ export function Stage() {
                     </p>
                   )}
 
-                  {/* The ones Longtake could not fill. Said out loud too, but a spoken sentence
-                      is gone the moment it ends, and this is the thing to act on. */}
-                  {needsYou.map((item) => (
-                    <p key={item.fieldId} className="rounded-lg border border-hair bg-ink px-3 py-2 text-faint">
-                      <span className="text-paper">Fill in yourself: </span>
-                      <span className="text-dim">{item.question}</span> — {item.why}
-                    </p>
-                  ))}
+                  {showing === "talk" && (
+                    <>
+                      {/* The ones Longtake could not fill. Said out loud too, but a spoken sentence
+                          is gone the moment it ends, and this is the thing to act on. */}
+                      {needsYou.map((item) => (
+                        <p key={item.fieldId} className="rounded-lg border border-hair bg-ink px-3 py-2 text-faint">
+                          <span className="text-paper">Fill in yourself: </span>
+                          <span className="text-dim">{item.question}</span> — {item.why}
+                        </p>
+                      ))}
 
-                  {/* Held back until they say yes — "Twitter" is not on the list, "2.5 or 3" is not
-                      an answer yet. On screen so it is clear why the box is still empty. */}
-                  {waiting.map((item) => (
-                    <p key={item.fieldId} className="rounded-lg border border-hair bg-ink px-3 py-2 text-faint">
-                      <span className="text-paper">Waiting for your yes: </span>
-                      <span className="text-dim">{item.question}</span> → {item.suggestion}
-                    </p>
-                  ))}
+                      {/* Held back until they say yes — "Twitter" is not on the list, "2.5 or 3" is not
+                          an answer yet. On screen so it is clear why the box is still empty. */}
+                      {waiting.map((item) => (
+                        <p key={item.fieldId} className="rounded-lg border border-hair bg-ink px-3 py-2 text-faint">
+                          <span className="text-paper">Waiting for your yes: </span>
+                          <span className="text-dim">{item.question}</span> → {item.suggestion}
+                        </p>
+                      ))}
 
-                  {/* Answers that arrived before anyone spoke. Said plainly, because a form that
-                      fills itself unasked looks like a bug unless it says where the answers came
-                      from — and forgetting them has to be one click. */}
-                  {fromMemory.length > 0 && (
-                    <p className="text-faint">
-                      <span className="text-dim">From last time: </span>
-                      {fromMemory
-                        .slice(0, 4)
-                        .map((item) => item.question)
-                        .join(", ")}
-                      {fromMemory.length > 4 && ` and ${fromMemory.length - 4} more`}
-                      {" · "}
-                      <button
-                        onClick={forgetEverything}
-                        className="text-dim underline decoration-dotted underline-offset-2 hover:text-paper"
-                      >
-                        forget them
-                      </button>
-                    </p>
-                  )}
+                      {/* Answers that arrived before anyone spoke. Said plainly, because a form that
+                          fills itself unasked looks like a bug unless it says where the answers came
+                          from — and forgetting them has to be one click. */}
+                      {fromMemory.length > 0 && (
+                        <p className="text-faint">
+                          <span className="text-dim">From last time: </span>
+                          {fromMemory
+                            .slice(0, 4)
+                            .map((item) => item.question)
+                            .join(", ")}
+                          {fromMemory.length > 4 && ` and ${fromMemory.length - 4} more`}
+                          {" · "}
+                          <button
+                            onClick={forgetEverything}
+                            className="text-dim underline decoration-dotted underline-offset-2 hover:text-paper"
+                          >
+                            forget them
+                          </button>
+                        </p>
+                      )}
 
-                  {missing.length > 0 && filled > 0 && (
-                    <p className="text-faint">
-                      Still empty: {missing.slice(0, 3).join(", ")}
-                      {missing.length > 3 && ` and ${missing.length - 3} more`}
-                    </p>
-                  )}
+                      {missing.length > 0 && filled > 0 && (
+                        <p className="text-faint">
+                          Still empty: {missing.slice(0, 3).join(", ")}
+                          {missing.length > 3 && ` and ${missing.length - 3} more`}
+                        </p>
+                      )}
 
-                  {/* The checkpoint the agent also says out loud. */}
-                  {missing.length === 0 && filled > 0 && (
-                    <p className="text-faint">
-                      <span className="text-mint">Required done</span>
-                      {optionalLeft > 0 && ` · ${optionalLeft} optional left`}
-                    </p>
+                      {/* The checkpoint the agent also says out loud. */}
+                      {missing.length === 0 && filled > 0 && (
+                        <p className="text-faint">
+                          <span className="text-mint">Required done</span>
+                          {optionalLeft > 0 && ` · ${optionalLeft} optional left`}
+                        </p>
+                      )}
+                    </>
                   )}
                 </div>
               )}
@@ -351,7 +390,10 @@ export function Stage() {
                 </div>
 
                 <button
-                  onClick={() => void (live ? stop() : start())}
+                  onClick={() => {
+                    if (!live) setPicked(null);
+                    void (live ? stop() : start());
+                  }}
                   className={`press mt-4 inline-flex w-full items-center justify-center gap-2 rounded-full px-6 py-3 text-[15px] font-medium ${
                     live ? "btn-ghost" : "btn-solid"
                   }`}

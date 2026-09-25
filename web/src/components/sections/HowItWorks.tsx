@@ -59,7 +59,7 @@ const CELLS = [
   {
     scene: SceneLocal,
     title: "Stays on your machine",
-    body: "No account, nothing uploaded, and one click clears everything it remembers.",
+    body: "No account. What it remembers about you never leaves your browser, and one click clears it.",
     span: "",
   },
 ];

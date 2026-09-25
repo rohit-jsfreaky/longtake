@@ -68,7 +68,7 @@
   }
   function deepQueryAll(root, selector) {
     const found = [];
-    const seen = /* @__PURE__ */ new Set();
+    const seen2 = /* @__PURE__ */ new Set();
     const visit = (node) => {
       let direct = [];
       try {
@@ -77,8 +77,8 @@
         return;
       }
       for (const el of direct) {
-        if (!seen.has(el)) {
-          seen.add(el);
+        if (!seen2.has(el)) {
+          seen2.add(el);
           found.push(el);
         }
       }
@@ -1902,11 +1902,11 @@
           revealed = allOptions().filter((option) => ownsOptions(el, option) === true);
         }
         const options = [];
-        const seen = /* @__PURE__ */ new Set();
+        const seen2 = /* @__PURE__ */ new Set();
         for (const option of revealed) {
           const label = cleanLabel(textOf(option));
-          if (!label || seen.has(label)) continue;
-          seen.add(label);
+          if (!label || seen2.has(label)) continue;
+          seen2.add(label);
           options.push({ value: option.getAttribute("data-value") ?? label, label });
         }
         if (options.length > 0) spec.options = options;
@@ -1921,19 +1921,42 @@
       }
       return true;
     };
-    const silent = [];
-    for (const spec of read.specs) {
-      if (spec.kind !== "select" && spec.kind !== "multiselect") continue;
-      if (spec.options && spec.options.length > 0) continue;
+    const toPress = read.specs.flatMap((spec) => {
+      if (spec.kind !== "select" && spec.kind !== "multiselect") return [];
+      if (spec.options && spec.options.length > 0) return [];
       const el = read.handles.get(spec.id);
-      if (!el || !el.isConnected) continue;
-      if (!await pressAndRead(spec, el, false)) silent.push([spec, el]);
-    }
-    if (silent.length > 0) {
-      await whenSettled(doc, 350, 3e3);
-      for (const [spec, el] of silent) if (el.isConnected) await pressAndRead(spec, el, true);
+      return el && el.isConnected ? [[spec, el]] : [];
+    });
+    if (toPress.length === 0) return read;
+    const putBack = holdPlace(doc, toPress.map(([, el]) => el));
+    try {
+      const silent = [];
+      for (const [spec, el] of toPress) if (el.isConnected && !await pressAndRead(spec, el, false)) silent.push([spec, el]);
+      if (silent.length > 0) {
+        await whenSettled(doc, 350, 3e3);
+        for (const [spec, el] of silent) if (el.isConnected) await pressAndRead(spec, el, true);
+      }
+    } finally {
+      putBack();
     }
     return read;
+  }
+  function holdPlace(doc, widgets) {
+    const view = doc.defaultView;
+    const scrolled = /* @__PURE__ */ new Map();
+    for (const widget of widgets) {
+      for (let at = widget; at; at = at.parentElement ?? (at.getRootNode().host || null)) {
+        if (scrolled.has(at)) break;
+        if (at.scrollHeight > at.clientHeight || at.scrollWidth > at.clientWidth) scrolled.set(at, [at.scrollLeft, at.scrollTop]);
+      }
+    }
+    const page = [view?.scrollX ?? 0, view?.scrollY ?? 0];
+    const focused = doc.activeElement;
+    return () => {
+      for (const [el, [left, top]] of scrolled) if (el.isConnected && (el.scrollLeft !== left || el.scrollTop !== top)) el.scrollTo({ left, top, behavior: "instant" });
+      if (view && (view.scrollX !== page[0] || view.scrollY !== page[1])) view.scrollTo({ left: page[0], top: page[1], behavior: "instant" });
+      if (focused && focused !== doc.body && focused.isConnected && doc.activeElement !== focused) focused.focus?.({ preventScroll: true });
+    };
   }
   function waitForForm(root = document, timeoutMs = 5e3) {
     return whenSettled(
@@ -3121,13 +3144,13 @@
   }
   function keytermsFrom(specs, known) {
     const terms = [];
-    const seen = /* @__PURE__ */ new Set();
+    const seen2 = /* @__PURE__ */ new Set();
     const add = (raw) => {
       const term = (raw ?? "").trim();
       if (!term || term.length < 2 || term.length > 60) return;
       const key = term.toLowerCase();
-      if (seen.has(key)) return;
-      seen.add(key);
+      if (seen2.has(key)) return;
+      seen2.add(key);
       terms.push(term);
     };
     for (const value of Object.values(known)) {
@@ -4311,7 +4334,7 @@
   }
   function factKeys(specs, meanings) {
     const keys = /* @__PURE__ */ new Map();
-    const seen = /* @__PURE__ */ new Map();
+    const seen2 = /* @__PURE__ */ new Map();
     const boxes = /* @__PURE__ */ new Map();
     for (const spec of specs) {
       const meaning = meanings[spec.id];
@@ -4327,8 +4350,8 @@
       let entry;
       if (concept?.repeatable) {
         const base = `${meaning.concept}#${part ?? ""}`;
-        entry = meaning.entry?.index ?? seen.get(base) ?? 0;
-        seen.set(base, entry + 1);
+        entry = meaning.entry?.index ?? seen2.get(base) ?? 0;
+        seen2.set(base, entry + 1);
       }
       keys.set(spec.id, { concept: meaning.concept, ...part ? { part } : {}, ...entry ? { entry } : {} });
     }
@@ -4909,54 +4932,54 @@
     if (!keep) return "";
     return `First, once: ask whether to remember their answers to ${keep.questions.join(", ")} for next time \u2014 they stay on this device \u2014 and call save_for_next_time for ${keep.fields.join(", ")} with agreed true or false. Then: `;
   }
-  function doNext(move) {
-    switch (move.kind) {
+  function doNext(move2) {
+    switch (move2.kind) {
       case "confirm":
-        if (move.reason === "hedged") return `They weren't sure for "${move.field.question}" (they said: "${move.heard}"). Ask which it is before anything goes in.`;
-        if (move.reason === "inferred") return `You worked out "${move.suggestion}" for "${move.field.question}" from "${move.heard}" \u2014 they did not say it. Ask if that's right, then call confirm_answer for ${move.field.field} with agreed true or false.`;
-        return `"${move.field.question}" is waiting for their yes: they said "${move.heard}", and the closest the form offers is "${move.suggestion}". Ask if that's right, then call confirm_answer for ${move.field.field} with agreed true or false \u2014 you judge their reply, in whatever words. If not, offer the other choices.`;
+        if (move2.reason === "hedged") return `They weren't sure for "${move2.field.question}" (they said: "${move2.heard}"). Ask which it is before anything goes in.`;
+        if (move2.reason === "inferred") return `You worked out "${move2.suggestion}" for "${move2.field.question}" from "${move2.heard}" \u2014 they did not say it. Ask if that's right, then call confirm_answer for ${move2.field.field} with agreed true or false.`;
+        return `"${move2.field.question}" is waiting for their yes: they said "${move2.heard}", and the closest the form offers is "${move2.suggestion}". Ask if that's right, then call confirm_answer for ${move2.field.field} with agreed true or false \u2014 you judge their reply, in whatever words. If not, offer the other choices.`;
       case "confirm_recalled": {
-        const list = move.fields.map((f) => `${f.field.question}: "${f.suggestion}"`).join("; ");
+        const list = move2.fields.map((f) => `${f.field.question}: "${f.suggestion}"`).join("; ");
         return `From their last form, ready to go in on their yes: ${list}. Say them briefly and ask if they are still right. For each, call confirm_answer with agreed true if they accept it, in any words, or false if not; if they give a new answer, fill it with fill_fields instead.`;
       }
       case "update_profile": {
-        const each = move.asks.map(
+        const each = move2.asks.map(
           (a) => a.kind === "changed" ? `"${a.question}" was "${a.was}" last time and is "${a.now}" now \u2014 keep the new one for next time?` : `they cleared "${a.question}", which came from last time \u2014 forget it for next time too?`
         ).join(" ");
-        return `Before the next question, one thing about next time: ${each} Ask in a few words, then call save_for_next_time for ${move.asks.map((a) => a.field).join(", ")} with agreed true or false \u2014 you judge their reply.`;
+        return `Before the next question, one thing about next time: ${each} Ask in a few words, then call save_for_next_time for ${move2.asks.map((a) => a.field).join(", ")} with agreed true or false \u2014 you judge their reply.`;
       }
       case "resolve":
-        return `The form won't accept "${move.value}" for "${move.field.question}" \u2014 it says: "${move.problem}". Tell them in a few words and ask for it again.`;
+        return `The form won't accept "${move2.value}" for "${move2.field.question}" \u2014 it says: "${move2.problem}". Tell them in a few words and ask for it again.`;
       case "ask": {
-        if (move.fields.length > 1 && move.fields.every((f) => f.group === "address")) {
-          const where = move.fields[0].section ? ` under "${move.fields[0].section}"` : "";
-          return `Ask for their address${where} as one question \u2014 ${move.fields.map((f) => f.question).join(", ")}.`;
+        if (move2.fields.length > 1 && move2.fields.every((f) => f.group === "address")) {
+          const where = move2.fields[0].section ? ` under "${move2.fields[0].section}"` : "";
+          return `Ask for their address${where} as one question \u2014 ${move2.fields.map((f) => f.question).join(", ")}.`;
         }
-        if (move.fields.length > 1 && move.fields.every((f) => f.group === "split")) {
-          return `Ask for "${move.fields[0].whole}" as one answer, the way a person says it \u2014 it goes into ${move.fields.map((f) => f.question.split(" \u2014 ").pop()).join(", ")}.`;
+        if (move2.fields.length > 1 && move2.fields.every((f) => f.group === "split")) {
+          return `Ask for "${move2.fields[0].whole}" as one answer, the way a person says it \u2014 it goes into ${move2.fields.map((f) => f.question.split(" \u2014 ").pop()).join(", ")}.`;
         }
-        if (move.fields.length > 1 && move.fields.every((f) => f.group === "phone")) {
+        if (move2.fields.length > 1 && move2.fields.every((f) => f.group === "phone")) {
           return `Ask for their phone number, with its country code, as one question.`;
         }
-        if (move.fields.length > 1) {
-          return `Ask for these together in one short question \u2014 they can answer them all at once: ${move.fields.map(describe2).join("; ")}.`;
+        if (move2.fields.length > 1) {
+          return `Ask for these together in one short question \u2014 they can answer them all at once: ${move2.fields.map(describe2).join("; ")}.`;
         }
-        return `Ask for ${describe2(move.fields[0])}.`;
+        return `Ask for ${describe2(move2.fields[0])}.`;
       }
       case "offer_optional":
-        return `Every required field is in. Say so, and ask if they want to do the ${move.fields.length} optional ones or hear what they are: ${move.fields.map((f) => f.question).join("; ")}.`;
+        return `Every required field is in. Say so, and ask if they want to do the ${move2.fields.length} optional ones or hear what they are: ${move2.fields.map((f) => f.question).join("; ")}.`;
       case "optional":
-        return keepFirst(move.keep) + (move.next ? `If they wanted the optional ones, ask for ${askFor(move.fields)}. If they didn't, ask if they're ready for the next page, and press "${move.next}" with press_form_button only on their yes.` : `If they wanted the optional ones, ask for ${askFor(move.fields)}. If they didn't, hand over: everything they told you is in, and they should ${move.submit ? `look it over and press "${move.submit}" themselves` : "look it over and send it themselves"}.`);
+        return keepFirst(move2.keep) + (move2.next ? `If they wanted the optional ones, ask for ${askFor(move2.fields)}. If they didn't, ask if they're ready for the next page, and press "${move2.next}" with press_form_button only on their yes.` : `If they wanted the optional ones, ask for ${askFor(move2.fields)}. If they didn't, hand over: everything they told you is in, and they should ${move2.submit ? `look it over and press "${move2.submit}" themselves` : "look it over and send it themselves"}.`);
       case "next_page":
-        return keepFirst(move.keep) + `Everything needed on this page is in. Ask if they're ready for the next page, and press "${move.label}" with press_form_button only on their yes.`;
+        return keepFirst(move2.keep) + `Everything needed on this page is in. Ask if they're ready for the next page, and press "${move2.label}" with press_form_button only on their yes.`;
       case "handover": {
-        const look = move.review ? lookFirst(move.review) : "look it over";
-        const send = move.submit ? `${look} and press "${move.submit}" themselves` : `${look} and send it themselves`;
-        return keepFirst(move.keep) + (move.theirs.length > 0 ? `Nothing left for you. Say everything they told you is in, that ${move.theirs.join(" and ")} is theirs to do by hand, and that they should ${send}.` : `Nothing left for you. Say everything they told you is in, and that they should ${send}.`);
+        const look = move2.review ? lookFirst(move2.review) : "look it over";
+        const send = move2.submit ? `${look} and press "${move2.submit}" themselves` : `${look} and send it themselves`;
+        return keepFirst(move2.keep) + (move2.theirs.length > 0 ? `Nothing left for you. Say everything they told you is in, that ${move2.theirs.join(" and ")} is theirs to do by hand, and that they should ${send}.` : `Nothing left for you. Say everything they told you is in, and that they should ${send}.`);
       }
     }
   }
-  function brief(state, move) {
+  function brief(state, move2) {
     const { progress } = state;
     const specs = state.fields.map((f) => f.spec);
     const lines = [];
@@ -5005,36 +5028,36 @@
       lines.push(`Buttons you can press when they ask: ${state.actions.map((a) => `"${a.label}"`).join(", ")}`);
     }
     if (state.submitLabel) lines.push(`"${state.submitLabel}" sends the form \u2014 only they press it, never you.`);
-    lines.push("", `DO NEXT: ${doNext(move)}`);
+    lines.push("", `DO NEXT: ${doNext(move2)}`);
     return lines.join("\n");
   }
-  function resumeLine(state, move) {
+  function resumeLine(state, move2) {
     const { filled, total } = state.progress;
     const where = `Sorry, lost the line for a second. ${filled} of ${total} are in`;
-    switch (move.kind) {
+    switch (move2.kind) {
       case "confirm":
-        return move.reason === "hedged" ? `${where}. For ${move.field.question}, which was it?` : `${where}. For ${move.field.question}, is ${move.suggestion} right?`;
+        return move2.reason === "hedged" ? `${where}. For ${move2.field.question}, which was it?` : `${where}. For ${move2.field.question}, is ${move2.suggestion} right?`;
       case "confirm_recalled":
-        return `${where}. From last time I have ${move.fields.map((f) => f.field.question).join(", ")} \u2014 still right?`;
+        return `${where}. From last time I have ${move2.fields.map((f) => f.field.question).join(", ")} \u2014 still right?`;
       case "update_profile": {
-        const [first] = move.asks;
+        const [first] = move2.asks;
         return `${where}. Quick one for next time: ${first.kind === "changed" ? `keep the new ${first.question}?` : `forget ${first.question} for next time too?`}`;
       }
       case "resolve":
-        return `${where}. The form won't take ${move.value} for ${move.field.question} \u2014 can you say it again?`;
+        return `${where}. The form won't take ${move2.value} for ${move2.field.question} \u2014 can you say it again?`;
       case "ask": {
-        const [first] = move.fields;
-        const what = move.fields.length > 1 && first?.group === "address" ? "your address" : move.fields.length > 1 && first?.group === "split" ? first.whole ?? "the next one" : move.fields.length > 1 && first?.group === "phone" ? "your phone number" : move.fields.length > 1 ? move.fields.map((f) => f.question).join(", ") : first?.question ?? "the next one";
+        const [first] = move2.fields;
+        const what = move2.fields.length > 1 && first?.group === "address" ? "your address" : move2.fields.length > 1 && first?.group === "split" ? first.whole ?? "the next one" : move2.fields.length > 1 && first?.group === "phone" ? "your phone number" : move2.fields.length > 1 ? move2.fields.map((f) => f.question).join(", ") : first?.question ?? "the next one";
         return `${where}. Next up: ${what}.`;
       }
       case "offer_optional":
-        return `${where} \u2014 all the required ones. Want to do the ${move.fields.length} optional ones too?`;
+        return `${where} \u2014 all the required ones. Want to do the ${move2.fields.length} optional ones too?`;
       case "optional":
         return `${where}. Shall we carry on with the optional ones?`;
       case "next_page":
         return `${where} \u2014 this page is done. Ready for the next one?`;
       case "handover":
-        return `${where} \u2014 that's everything. Have a look and ${move.submit ? `press ${move.submit}` : "send it"} yourself.`;
+        return `${where} \u2014 that's everything. Have a look and ${move2.submit ? `press ${move2.submit}` : "send it"} yourself.`;
     }
   }
 
@@ -5286,9 +5309,9 @@
     }
     /** What to do next. Offering the optional fields is a one-time move, so it is recorded. */
     move() {
-      const move = nextMove(this.state(), this.plan);
-      if (move.kind === "offer_optional") this.plan.optionalOffered = true;
-      return move;
+      const move2 = nextMove(this.state(), this.plan);
+      if (move2.kind === "offer_optional") this.plan.optionalOffered = true;
+      return move2;
     }
     /** What the next move would be, without taking it — offering the optional ones is not marked. */
     peekMove() {
@@ -5845,14 +5868,14 @@
       }
       const reshaped = cleared.some((id) => CHOICE_KINDS2.has(byId.get(id)?.kind ?? "")) || this.movedWhileWriting ? await this.pageChanged() : null;
       const state = this.state();
-      const move = this.move();
+      const move2 = this.move();
       const result = {
         cleared: cleared.map((id) => ({ field: id, question: question(id) })),
         not_cleared: results.filter((r) => r.status === "cannot-clear").map((r) => ({ field: r.fieldId, question: question(r.fieldId), why: r.reason })),
         ...fromLastTime.length > 0 ? { was_from_last_time: fromLastTime } : {},
         progress: state.progress,
         ...reshaped ? { form_changed: this.changeFacts(reshaped) } : {},
-        do_next: doNext(move),
+        do_next: doNext(move2),
         submitted: false
       };
       this.options.onChange?.();
@@ -5947,14 +5970,14 @@
         claimed,
         reshaped
       });
-      const move = this.move();
+      const move2 = this.move();
       return {
         just_filled: facts.just_filled,
         not_filled: facts.not_filled,
         ...extra,
         progress: state.progress,
         ...facts.form_changed ? { form_changed: facts.form_changed } : {},
-        do_next: doNext(move),
+        do_next: doNext(move2),
         // Always false, always here — rule 5b. Read at the exact moment the model once claimed to
         // have submitted an application it had only typed into.
         submitted: false
@@ -6696,11 +6719,11 @@
     return claims;
   }
   function mismatches(claims, isIn, questionOf2) {
-    const seen = /* @__PURE__ */ new Set();
+    const seen2 = /* @__PURE__ */ new Set();
     const out = [];
     for (const claim of claims) {
-      if (claim.claim !== "put_in" || seen.has(claim.field) || isIn(claim.field)) continue;
-      seen.add(claim.field);
+      if (claim.claim !== "put_in" || seen2.has(claim.field) || isIn(claim.field)) continue;
+      seen2.add(claim.field);
       out.push({ field: claim.field, question: questionOf2(claim.field), said: claim.quote });
     }
     return out;
@@ -6747,27 +6770,82 @@
 .detail[hidden] { display: none; }
 @media (prefers-reduced-motion: reduce) { .badge, .flash { transition: none; animation: none; } }
 `;
-  function viewportRect(el, top) {
-    let rect = el.getBoundingClientRect();
-    let x = rect.left;
-    let y = rect.top;
-    let doc = el.ownerDocument;
-    while (doc && doc !== top) {
-      const frame = doc.defaultView?.frameElement;
-      if (!frame) return null;
-      const outer = frame.getBoundingClientRect();
-      x += outer.left + frame.clientLeft;
-      y += outer.top + frame.clientTop;
-      doc = frame.ownerDocument;
-    }
-    rect = new DOMRect(x, y, rect.width, rect.height);
-    return rect;
+  function parentOf(el) {
+    if (el.parentElement) return el.parentElement;
+    const root = el.getRootNode();
+    return root instanceof ShadowRoot ? root.host : null;
   }
+  function clipChain(el, top) {
+    const steps = [];
+    let at = el;
+    let doc = el.ownerDocument;
+    while (at) {
+      const style = doc.defaultView?.getComputedStyle(at);
+      const next = style?.position === "fixed" ? null : parentOf(at);
+      if (next && next !== doc.documentElement && next !== doc.body) {
+        const own = doc.defaultView?.getComputedStyle(next);
+        const x = !!own && own.overflowX !== "visible";
+        const y = !!own && own.overflowY !== "visible";
+        if (x || y) steps.push({ clip: next, x, y });
+      }
+      at = next;
+      if (!at || at === doc.documentElement) {
+        if (doc === top) break;
+        const frame = doc.defaultView?.frameElement;
+        if (!frame) break;
+        steps.push({ frame });
+        at = frame;
+        doc = frame.ownerDocument;
+      }
+    }
+    return steps;
+  }
+  function seen(el, chain) {
+    const r = el.getBoundingClientRect();
+    let whole = { left: r.left, top: r.top, right: r.right, bottom: r.bottom };
+    const view = el.ownerDocument.defaultView;
+    let shown2 = { left: 0, top: 0, right: view?.innerWidth ?? Infinity, bottom: view?.innerHeight ?? Infinity };
+    shown2 = cut(shown2, whole, true, true);
+    for (const step of chain) {
+      if ("clip" in step) {
+        const b = step.clip.getBoundingClientRect();
+        const inner = step.clip;
+        const left = b.left + inner.clientLeft;
+        const top_ = b.top + inner.clientTop;
+        shown2 = cut(shown2, { left, top: top_, right: left + inner.clientWidth, bottom: top_ + inner.clientHeight }, step.x, step.y);
+      } else {
+        const b = step.frame.getBoundingClientRect();
+        const dx = b.left + step.frame.clientLeft;
+        const dy = b.top + step.frame.clientTop;
+        whole = move(whole, dx, dy);
+        shown2 = move(shown2, dx, dy);
+        shown2 = cut(shown2, { left: dx, top: dy, right: dx + step.frame.clientWidth, bottom: dy + step.frame.clientHeight }, true, true);
+        const outer = step.frame.ownerDocument.defaultView;
+        shown2 = cut(shown2, { left: 0, top: 0, right: outer?.innerWidth ?? Infinity, bottom: outer?.innerHeight ?? Infinity }, true, true);
+      }
+      if (shown2.right - shown2.left < 1 || shown2.bottom - shown2.top < 1) return null;
+    }
+    return shown2.right - shown2.left < 1 || shown2.bottom - shown2.top < 1 ? null : { whole, shown: shown2 };
+  }
+  function cut(a, b, x, y) {
+    return {
+      left: x ? Math.max(a.left, b.left) : a.left,
+      right: x ? Math.min(a.right, b.right) : a.right,
+      top: y ? Math.max(a.top, b.top) : a.top,
+      bottom: y ? Math.min(a.bottom, b.bottom) : a.bottom
+    };
+  }
+  function move(a, dx, dy) {
+    return { left: a.left + dx, right: a.right + dx, top: a.top + dy, bottom: a.bottom + dy };
+  }
+  var BADGE_HALF = 10;
   var Overlay = class {
     constructor(doc, handles) {
       this.doc = doc;
       this.handles = handles;
       this.badges = /* @__PURE__ */ new Map();
+      /** Each field's clipping boxes, found once per `show` — a scroll moves boxes, it does not add them. */
+      this.chains = /* @__PURE__ */ new WeakMap();
       this.frame = 0;
       this.place = () => {
         cancelAnimationFrame(this.frame);
@@ -6797,6 +6875,7 @@
     }
     /** Show exactly these badges. */
     show(badges) {
+      this.chains = /* @__PURE__ */ new WeakMap();
       const wanted = new Map(badges.map((badge) => [badge.fieldId, badge]));
       for (const [id, shown2] of this.badges) {
         if (!wanted.has(id)) {
@@ -6849,12 +6928,14 @@
       const handles = this.handles();
       for (const [id, { el }] of this.badges) {
         const field = handles.get(id);
-        const rect = field && field.isConnected ? viewportRect(field, this.doc) : null;
-        const visible = rect && rect.width > 0 && rect.height > 0;
-        el.style.display = visible ? "" : "none";
-        if (!visible) continue;
-        el.style.left = `${rect.right}px`;
-        el.style.top = `${rect.top}px`;
+        let chain = field && this.chains.get(field);
+        if (field?.isConnected && !chain) this.chains.set(field, chain = clipChain(field, this.doc));
+        const where = field?.isConnected && chain ? seen(field, chain) : null;
+        el.style.display = where ? "" : "none";
+        if (!where) continue;
+        const { whole, shown: shown2 } = where;
+        el.style.left = `${Math.min(whole.right, shown2.right)}px`;
+        el.style.top = `${whole.top >= shown2.top ? whole.top : Math.min(shown2.top + BADGE_HALF, shown2.bottom)}px`;
       }
     }
     explain(fieldId) {
@@ -6964,19 +7045,19 @@
     }
     return btoa(binary);
   }
-  function askingOf(move) {
-    switch (move.kind) {
+  function askingOf(move2) {
+    switch (move2.kind) {
       case "ask":
       case "optional":
       case "offer_optional":
-        return move.fields.map((f) => f.field);
+        return move2.fields.map((f) => f.field);
       case "confirm":
       case "resolve":
-        return [move.field.field];
+        return [move2.field.field];
       case "confirm_recalled":
-        return move.fields.map((f) => f.field.field);
+        return move2.fields.map((f) => f.field.field);
       case "update_profile":
-        return move.asks.map((a) => a.field);
+        return move2.asks.map((a) => a.field);
       default:
         return [];
     }
@@ -7256,8 +7337,8 @@ ${this.partial}`.trim();
         }
       }
       this.partial = "";
-      const move = this.session.peekMove();
-      this.trust.userTurn(text4, move.kind, askingOf(move));
+      const move2 = this.session.peekMove();
+      this.trust.userTurn(text4, move2.kind, askingOf(move2));
       this.answersAtTurn = this.answers();
       this.transcript = `${this.transcript}
 ${text4}`.trim();

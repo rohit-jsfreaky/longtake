@@ -40,7 +40,7 @@ async function start(page: Page, before: unknown[], say: Say = {}, { late = fals
       const fake = L.fakeUnderstanding(overrides as never);
       let release: () => void = () => {};
       const gate = new Promise<void>((done) => (release = done));
-      const understand = late ? async (snapshot: never) => (await gate, fake(snapshot)) : fake;
+      const understand = late ? async (snapshot: Parameters<typeof fake>[0]) => (await gate, fake(snapshot)) : fake;
       const s = new L.LongtakeSession({
         root: () => document,
         ignore: "[data-longtake-ignore]",

@@ -28,12 +28,16 @@ const QA = [
     a: "Anything it could not find in your own words never reaches the page at all. When you say something the form does not offer, or you are not sure, it asks before anything goes in. And you can tell it to clear or change any answer, out loud.",
   },
   {
+    q: "What if it says it filled something it didn't?",
+    a: "Its words are checked against the form. After each reply, what it claimed is held against what is actually in the boxes; when it said an answer went in and the box is empty, it corrects itself out loud and the field is marked “Not in”. Every field it filled carries a small mark saying where the answer came from — so before you send, you read the page, not its word for it.",
+  },
+  {
     q: "Does it work on forms it has never seen?",
     a: "That is the whole point. It reads whatever is on the screen when you open it, including dropdowns whose options do not exist until something opens them. No site has to integrate with it and no form has to be known in advance.",
   },
   {
     q: "Where does my data go?",
-    a: "What it remembers stays in your browser. No account, no sync, nothing uploaded, and one click clears it. Your speech goes to AssemblyAI to be transcribed, the same way any voice feature works, and nowhere else.",
+    a: "What it remembers about you stays in your browser — no account, no sync, and one click clears it. Your speech goes to AssemblyAI, which transcribes it and runs the voice agent. Two small checks also go through AssemblyAI's LLM Gateway: the form's questions, never your answers, so it knows what each field means; and what the two of you just said, so its claims can be checked against the form. Nothing goes anywhere else.",
   },
   {
     q: "Can I speak Hindi?",
