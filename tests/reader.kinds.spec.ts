@@ -81,6 +81,38 @@ test.describe("controls that cannot receive an answer", () => {
     expect((await read(page)).specs).toHaveLength(0);
   });
 
+  // Workable's English level: a list you pick from, its box read-only because you pick, not type.
+  test("…but a read-only list you pick from is a field", async ({ page }) => {
+    await load(page, `<label id="l">English level</label><input role="combobox" aria-haspopup="listbox" aria-labelledby="l" readonly placeholder="Select an option…">`);
+    expect(only(await read(page))).toMatchObject({ label: "English level", kind: "select" });
+  });
+
+  // Workable: the options sit beside the box, and nothing is picked yet. Read whole, the block's
+  // text made "Intermediate" the answer — and the star is in a span of its own, before the label.
+  test("a list of choices beside the box is not its answer, and a star beside the label counts", async ({ page }) => {
+    await load(
+      page,
+      `<div><span><span>*</span><span><span id="l">English level</span></span></span>
+         <div class="w"><input role="combobox" aria-haspopup="listbox" aria-labelledby="l" readonly placeholder="Select an option…" style="width:200px;height:24px">
+           <ul role="listbox" style="margin:0"><li role="option">Basic</li><li role="option">Intermediate</li></ul></div></div>`,
+    );
+    const out = await page.evaluate(() => {
+      const L = window.__longtake;
+      const read = L.readForm();
+      const spec = read.specs[0]!;
+      // Its choices as the harvest learns them, before anything is picked.
+      const known = { ...spec, options: ["Basic", "Intermediate"].map((label) => ({ value: label, label })) };
+      return { required: spec.required, value: L.readValue(known, read.handles.get(spec.id)!) };
+    });
+    expect(out).toEqual({ required: true, value: null });
+  });
+
+  // Jotform's date boxes: plain text, with the date's format as their placeholder.
+  test("a text box whose placeholder is a date format takes a date", async ({ page }) => {
+    await load(page, `<label for="d">Today's Date</label><input id="d" placeholder="DD-MM-YYYY"><label for="n">Name</label><input id="n" placeholder="Your name">`);
+    expect((await read(page)).specs.map((s) => s.kind)).toEqual(["date", "text"]);
+  });
+
   test("a disabled select is not a field", async ({ page }) => {
     await load(page, `<label for="f">Field</label><select id="f" disabled><option>A</option></select>`);
     expect((await read(page)).specs).toHaveLength(0);

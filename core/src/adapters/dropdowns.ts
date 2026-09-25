@@ -4,7 +4,7 @@
  * that takes several answers. See `writer.ts` for why a component is never simply assigned.
  */
 
-import { closeWidget, openWidget, optionNodes, ownsOptions, pressOption } from "../dom-path";
+import { closeWidget, isVisible, openWidget, optionNodes, ownsOptions, pressOption } from "../dom-path";
 import { matchAmong, matchOption, normalise, optionNamedIn, sayableChoices, showsChoice, type Choice } from "../choices";
 import type { FieldSpec, SpokenValue } from "../types";
 import type { WidgetAdapter } from "./index";
@@ -49,12 +49,17 @@ export async function pickFromWidget(
   const before = new Set(optionNodes());
   const wasShowing = renderedText(el);
 
-  openWidget(el);
-  await sleep(WIDGET_OPEN_MS);
+  // Its own list already open — a tag picker between picks — is used as it is. Pressing the
+  // trigger again closes many (Luma's did), and the second of two answers found no list.
+  const openAlready = optionNodes().filter((option) => ownsOptions(el, option) === true && isVisible(option));
+  if (openAlready.length === 0) {
+    openWidget(el);
+    await sleep(WIDGET_OPEN_MS);
+  }
 
   // What appeared because we opened it — the reliable signal, since options usually arrive
   // through a portal and cannot be found by looking inside the trigger.
-  let candidates = optionNodes().filter((option) => !before.has(option));
+  let candidates = openAlready.length > 0 ? openAlready : optionNodes().filter((option) => !before.has(option));
 
   // …but nothing appearing does not always mean nothing opened. A widget that was ALREADY open —
   // left that way by the option-harvesting pass, because not every menu closes on Escape —

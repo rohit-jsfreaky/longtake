@@ -534,30 +534,29 @@ export function openWidget(el: HTMLElement): void {
  */
 export function closeWidget(el: HTMLElement, shown?: Element[]): void {
   // Close only what is open, and nothing around it. Handed the options that were on show, it
-  // does nothing once none of them is: the widget closed itself, and an Escape or an outside
-  // click would reach only what holds it. Luma's form sits in a popup that closes on both — one
-  // Escape after a pick closed it, with every answer in it. (Not `aria-expanded`: plenty of
-  // widgets never update it.) Inside a marked dialog, the outside click stays inside the dialog.
+  // does nothing once none of them is: the widget closed itself, and anything more would reach
+  // only what holds it. (Not `aria-expanded`: plenty of widgets never update it.)
   const open = () => !shown || shown.some((option) => option.isConnected && isVisible(option));
   if (!open()) return;
-  const dialog = el.closest("[role='dialog'], dialog, [aria-modal='true']");
-
-  if (!dialog) {
-    el.dispatchEvent(
-      new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true, composed: true }),
-    );
-  }
   el.blur();
-  // The Escape closed it: a click outside now would land only on what holds the widget.
-  if (!open()) return;
 
-  const outside = dialog ?? el.ownerDocument?.body;
+  // A click outside the widget but inside its form first: the widget's own "click outside" closes
+  // it, and a popup holding the form sees a click inside itself. Luma's form sits in a popup that
+  // closes on Escape and on a click outside it — an Escape that arrived as the list closed itself
+  // closed the popup instead, with every answer in it.
+  const dialog = el.closest("[role='dialog'], dialog, [aria-modal='true']");
+  const outside = el.closest("form") ?? dialog ?? el.ownerDocument?.body;
   if (outside) {
     for (const type of ["pointerdown", "mousedown"]) {
-      outside.dispatchEvent(
-        new MouseEvent(type, { bubbles: true, cancelable: true, composed: true }),
-      );
+      outside.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, composed: true }));
     }
+  }
+  if (!open()) return;
+
+  // Still open: the keyboard's way. Never inside a marked dialog, where an Escape that finds no
+  // menu closes the dialog.
+  if (!dialog) {
+    el.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true, composed: true }));
   }
 }
 

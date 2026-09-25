@@ -180,11 +180,34 @@ export function renderedText(el: HTMLElement): string {
   // lands on the empty middle one and reports every successful selection as a failure.
   let node: HTMLElement | null = el.parentElement;
   for (let hops = 0; node && hops < 5; hops++) {
-    const text = (node.innerText ?? "").replace(/\s+/g, " ").trim();
+    const text = shownWithoutChoices(node);
     if (text) return own ? `${own} ${text}` : text;
     node = node.parentElement;
   }
   return own;
+}
+
+/** A widget's own list of choices, which is never the choice it shows. */
+const CHOICE_LIST = "[role='listbox'], [role='option'], [role='menu'], [role='menuitem']";
+
+/**
+ * The text a block shows, leaving out any list of choices inside it. Workable keeps its English
+ * level's options beside the box: read whole, "Basic Intermediate Advanced…" was taken for the
+ * answer — a value nobody gave, which the gate then saw change.
+ */
+function shownWithoutChoices(block: HTMLElement): string {
+  if (!block.querySelector(CHOICE_LIST)) return (block.innerText ?? "").replace(/\s+/g, " ").trim();
+  const parts: string[] = [];
+  const walker = block.ownerDocument.createTreeWalker(block, NodeFilter.SHOW_TEXT);
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    const parent = node.parentElement;
+    const list = parent?.closest(CHOICE_LIST);
+    if (!parent || (list && block.contains(list))) continue;
+    if (parent.checkVisibility && !parent.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })) continue;
+    const text = (node.textContent ?? "").replace(/\s+/g, " ").trim();
+    if (text) parts.push(text);
+  }
+  return parts.join(" ");
 }
 
 /** Every radio sharing this one's name, wherever in the document they live. */

@@ -259,21 +259,17 @@
   function closeWidget(el, shown2) {
     const open = () => !shown2 || shown2.some((option) => option.isConnected && isVisible(option));
     if (!open()) return;
-    const dialog = el.closest("[role='dialog'], dialog, [aria-modal='true']");
-    if (!dialog) {
-      el.dispatchEvent(
-        new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true, composed: true })
-      );
-    }
     el.blur();
-    if (!open()) return;
-    const outside = dialog ?? el.ownerDocument?.body;
+    const dialog = el.closest("[role='dialog'], dialog, [aria-modal='true']");
+    const outside = el.closest("form") ?? dialog ?? el.ownerDocument?.body;
     if (outside) {
       for (const type of ["pointerdown", "mousedown"]) {
-        outside.dispatchEvent(
-          new MouseEvent(type, { bubbles: true, cancelable: true, composed: true })
-        );
+        outside.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, composed: true }));
       }
+    }
+    if (!open()) return;
+    if (!dialog) {
+      el.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true, composed: true }));
     }
   }
   function pressOption(option) {
@@ -316,6 +312,10 @@
       observer.observe(target, { childList: true, subtree: true, attributes: true });
     });
   }
+
+  // core/src/shapes.ts
+  var DATE_MASK = /^(mm|dd|yyyy)([/.\-\s])(mm|dd)\2(yyyy|mm|dd)$/i;
+  var DIGIT_MASK = /^[\s()+\-./]*[09#](?:[\s()+\-./]*[09#])*[\s()+\-./]*$/;
 
   // core/src/reader.ts
   var CANDIDATE_SELECTOR = [
@@ -549,6 +549,16 @@
   }
   var PART_ONLY = /^(date|time|day|month|year|hour|minute|dd|mm|yyyy|hh)$/i;
   var STARRED = /^[\s\p{Cf}]*[*✱]|[*✱][\s\p{Cf}]*$/u;
+  function starBeside(sources, control) {
+    return sources.some((source) => {
+      let line = source.parentElement;
+      for (let hops = 0; line && hops < 3; hops++, line = line.parentElement) {
+        if (line.contains(control) || Array.from(line.querySelectorAll(CANDIDATE_SELECTOR)).some(isAField)) return false;
+        if (STARRED.test(textOf(line))) return true;
+      }
+      return false;
+    });
+  }
   function drawsAStar(sources) {
     const starAlone = /^[\s\p{Cf}]*[*✱][\s\p{Cf}]*$/u;
     return sources.some((source) => {
@@ -602,7 +612,7 @@
         case "range":
           return "number";
         default:
-          return "text";
+          return DATE_MASK.test((el.getAttribute("placeholder") ?? "").trim()) ? "date" : "text";
       }
     }
     return "textarea";
@@ -713,7 +723,7 @@
         if (type === "password") return;
       }
       if (el.disabled) return;
-      if (el.readOnly) return;
+      if (el.readOnly && kindOf(el) !== "select") return;
       if (el.getAttribute("tabindex") === "-1" && el.closest("[aria-hidden='true']")) {
         skipped.push({ label: el.getAttribute("name") || kindOf(el), reason: "hidden from keyboard and screen readers" });
         return;
@@ -722,7 +732,7 @@
       const kind = kindOf(el);
       const { text: rawLabel, from: labelledFrom, part } = labelOf(el);
       const label = cleanLabel(rawLabel);
-      const starred = STARRED.test(rawLabel) || drawsAStar(labelledFrom);
+      const starred = STARRED.test(rawLabel) || drawsAStar(labelledFrom) || starBeside(labelledFrom, el);
       const name = el.getAttribute("name") ?? "";
       if (!visible) {
         skipped.push({ label: label || name || kind, reason: "not visible on the page" });
@@ -1056,11 +1066,26 @@
     const own = el.tagName.toLowerCase() === "input" ? (el.value ?? "").trim() : "";
     let node = el.parentElement;
     for (let hops = 0; node && hops < 5; hops++) {
-      const text3 = (node.innerText ?? "").replace(/\s+/g, " ").trim();
+      const text3 = shownWithoutChoices(node);
       if (text3) return own ? `${own} ${text3}` : text3;
       node = node.parentElement;
     }
     return own;
+  }
+  var CHOICE_LIST = "[role='listbox'], [role='option'], [role='menu'], [role='menuitem']";
+  function shownWithoutChoices(block) {
+    if (!block.querySelector(CHOICE_LIST)) return (block.innerText ?? "").replace(/\s+/g, " ").trim();
+    const parts = [];
+    const walker = block.ownerDocument.createTreeWalker(block, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      const parent = node.parentElement;
+      const list = parent?.closest(CHOICE_LIST);
+      if (!parent || list && block.contains(list)) continue;
+      if (parent.checkVisibility && !parent.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })) continue;
+      const text3 = (node.textContent ?? "").replace(/\s+/g, " ").trim();
+      if (text3) parts.push(text3);
+    }
+    return parts.join(" ");
   }
   function radioGroup(el) {
     if (el.tagName.toLowerCase() !== "input") return [];
@@ -1294,9 +1319,12 @@
   async function pickFromWidget(spec, el, want, spoken) {
     const before = new Set(optionNodes());
     const wasShowing = renderedText(el);
-    openWidget(el);
-    await sleep(WIDGET_OPEN_MS);
-    let candidates = optionNodes().filter((option) => !before.has(option));
+    const openAlready = optionNodes().filter((option) => ownsOptions(el, option) === true && isVisible(option));
+    if (openAlready.length === 0) {
+      openWidget(el);
+      await sleep(WIDGET_OPEN_MS);
+    }
+    let candidates = openAlready.length > 0 ? openAlready : optionNodes().filter((option) => !before.has(option));
     if (candidates.length === 0) {
       candidates = optionNodes().filter((option) => ownsOptions(el, option) !== false);
     }
@@ -1555,7 +1583,6 @@
     read: readTyped,
     clear: clearTyped
   };
-  var DATE_MASK = /^(mm|dd|yyyy)([/.\-\s])(mm|dd)\2(yyyy|mm|dd)$/i;
   function asFieldDate(value, spec, el) {
     const isNative = el.tagName.toLowerCase() === "input" && el.type === "date";
     const mask = DATE_MASK.exec((spec.placeholder ?? "").trim());
@@ -1575,7 +1602,6 @@
     const part = (token) => /y/i.test(token) ? String(y) : /m/i.test(token) ? two(m) : two(d);
     return [first, second, third].map(part).join(sep);
   }
-  var DIGIT_MASK = /^[\s()+\-./]*[09#](?:[\s()+\-./]*[09#])*[\s()+\-./]*$/;
   function asFieldShape(value, spec) {
     const shape = (spec.placeholder ?? "").trim();
     if (!DIGIT_MASK.test(shape)) return value;

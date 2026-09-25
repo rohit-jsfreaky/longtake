@@ -3,6 +3,7 @@
  * from divs — and the file upload, which is never answered by voice.
  */
 
+import { DATE_MASK, DIGIT_MASK } from "../shapes";
 import type { FieldSpec, SpokenValue } from "../types";
 import type { WidgetAdapter } from "./index";
 import { announce, cannot, clearShown, clearText, leave, readBack, readShown, readText, setNativeValue, sleep, type WriteOutcome } from "./kit";
@@ -78,8 +79,6 @@ export const contentEditable: WidgetAdapter = {
   clear: clearTyped,
 };
 
-/** A placeholder that is really a date format: "MM/DD/YYYY", "dd-mm-yyyy", "YYYY-MM-DD". */
-const DATE_MASK = /^(mm|dd|yyyy)([/.\-\s])(mm|dd)\2(yyyy|mm|dd)$/i;
 
 /**
  * A spoken date, in the shape this field takes.
@@ -110,8 +109,6 @@ export function asFieldDate(value: string, spec: FieldSpec, el: HTMLElement): st
   return [first!, second!, third!].map(part).join(sep!);
 }
 
-/** A placeholder that is really a number's shape: "(000) 000-0000", "###-###-####". */
-const DIGIT_MASK = /^[\s()+\-./]*[09#](?:[\s()+\-./]*[09#])*[\s()+\-./]*$/;
 
 /**
  * A spoken number, in the shape the box's own placeholder shows — when it has exactly as many

@@ -35,6 +35,7 @@ import {
   uniqueSelector,
   whenSettled,
 } from "./dom-path";
+import { DATE_MASK } from "./shapes";
 import type {
   FieldHandles,
   FieldKind,
@@ -459,6 +460,21 @@ const STARRED = /^[\s\p{Cf}]*[*✱]|[*✱][\s\p{Cf}]*$/u; // at either end: Work
  * `::after { content: " * " }` on an empty span beside the question: every person sees it,
  * `innerText` does not, and every required MS Forms question was read as optional.
  */
+/**
+ * A star set beside the question rather than in it: Workable puts "*" in a span of its own before
+ * the label. The label's line — the blocks around it, up to one that holds a field — carries it.
+ */
+function starBeside(sources: Element[], control: Element): boolean {
+  return sources.some((source) => {
+    let line = source.parentElement;
+    for (let hops = 0; line && hops < 3; hops++, line = line.parentElement) {
+      if (line.contains(control) || Array.from(line.querySelectorAll(CANDIDATE_SELECTOR)).some(isAField)) return false;
+      if (STARRED.test(textOf(line))) return true;
+    }
+    return false;
+  });
+}
+
 function drawsAStar(sources: Element[]): boolean {
   const starAlone = /^[\s\p{Cf}]*[*✱][\s\p{Cf}]*$/u;
   return sources.some((source) => {
@@ -534,7 +550,9 @@ function kindOf(el: Element): FieldKind {
       case "range":
         return "number";
       default:
-        return "text";
+        // A text box whose placeholder is a date's format takes a date — Jotform's "DD-MM-YYYY".
+        // The writer puts the date in that very shape (`asFieldDate`).
+        return DATE_MASK.test((el.getAttribute("placeholder") ?? "").trim()) ? "date" : "text";
     }
   }
 
@@ -750,7 +768,10 @@ export function readForm(
 
     // Disabled and read-only fields cannot receive an answer, so they are not fields.
     if ((el as HTMLInputElement).disabled) return;
-    if ((el as HTMLInputElement).readOnly) return;
+    // …except a list you pick from: its box is read-only because you pick instead of type. Workable's
+    // English level was dropped as unanswerable, and Cognito's Country — read-only once picked —
+    // vanished from the form the moment it was answered.
+    if ((el as HTMLInputElement).readOnly && kindOf(el) !== "select") return;
 
     // Taken out of the keyboard's reach AND hidden from screen readers: the author has said, twice,
     // that no person is meant to use it. Workable's address autofill-catchers (city, postcode,
@@ -768,7 +789,7 @@ export function readForm(
     const label = cleanLabel(rawLabel);
     // Google Forms sets no `required` and no `aria-required` on a text answer: the only mark is
     // the asterisk on its question. Read as optional, a required question was never asked.
-    const starred = STARRED.test(rawLabel) || drawsAStar(labelledFrom);
+    const starred = STARRED.test(rawLabel) || drawsAStar(labelledFrom) || starBeside(labelledFrom, el);
     const name = el.getAttribute("name") ?? "";
 
     // ── Kept out of the schema entirely, rather than flagged inside it ──────────────
