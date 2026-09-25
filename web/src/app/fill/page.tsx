@@ -28,6 +28,7 @@ import { useEffect, useRef } from "react";
 import { describeMarks } from "@longtake/core";
 
 import { useLongtake } from "@/lib/use-longtake";
+import { KnownPanel } from "@/components/KnownPanel";
 import { DemoForm } from "./DemoForm";
 
 export default function FillPage() {
@@ -44,13 +45,11 @@ export default function FillPage() {
     partial,
     shaped,
     hesitations,
-    known,
     fromMemory,
     log,
     start,
     stop,
-    forgetOne,
-    forgetEverything,
+    profileStore,
   } = useLongtake();
 
   // `scrollTop`, not `scrollIntoView` — the latter scrolls every ancestor including the page,
@@ -193,65 +192,11 @@ export default function FillPage() {
         )}
 
         {/*
-          Everything Longtake knows about the person, listed plainly, with a way to delete it.
-          A product that keeps somebody's name, salary and immigration status should be able to
-          show them the whole list on one screen and let them empty it in one click.
+          Everything Longtake knows about the person, with where each answer came from, and a way
+          to change it, remove it, keep a copy, or forget the lot — the same view the extension's
+          settings page gives.
         */}
-        <section>
-          <h2 className="text-xs font-medium uppercase tracking-wide text-neutral-500">
-            Remembered about you ({known.length})
-          </h2>
-          <div className="mt-1 rounded-md border border-neutral-200 p-2 text-xs dark:border-neutral-800">
-            {known.length === 0 && (
-              <p className="text-neutral-400">
-                Nothing yet. Answer once and the next form arrives filled in.
-              </p>
-            )}
-            {known.map((answer) => (
-              <div key={answer.id} className="mb-1 flex items-start gap-2">
-                <button
-                  onClick={() => forgetOne(answer.id)}
-                  title="Forget this"
-                  className="mt-0.5 shrink-0 rounded border border-neutral-300 px-1 text-[10px] leading-4 hover:bg-neutral-100 dark:border-neutral-700 dark:hover:bg-neutral-800"
-                >
-                  ✕
-                </button>
-                <span className="min-w-0">
-                  <span className="font-medium">{answer.say}</span>{" "}
-                  <span className="text-neutral-600 dark:text-neutral-400">
-                    {answer.value}
-                  </span>
-                  {/* Where it came from — their words, or their own hand — so a saved answer is
-                      never a mystery. */}
-                  <span className="block truncate text-[10px] text-neutral-400">
-                    {answer.source === "spoken" || answer.source === "confirmed"
-                      ? `you said “${answer.evidence.length > 60 ? `${answer.evidence.slice(0, 60)}…` : answer.evidence}”`
-                      : answer.source === "edited"
-                        ? "edited by you"
-                        : answer.source === "typed"
-                          ? "typed by you"
-                          : "kept from before"}
-                    {answer.host && ` · ${answer.host}`}
-                  </span>
-                </span>
-              </div>
-            ))}
-
-            <div className="mt-2 flex items-center justify-between gap-2 border-t border-neutral-200 pt-2 dark:border-neutral-800">
-              <p className="text-[10px] text-neutral-400">
-                Stored in this browser only. Never uploaded.
-              </p>
-              {known.length > 0 && (
-                <button
-                  onClick={forgetEverything}
-                  className="shrink-0 rounded border border-neutral-300 px-1.5 py-0.5 text-[10px] hover:bg-neutral-100 dark:border-neutral-700 dark:hover:bg-neutral-800"
-                >
-                  Forget everything
-                </button>
-              )}
-            </div>
-          </div>
-        </section>
+        <KnownPanel store={profileStore} />
 
         {/*
           The nudge, and the only sentence this feature is allowed to say. It is an offer to

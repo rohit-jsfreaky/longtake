@@ -8,6 +8,8 @@
  */
 
 import { expect, test } from "@playwright/test";
+import { existsSync, readFileSync } from "node:fs";
+import { join as pathJoin } from "node:path";
 
 import { locatorsOf, scoreRead } from "../../tools/corpus/score";
 import { corpusForms, joinTruth, openForm, readLikeTheProduct, saveResult, sentSoFar } from "./load";
@@ -40,13 +42,29 @@ for (const form of forms) {
       join = await joinTruth(page, locators);
     }
     expect(join.stale, "the page keeps replacing its fields after every read").toBe(0);
+
+    // What the product reads is the reader plus what the page's WORDS add, from the model's recorded
+    // answer (`applyMeaningHints`): a question required only in words, a choice that only asks to
+    // choose, a date box that shows no format. `CORPUS_LLM=off` reads the markup alone.
+    const cassette = pathJoin(form.dir, "understand.cassette.json");
+    if (process.env.CORPUS_LLM !== "off" && existsSync(cassette)) {
+      const recorded = JSON.parse(readFileSync(cassette, "utf8")) as { fields: (Record<string, unknown> & { key: string })[] };
+      const idOf = new Map(fields.map((field, i) => [field.key, join.best[i]]));
+      const raw = { fields: recorded.fields.flatMap(({ key, ...rest }) => (idOf.get(key) ? [{ ...rest, id: idOf.get(key)! }] : [])) };
+      specs = (await page.evaluate((raw) => {
+        const core = window.__longtake;
+        const read = core.last!;
+        core.applyMeaningHints(read.specs, core.validateMeanings(raw, read.specs));
+        return read.specs as unknown;
+      }, raw)) as typeof specs;
+    }
     expect(fields.filter((_, i) => !join.found[i]).map((f) => f.key), "truth fields whose element is gone").toEqual([]);
 
     const result = scoreRead(fields, specs, join);
     if (!form.truth!.verified) {
       test.info().annotations.push({ type: "unverified read", description: JSON.stringify({ counts: result.counts, elsewhere }) });
     } else {
-      saveResult("read", form.id, { ...result, elsewhere, timing, checkedBy: [form.truth!.verified.by] });
+      saveResult("read", form.id, { ...result, elsewhere, timing, checkedBy: [form.truth!.verified.by, ...(form.truth!.corrected ?? []).map((c) => c.by)] });
     }
     // Per run, beside the saved file (which the next run overwrites) — so a flaky field shows up.
     const wrong = result.rows.filter((row) => row.problems.length > 0).map((row) => `${row.key}: ${row.problems.join("; ")}`);

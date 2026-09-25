@@ -117,6 +117,22 @@ export type FieldSpec = {
    * From the accessible description; told to the agent so an answer arrives in the shape asked.
    */
   description?: string;
+  /**
+   * Where the label came from: words shown on the page, or only an attribute no one sees
+   * (`aria-label`, a placeholder, a title). A dial-code picker named only "Telephone country code"
+   * for screen readers shows a person nothing but a flag: on screen, its question is the phone's.
+   */
+  nameSource?: "shown" | "attribute";
+  /**
+   * What the model says the field means, once it has (`understand.ts`, checked by
+   * `validateMeanings`). Absent until then, and whenever it could not be reached: everything that
+   * reads it falls back to the offline reading.
+   */
+  understood?: {
+    concept: string;
+    subject: "self" | "other_person" | "organization" | "none";
+    confidence: "high" | "medium" | "low";
+  };
 };
 
 /** What to call a field to a person or the model: its question, and the piece it takes, if any. */

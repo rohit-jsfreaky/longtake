@@ -27,10 +27,11 @@
  * Pure. No storage, no DOM — the same file runs in the page, the extension's worker and Node.
  */
 
-import { matchOption, normalise, optionNamedIn } from "./choices";
+import { matchOption, normalise, optionNamedIn, realChoices } from "./choices";
 import { conceptById, LEGACY_KEY_TO_CONCEPT, RELATED_CONCEPTS } from "./concepts";
 import { dialCodeIn, dialCodeOf, optionForDialCode, PHONE_CODE, PHONE_NUMBER, PHONE_WHOLE, withoutDialCode } from "./phones";
 import type { Memory } from "./memory";
+import { calendarDay } from "./shapes";
 import type { FieldSpec } from "./types";
 import type { Meaning, Meanings } from "./understand";
 
@@ -138,12 +139,22 @@ function asPart(text: string | undefined): string | undefined {
 export function factKeys(specs: FieldSpec[], meanings: Meanings): Map<string, FactKey> {
   const keys = new Map<string, FactKey>();
   const seen = new Map<string, number>();
+  // How many of this form's boxes take the person's answer to each concept: a page's own caption
+  // names a piece only where the answer is split across several (a date's day, month and year).
+  const boxes = new Map<string, number>();
+  for (const spec of specs) {
+    const meaning = meanings[spec.id];
+    if (meaning?.subject === "self") boxes.set(meaning.concept, (boxes.get(meaning.concept) ?? 0) + 1);
+  }
   for (const spec of specs) {
     const meaning = meanings[spec.id];
     if (!meaning || meaning.subject !== "self" || meaning.concept === "other") continue;
-    // A piece that only repeats the concept ("country_code" of contact.phone.country_code) is the
-    // concept itself: the model says so often, and a fact must not split in two over it.
-    const named = asPart(meaning.part) ?? asPart(spec.part);
+    // The model's piece when it named one ("year" of a lone "Year of birth" box). Else the page's
+    // caption, but only on a split answer — Workable's lone country-code picker is captioned
+    // "Telephone country code", and the code it holds is the whole of its concept. A piece that
+    // only repeats the concept ("country_code" of contact.phone.country_code) is the concept.
+    const split = (boxes.get(meaning.concept) ?? 0) > 1 && !conceptById(meaning.concept)?.repeatable;
+    const named = asPart(meaning.part) ?? (split ? asPart(spec.part) : undefined);
     const part = named && !meaning.concept.endsWith(`.${named}`) ? named : undefined;
     const concept = conceptById(meaning.concept);
     let entry: number | undefined;
@@ -358,7 +369,8 @@ export type RecallWhy =
   | "from_a_while_ago"
   | "carried_over"
   | "closest_choice"
-  | "put_together";
+  | "put_together"
+  | "taken_apart";
 
 export type Recollection = {
   fieldId: string;
@@ -460,6 +472,22 @@ export function recallFor(specs: FieldSpec[], meanings: Meanings, profile: Profi
 type Answer = { id: string; fact: Fact; value: FactValue; evidence: string; why?: RecallWhy };
 
 /**
+ * One box's piece of a calendar day. A list of months or days in calendar order is picked by
+ * position — twelve months are twelve months in any language; a list of years by the year itself;
+ * a box you type into by the number, two digits for day and month.
+ */
+function datePiece(day: { y: number; m: number; d: number }, part: string, spec: FieldSpec): string | null {
+  const which = /^(d|dd|day|date)$/.test(part) ? "d" : /^(m|mm|month)$/.test(part) ? "m" : /^(y|yy|yyyy|year)$/.test(part) ? "y" : null;
+  if (!which) return null;
+  const n = day[which];
+  const choices = realChoices(spec.options);
+  if (choices.length === 0) return which === "y" ? String(n) : String(n).padStart(2, "0");
+  if (which === "m" && choices.length === 12) return choices[n - 1] ?? null;
+  if (which === "d" && choices.length === 31) return choices[n - 1] ?? null;
+  return choices.find((choice) => Number(choice.trim()) === n) ?? null;
+}
+
+/**
  * What is known for this fact — the fact itself, or failing that, what can be worked out from what
  * is known without guessing:
  *   - a phone's pieces from the whole number, and the whole from its pieces (digits, not words);
@@ -480,7 +508,38 @@ function answerFor(key: FactKey, spec: FieldSpec, profile: Profile): Answer | nu
     }
   }
   if (own) return { id: own.id, fact: own, value: own.value, evidence: evidenceOf(own) };
+
+  // A date split into boxes, from the whole date they gave: each box its piece, by the calendar.
+  if (key.part && !key.entry && conceptById(key.concept)?.valueKind === "date") {
+    const whole = get(key.concept);
+    const day = typeof whole?.value === "string" ? calendarDay(whole.value) : null;
+    const piece = whole && day ? datePiece(day, key.part, spec) : null;
+    return whole && piece ? { id: whole.id, fact: whole, value: piece, evidence: evidenceOf(whole) } : null;
+  }
   if (key.part || key.entry) return null;
+
+  // The whole date, from its pieces given to boxes on another form: put together, for a yes.
+  if (conceptById(key.concept)?.valueKind === "date") {
+    const [d, m, y] = ["day", "month", "year"].map((part) => profile.facts[factId({ concept: key.concept, part })]);
+    if (!d || !m || !y) return null;
+    const month = String(m.value);
+    const two = (n: string) => n.padStart(2, "0");
+    const iso = /^\d{1,2}$/.test(month) ? `${y.value}-${two(month)}-${two(String(d.value))}` : null;
+    const day = calendarDay(iso ?? `${d.value} ${month} ${y.value}`);
+    if (!day) return null;
+    const value = `${day.y}-${two(String(day.m))}-${two(String(day.d))}`;
+    return { id: y.id, fact: y, value, evidence: [d, m, y].map(evidenceOf).join(" — "), why: "put_together" };
+  }
+
+  // A first or last name out of a full name of exactly two words — offered, never assumed: which
+  // word is which is theirs to say, and a name of three words is not split at all.
+  if (key.concept === "identity.first_name" || key.concept === "identity.last_name") {
+    const full = get("identity.full_name");
+    const words = typeof full?.value === "string" ? full.value.trim().split(/\s+/) : [];
+    if (full && words.length === 2) {
+      return { id: full.id, fact: full, value: key.concept === "identity.first_name" ? words[0]! : words[1]!, evidence: evidenceOf(full), why: "taken_apart" };
+    }
+  }
 
   if (key.concept === PHONE_NUMBER || key.concept === PHONE_CODE) {
     const whole = get(PHONE_WHOLE);
@@ -536,7 +595,8 @@ export const RECALL_WHY_WORDS: Record<RecallWhy, string> = {
   from_a_while_ago: "it was a while ago and may have changed",
   carried_over: "saved by an older version of Longtake",
   closest_choice: "the closest of this form's choices",
-  put_together: "put together from their first and last name",
+  put_together: "put together from pieces they gave on another form",
+  taken_apart: "taken from their full name — which part is which is theirs to say",
 };
 
 // ── Moving the first memory over ──────────────────────────────────────────────────────

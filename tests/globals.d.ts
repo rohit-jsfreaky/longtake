@@ -68,6 +68,7 @@ import type {
   accessibleDescription,
   fallbackMeanings,
   validateMeanings,
+  applyMeaningHints,
 } from "@longtake/core";
 import type { FakeVoice } from "../tools/replay/fake-voice";
 import type { runScript } from "../tools/replay/run-script";
@@ -146,6 +147,7 @@ declare global {
       accessibleDescription: typeof accessibleDescription;
       fallbackMeanings: typeof fallbackMeanings;
       validateMeanings: typeof validateMeanings;
+      applyMeaningHints: typeof applyMeaningHints;
       FakeVoice: typeof FakeVoice;
       runScript: typeof runScript;
       inspect: () => unknown;

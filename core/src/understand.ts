@@ -218,6 +218,37 @@ function phoneStructure(meanings: Meanings, specs: FieldSpec[]): void {
 }
 
 /**
+ * What the model's meanings add to the fields as the product holds them — never overriding what the
+ * markup decided:
+ *   - each field carries what it means (`understood`), for the asking order and the opening line;
+ *   - a plain text box whose question is a calendar day (Cognito's date picker shows no format) is
+ *     a date, so the agent is asked for one in a shape the page takes.
+ * Returns whether anything changed, so the agent can be given the new tool.
+ *
+ * Asked as well whether the words made a question required and which choice only prompts to
+ * choose, the small model got both wrong and its other judgements worse (RESEARCH.md §9f), so it
+ * is not asked.
+ */
+export function applyMeaningHints(specs: FieldSpec[], meanings: Meanings): boolean {
+  let changed = false;
+  for (const spec of specs) {
+    const meaning = meanings[spec.id];
+    if (!meaning || meaning.source !== "model") continue;
+    const understood = { concept: meaning.concept, subject: meaning.subject, confidence: meaning.confidence };
+    if (JSON.stringify(spec.understood) !== JSON.stringify(understood)) {
+      spec.understood = understood;
+      changed = true;
+    }
+    const date = conceptById(meaning.concept)?.valueKind === "date";
+    if (date && spec.kind === "text" && !spec.part && meaning.confidence !== "low") {
+      spec.kind = "date";
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+/**
  * Meanings without the model: the few the old memory keys recognise, at low confidence. Low, so no
  * answer is prefilled on it — it only keeps the old behaviour alive while the model is away.
  */

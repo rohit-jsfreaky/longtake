@@ -5,7 +5,7 @@
 
 import { expect, test } from "@playwright/test";
 
-import { fallbackMeanings, validateMeanings } from "../core/src/understand";
+import { applyMeaningHints, fallbackMeanings, validateMeanings } from "../core/src/understand";
 import type { FieldSpec } from "../core/src/types";
 import { chatJSON } from "../web/src/lib/gateway";
 import { guard } from "../web/src/lib/guard";
@@ -160,5 +160,39 @@ test.describe("a model's answer, held to the rules", () => {
     const meanings = fallbackMeanings([spec("phone", "Phone"), spec("why", "Why us?")]);
     expect(meanings.phone).toMatchObject({ concept: "contact.phone", confidence: "low", source: "fallback" });
     expect(meanings.why!.concept).toBe("other");
+  });
+});
+
+test.describe("what the model's meanings add to the fields", () => {
+  const specs = (): FieldSpec[] => [
+    { id: "dob", label: "Date of Birth", kind: "text", required: false },
+    { id: "m", label: "Matriculation Year", kind: "text", required: false },
+    { id: "d", label: "Date of birth", part: "Day", kind: "text", required: true },
+  ];
+  const answer = {
+    fields: [
+      { id: "dob", concept: "identity.date_of_birth", subject: "self", confidence: "high" },
+      { id: "m", concept: "education.start_date", subject: "self", confidence: "high" },
+      { id: "d", concept: "identity.date_of_birth", subject: "self", confidence: "high", part: "day" },
+    ],
+  };
+
+  test("a box whose question is a calendar day is a date; a year, a month-and-year or a day's own box is not", () => {
+    const fields = specs();
+    expect(applyMeaningHints(fields, validateMeanings(answer, fields))).toBe(true);
+    expect(fields.map((f) => f.kind)).toEqual(["date", "text", "text"]);
+  });
+
+  test("each field carries what it means, for the asking order and the opening line", () => {
+    const fields = specs();
+    applyMeaningHints(fields, validateMeanings(answer, fields));
+    expect(fields[0]!.understood).toEqual({ concept: "identity.date_of_birth", subject: "self", confidence: "high" });
+  });
+
+  test("the offline reading adds nothing", () => {
+    const fields = specs();
+    expect(applyMeaningHints(fields, fallbackMeanings(fields))).toBe(false);
+    expect(fields[0]!.kind).toBe("text");
+    expect(fields[0]!.understood).toBeUndefined();
   });
 });

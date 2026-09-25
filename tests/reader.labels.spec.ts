@@ -451,3 +451,63 @@ test.describe("what a label's words are", () => {
     expect(spec.required).toBe(false);
   });
 });
+
+// Each of these was a reading failure on a real form in the corpus (RESEARCH.md §9e / PROGRESS S20).
+test.describe("real forms' own shapes", () => {
+  test("a lone checkbox in a group named for it takes the group's question; its own label says what ticking means", async ({ page }) => {
+    await load(
+      page,
+      `<fieldset aria-labelledby="q"><div id="q">Is your permanent home address different?</div>
+         <input id="b" type="checkbox" value="Yes"><label for="b">Yes</label></fieldset>`,
+    );
+    const spec = only(await read(page));
+    expect(spec.label).toBe("Is your permanent home address different?");
+    expect((spec as { description?: string }).description).toBe("Yes");
+  });
+
+  test("a dial-code picker that shows only a flag takes the phone's question, its own name as the piece", async ({ page }) => {
+    await load(
+      page,
+      `<label for="tel">Phone</label>
+       <div><select aria-label="Telephone country code"><option>+1 United States</option><option>+44 United Kingdom</option><option>+91 India</option></select>
+       <input id="tel" type="tel"></div>`,
+    );
+    const r = await read(page);
+    const picker = r.specs.find((s) => s.kind === "select")! as { label: string; part?: string };
+    expect([picker.label, picker.part]).toEqual(["Phone", "Telephone country code"]);
+  });
+
+  test("a rich-text editor takes the question of the textarea it stands in for, not its toolbar's words", async ({ page }) => {
+    await load(
+      page,
+      `<label for="t">What products or services are offered?</label>
+       <div><div><div class="toolbar"><span>Font Size...</span></div><div contenteditable="true" style="min-height:40px"></div></div>
+       <textarea id="t" style="display:none"></textarea></div>`,
+    );
+    const spec = only(await read(page));
+    expect(spec.label).toBe("What products or services are offered?");
+  });
+
+  test("a control beside the question — a clickable 'Hints' — is not part of it", async ({ page }) => {
+    await load(
+      page,
+      `<div>Keyword Search <span onclick="void 0" style="color:blue">Hints</span>
+         <div><input id="s" type="text"></div></div>`,
+    );
+    expect(only(await read(page)).label).toBe("Keyword Search");
+  });
+
+  test("a box's own caption beside a question its sibling boxes share is its piece", async ({ page }) => {
+    await load(
+      page,
+      `<label id="q" for="a">Phone Number</label>
+       <span><input id="a" aria-labelledby="q cap"><label id="cap" for="a">Area Code</label></span>
+       <span><input id="n" aria-labelledby="q"></span>`,
+    );
+    const r = await read(page);
+    expect(r.specs.map((s) => [s.label, (s as { part?: string }).part ?? null])).toEqual([
+      ["Phone Number", "Area Code"],
+      ["Phone Number", null],
+    ]);
+  });
+});

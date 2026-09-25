@@ -14,7 +14,8 @@
  * time — a consent, a signature). `volatility` says how long a remembered answer stays safe to offer.
  */
 
-export type ValueKind = "text" | "email" | "phone" | "date" | "number" | "choice" | "url" | "long" | "yesno";
+/** `date` is a calendar day, always (a date of birth); `month` a month and year, or a year alone (a graduation). */
+export type ValueKind = "text" | "email" | "phone" | "date" | "month" | "number" | "choice" | "url" | "long" | "yesno";
 export type Scope = "remember" | "this_form" | "sensitive" | "never";
 export type Volatility = "stable" | "slow" | "volatile";
 export type Subject = "self" | "other_person" | "organization" | "none";
@@ -91,8 +92,8 @@ export const CONCEPTS: Concept[] = [
   c("education.school", "school or university", "choice", "remember", "stable", { group: "education", repeatable: true }),
   c("education.degree", "degree", "choice", "remember", "stable", { group: "education", repeatable: true }),
   c("education.field_of_study", "field of study", "choice", "remember", "stable", { group: "education", repeatable: true }),
-  c("education.start_date", "study start date", "date", "remember", "stable", { group: "education", repeatable: true }),
-  c("education.graduation_date", "graduation date", "date", "remember", "stable", { group: "education", repeatable: true }),
+  c("education.start_date", "study start date", "month", "remember", "stable", { group: "education", repeatable: true }),
+  c("education.graduation_date", "graduation date", "month", "remember", "stable", { group: "education", repeatable: true }),
   c("education.gpa", "grade average", "text", "remember", "stable", { group: "education", repeatable: true }),
   c("education.highest_level", "highest level of education", "choice", "remember", "slow"),
   c("education.student_type", "kind of student", "choice", "this_form", "slow"),
@@ -103,13 +104,13 @@ export const CONCEPTS: Concept[] = [
   c("employment.current_title", "current job title", "text", "remember", "slow"),
   c("employment.employer", "company", "text", "remember", "stable", { group: "employment", repeatable: true }),
   c("employment.title", "job title", "text", "remember", "stable", { group: "employment", repeatable: true }),
-  c("employment.start_date", "job start date", "date", "remember", "stable", { group: "employment", repeatable: true }),
-  c("employment.end_date", "job end date", "date", "remember", "stable", { group: "employment", repeatable: true }),
+  c("employment.start_date", "job start date", "month", "remember", "stable", { group: "employment", repeatable: true }),
+  c("employment.end_date", "job end date", "month", "remember", "stable", { group: "employment", repeatable: true }),
   c("employment.description", "what they did there", "long", "remember", "stable", { group: "employment", repeatable: true }),
   c("employment.years_experience", "years of experience", "number", "remember", "slow"),
   c("employment.headline", "professional headline", "text", "remember", "slow"),
   c("employment.notice_period", "notice period", "text", "this_form", "volatile"),
-  c("employment.earliest_start", "earliest start date", "date", "this_form", "volatile"),
+  c("employment.earliest_start", "earliest start date", "text", "this_form", "volatile"),
   c("employment.expected_salary", "expected salary", "text", "this_form", "volatile"),
   c("employment.current_salary", "current salary", "text", "sensitive", "volatile"),
   c("employment.interviewing_elsewhere", "other interviews under way", "long", "this_form", "volatile"),

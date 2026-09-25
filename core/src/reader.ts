@@ -22,6 +22,7 @@
  */
 
 import {
+  ANSWERING,
   choiceGroup,
   choiceKey,
   toggleGroup,
@@ -45,6 +46,7 @@ import type {
   FormRead,
   SkippedField,
 } from "./types";
+import { phoneFields } from "./phones";
 
 /**
  * Anything that might hold an answer. Wide on purpose — narrowing happens below, where the
@@ -208,7 +210,11 @@ function ownBlockLabel(members: Element[], isOtherField: (node: Element) => bool
     // The first block of text before the control is the question; a block after that is its
     // description (Lever: "Which university…?" then "Please select \"Other\" if…"). Inline pieces of
     // the first block — its ✱ — belong to it.
-    const counts = (node: Node) => before(node) && !ours(node) && shownText(node) && tidy(node.textContent ?? "") !== "";
+    // Text inside a control of its own — USDA's clickable "Hints" beside "Keyword Search" — is not
+    // the question's.
+    const clickable = (node: Node) => node.parentElement?.closest("a[href], button, [role='button'], [role='link'], [onclick]") ?? null;
+    const counts = (node: Node) =>
+      before(node) && !ours(node) && shownText(node) && tidy(node.textContent ?? "") !== "" && !(clickable(node) && block!.contains(clickable(node)));
     const walker = block.ownerDocument.createTreeWalker(block, NodeFilter.SHOW_TEXT);
     let first: Node | null = null;
     for (let node = walker.nextNode(); node && !first; node = walker.nextNode()) if (counts(node)) first = node;
@@ -268,12 +274,50 @@ function labelOf(el: Element): { text: string; from: Element[]; part?: string } 
   const piece = (text: string) => text !== "" && PART_ONLY.test(cleanLabel(text));
   if (!piece(own.text)) {
     const labels = Array.from((el as HTMLInputElement).labels ?? []).map(textOf);
-    const part = labels.length > 1 ? labels.find(piece) : undefined;
+    const part = (labels.length > 1 ? labels.find(piece) : undefined) ?? sharedQuestionPiece(el, own.text);
     return part ? { ...own, part: cleanLabel(part) } : own;
   }
   const whole = wholeQuestion(el);
   if (!whole) return own;
   return whole.boxes > 1 ? { text: whole.text, from: whole.from, part: cleanLabel(own.text) } : { text: whole.text, from: whole.from };
+}
+
+/**
+ * The piece a box names beside the question it shares with its sibling boxes. Jotform labels a
+ * phone's area-code box by the question ("Phone Number", which the number box names too) and by
+ * its own caption under it ("Area Code"). What the boxes share is the question; what is this box's
+ * alone is its piece. Structure, not words: which labels are shared is in the markup.
+ */
+function sharedQuestionPiece(el: Element, question: string): string | undefined {
+  const ids = (el.getAttribute("aria-labelledby") ?? "").split(/\s+/).filter(Boolean);
+  if (ids.length < 2) return undefined;
+  const root = el.getRootNode() as Document | ShadowRoot;
+  const shared = (id: string) => root.querySelectorAll(`[aria-labelledby~="${CSS.escape(id)}"]`).length > 1;
+  if (!ids.some(shared)) return undefined;
+  const own = ids
+    .filter((id) => !shared(id))
+    .map((id) => root.querySelector(`#${CSS.escape(id)}`))
+    .filter((node): node is Element => node !== null && isVisible(node) && textOf(node) !== "" && !question.includes(textOf(node)));
+  return own.length === 1 ? textOf(own[0]) : undefined;
+}
+
+/**
+ * The answers of a list that is one piece of a date: the calendar's own values. IRCC opens its
+ * year, month and day lists with "Select year" — with a real value, so it read as an answer. A day
+ * is a number from 1 to 31 and a year four digits, whatever the language; a month list is twelve
+ * months, so in one of thirteen the one before them is the prompt. Anything that does not fit
+ * leaves the list as it was.
+ */
+function calendarChoices(options: FieldOption[], part: string): FieldOption[] {
+  const piece = part.toLowerCase();
+  const keep = (fits: (label: string) => boolean, least: number) => {
+    const real = options.filter((option) => fits(option.label.trim()));
+    return real.length >= least && real.length === options.length - 1 ? real : options;
+  };
+  if (/^(day|dd)$/.test(piece)) return keep((label) => /^\d{1,2}$/.test(label) && Number(label) >= 1 && Number(label) <= 31, 28);
+  if (/^(year|yyyy)$/.test(piece)) return keep((label) => /^\d{4}$/.test(label), 2);
+  if (/^(month|mm)$/.test(piece)) return options.length === 13 ? options.slice(1) : options;
+  return options;
 }
 
 /** The most boxes one answer is split across — a date's three, a phone's four. More is a section. */
@@ -356,6 +400,17 @@ function ownLabelOf(el: Element): { text: string; from: Element[] } {
     if (text) return { text, from: [wrapping] };
   }
 
+  // 4b. A rich-text editor standing in for a textarea the page hides (Jotform's nicEdit): the page
+  //     labels the textarea, and the editor is where a person writes it. Its own surroundings — the
+  //     editor's toolbar — are not the question.
+  if ((el as HTMLElement).isContentEditable) {
+    const standsFor = hiddenTextareaBeside(el);
+    if (standsFor) {
+      const named = ownLabelOf(standsFor);
+      if (named.text) return named;
+    }
+  }
+
   // 5. A fieldset's legend — how radio groups are almost always named.
   const legend = el.closest("fieldset")?.querySelector("legend");
   const legendText = textOf(legend);
@@ -390,6 +445,16 @@ function ownLabelOf(el: Element): { text: string; from: Element[] } {
   //    305 — it strings on hints, screen-reader text and "(required)" (see RESEARCH.md).
   const standard = accessibleName(el);
   return { text: standard, from: [] };
+}
+
+/** The textarea a rich-text editor writes into for the page: hidden, and the nearest one to it. */
+function hiddenTextareaBeside(editor: Element): Element | null {
+  let block = editor.parentElement;
+  for (let hops = 0; block && hops < 3; hops++, block = block.parentElement) {
+    const textarea = Array.from(block.querySelectorAll("textarea")).find((node) => node !== editor && !isVisible(node));
+    if (textarea) return textarea;
+  }
+  return null;
 }
 
 /** A trigger for a menu — `aria-haspopup="menu"`, or `"true"`, which ARIA defines as the same. */
@@ -888,23 +953,38 @@ export function readForm(
     // model reads while deciding where each spoken phrase belongs, so `desired_salary` is worth
     // far more than `question_69292246` — and meaningless `name` attributes are the norm on
     // real ATS forms. The name is the fallback, and the element id the fallback's fallback.
-    const id = takeId(part && label ? `${label} ${part}` : label || name || el.id, index);
+    // A lone checkbox in a group the page named for it — Slate's fieldset "Is your permanent home
+    // address different?" around one box labelled "Yes". The group's name is the question; the
+    // box's own label only says what ticking it means, and travels with it as its description.
+    let question = label;
+    let ticking = "";
+    if (kind === "checkbox" && tag === "input") {
+      const container = el.parentElement?.closest(GROUP_CONTAINER);
+      const named = container && container.querySelectorAll(ANSWERING).length === 1 ? cleanLabel(containerName(container)) : "";
+      if (named && named !== label) {
+        question = named;
+        ticking = label;
+      }
+    }
+
+    const id = takeId(part && question ? `${question} ${part}` : question || name || el.id, index);
     const spec: FieldSpec = {
       id,
-      label,
+      label: question,
       kind,
       required:
         Boolean((el as HTMLInputElement).required) || el.getAttribute("aria-required") === "true" || starred || choicesSayRequired(el),
     };
     if (part) spec.part = part;
+    spec.nameSource = labelledFrom.some((node) => isVisible(node)) ? "shown" : "attribute";
 
     const selector = uniqueSelector(el, ownerDocumentOf(root));
     if (selector) spec.selector = selector;
 
     const options = optionsOf(el);
-    if (options) spec.options = options;
+    if (options) spec.options = part ? calendarChoices(options, part) : options;
 
-    const description = describe(el, label);
+    const description = [ticking, describe(el, question)].filter(Boolean).join(" — ");
     if (description) spec.description = description;
 
     const maxLength = (el as HTMLInputElement).maxLength;
@@ -938,6 +1018,18 @@ export function readForm(
   });
 
   placeInSections(root, specs, handles, usedIds);
+
+  // A dial-code picker that shows a person only a flag — named "Telephone country code" for screen
+  // readers alone (Workable) — asks, on screen, the phone's own question: it takes that question,
+  // and its own name becomes the piece of the answer it holds. One named on screen ("Country" on
+  // Greenhouse) keeps its name.
+  for (const [id, partner] of phoneFields(specs)) {
+    const spec = specs.find((s) => s.id === id);
+    const tel = specs.find((s) => s.id === partner);
+    if (!spec || !tel || spec.kind === "tel" || spec.nameSource !== "attribute" || spec.part || !tel.label) continue;
+    spec.part = spec.label;
+    spec.label = tel.label;
+  }
 
   return { specs, handles, skipped, url, readAt: Date.now() };
 }

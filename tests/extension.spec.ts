@@ -17,6 +17,9 @@
 import { chromium, expect, test, type BrowserContext, type Worker } from "@playwright/test";
 import { resolve } from "node:path";
 
+import { readFileSync } from "node:fs";
+
+import { applyChanges, emptyProfile, parseProfile, type ProfileChange } from "../core/src/profile";
 import { startFakeAgentServer, type FakeAgentServer } from "./support/fake-agent-server";
 
 const EXTENSION = resolve(process.cwd(), "extension");
@@ -295,6 +298,56 @@ test.describe("the extension on someone else's page", () => {
       const opening = agent.received[before]![0] as unknown as { session: { output: { voice: string } } };
       expect(opening.session.output.voice).toBe("vera");
       await expect(page.locator("#email")).toHaveValue("rohit.k@example.com");
+    } finally {
+      await context.close();
+    }
+  });
+
+  test("the settings page exports what it knows, forgets everything, and the file brings back exactly the same answers", async () => {
+    const { context, worker } = await launch();
+    try {
+      const id = new URL(worker.url()).host;
+      const said = (concept: string, value: string, evidence: string): ProfileChange => ({
+        type: "observe",
+        key: { concept },
+        gist: concept,
+        value,
+        from: { value, evidence, source: "spoken", host: "job-boards.greenhouse.io", url: "https://job-boards.greenhouse.io/x", askedAs: concept, formTitle: "", at: 1_790_000_000_000 },
+      });
+      const known = applyChanges(emptyProfile(), [
+        said("identity.first_name", "Asha", "mera naam Asha Verma hai"),
+        said("contact.email", "asha.verma@example.com", "email hai asha.verma@example.com"),
+        said("contact.phone", "+91 98765 43210", "phone number +91 98765 43210"),
+      ]).profile;
+      await worker.evaluate((profile) => chrome.storage.local.set({ "longtake.profile.v2": profile }), known);
+
+      const settings = await context.newPage();
+      await settings.goto(`chrome-extension://${id}/options.html`);
+      await expect(settings.locator(".row")).toHaveCount(3);
+
+      // Export: a file of it.
+      const [download] = await Promise.all([settings.waitForEvent("download"), settings.getByRole("button", { name: "Export" }).click()]);
+      const file = readFileSync(await download.path(), "utf8");
+      const exported = parseProfile(file)!;
+      expect(Object.keys(exported.facts).sort()).toEqual(Object.keys(known.facts).sort());
+
+      // Forget everything: asked first, then really everything.
+      settings.once("dialog", (dialog) => void dialog.accept());
+      await settings.getByRole("button", { name: "Forget everything" }).click();
+      await expect(settings.locator(".row")).toHaveCount(0);
+      const emptied = (await worker.evaluate(async () => (await chrome.storage.local.get("longtake.profile.v2"))["longtake.profile.v2"])) as { facts: object };
+      expect(emptied.facts).toEqual({});
+
+      // The file brings back the same answers, with the words they came from.
+      await settings.locator("#import-file").setInputFiles({ name: "profile.json", mimeType: "application/json", buffer: Buffer.from(file) });
+      await expect(settings.locator("#import-preview")).toContainText("3 answers in this file · 3 new");
+      await settings.getByRole("button", { name: "Bring them in" }).click();
+      await expect(settings.locator(".row")).toHaveCount(3);
+      const back = (await worker.evaluate(async () => (await chrome.storage.local.get("longtake.profile.v2"))["longtake.profile.v2"])) as typeof known;
+      for (const [factId, fact] of Object.entries(known.facts)) {
+        expect(back.facts[factId]!.value).toEqual(fact.value);
+        expect(back.facts[factId]!.history.map((h) => h.evidence)).toEqual(fact.history.map((h) => h.evidence));
+      }
     } finally {
       await context.close();
     }

@@ -54,7 +54,7 @@ import { memoryProfileStore, type ProfileStore } from "./profile-store";
 import { harvestOptions, readForm, titleOf, waitForForm } from "./reader";
 import { FieldRegistry } from "./reconcile";
 import { fieldName, type FieldSpec, type FormRead, type SpokenValue } from "./types";
-import { fallbackMeanings, snapshotOf, structureKey, validateMeanings, type FormSnapshot, type Meanings } from "./understand";
+import { applyMeaningHints, fallbackMeanings, snapshotOf, structureKey, validateMeanings, type FormSnapshot, type Meanings } from "./understand";
 import { clearValues, writeValues, type ClearOutcome, type WriteOutcome } from "./writer";
 
 export type SessionOptions = {
@@ -357,6 +357,8 @@ export class LongtakeSession {
       await waitForForm();
       const read = await harvestOptions(this.registry.adopt(this.readNow()).read);
       this.current = read;
+      // A fresh read has fresh fields: what their words add is added again.
+      applyMeaningHints(read.specs, this.meanings);
       this.title = titleOf(read, this.scope());
 
       // What the form's questions mean decides what may go in — waited for, but not for long.
@@ -463,6 +465,9 @@ export class LongtakeSession {
     }
     if (fresh === 0 || !this.current) return;
     this.options.log?.(`understood ${fresh} field(s)`);
+    // What the page's words add to its markup — a question required only in words, a choice that
+    // only asks to choose, a date box that shows no format — and the agent gets the new tool.
+    if (applyMeaningHints(this.current.specs, this.meanings)) this.options.onReshape?.();
 
     const waiting = this.unlearned;
     this.unlearned = [];
@@ -486,6 +491,8 @@ export class LongtakeSession {
 
     const read = await harvestOptions(this.registry.adopt(this.readNow()).read);
     this.current = read;
+    // A fresh read has fresh fields: what their words add is added again.
+    applyMeaningHints(read.specs, this.meanings);
     this.title = titleOf(read, this.scope());
     this.plan = { optionalOffered: false };
     // Meanings for what was said on this form, and for a form that grew. Never waited for here.
@@ -930,6 +937,8 @@ export class LongtakeSession {
       await harvestOptions({ ...change.read, specs: change.appeared });
       const read = change.read;
       this.current = read;
+      // A fresh read has fresh fields: what their words add is added again.
+      applyMeaningHints(read.specs, this.meanings);
 
       if (change.appeared.length === 0 && change.disappeared.length === 0) {
         this.options.onChange?.();

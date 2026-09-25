@@ -28,6 +28,7 @@
  */
 
 import { stillMissing, stillOptional } from "./binder";
+import { conceptById } from "./concepts";
 import { canonicalKey } from "./memory";
 import { phoneFields } from "./phones";
 import { fieldName, type FieldSpec, type SpokenValue } from "./types";
@@ -39,27 +40,45 @@ export const MOST_CHOICES_TO_READ_OUT = 6;
 /**
  * The answers everybody knows without thinking, grouped and worded the way a person says them.
  *
- * Keyed on `canonicalKey`, so "Given name", "First Name *" and "Prénom" all land in the same
- * place — the same matcher that decides what memory carries between forms, with its exclusions
- * intact ("Emergency contact phone" is not *your* phone, and is never offered as an easy one).
+ * By what the model says a field means (`spec.understood`) — "Vorname" is a first name, and an
+ * emergency contact's phone is a phone but not theirs, so never an easy one. Before the model has
+ * answered, or without it, by `canonicalKey`, the offline reading, with its exclusions intact.
  */
-const EASY: { keys: string[]; say: string }[] = [
-  { keys: ["first_name", "last_name", "full_name", "preferred_name"], say: "your name" },
-  { keys: ["email"], say: "email" },
-  { keys: ["phone"], say: "phone number" },
-  { keys: ["city", "country", "postal_code"], say: "where you're based" },
-  { keys: ["linkedin"], say: "LinkedIn" },
-  { keys: ["github"], say: "GitHub" },
-  { keys: ["portfolio"], say: "website" },
+const EASY: { keys: string[]; concepts: string[]; say: string }[] = [
+  {
+    keys: ["first_name", "last_name", "full_name", "preferred_name"],
+    concepts: ["identity.first_name", "identity.last_name", "identity.middle_name", "identity.full_name", "identity.preferred_name"],
+    say: "your name",
+  },
+  { keys: ["email"], concepts: ["contact.email"], say: "email" },
+  { keys: ["phone"], concepts: ["contact.phone", "contact.phone.number", "contact.phone.country_code", "contact.phone.area_code"], say: "phone number" },
+  {
+    keys: ["city", "country", "postal_code"],
+    concepts: ["address.city", "address.country", "address.postal_code", "address.current_location", "address.country_of_residence"],
+    say: "where you're based",
+  },
+  { keys: ["linkedin"], concepts: ["links.linkedin"], say: "LinkedIn" },
+  { keys: ["github"], concepts: ["links.github"], say: "GitHub" },
+  { keys: ["portfolio"], concepts: ["links.portfolio", "links.website"], say: "website" },
 ];
+
+/** Which easy group a field belongs to, if any: by its meaning when known, else offline. */
+function easyGroupOf(spec: FieldSpec): (typeof EASY)[number] | undefined {
+  const understood = spec.understood;
+  if (understood && understood.confidence !== "low") {
+    if (understood.subject !== "self") return undefined;
+    return EASY.find((group) => group.concepts.includes(understood.concept));
+  }
+  const key = canonicalKey(spec);
+  return key === null ? undefined : EASY.find((group) => group.keys.includes(key));
+}
 
 /** How many easy answers to name before it stops being an invitation and starts being a list. */
 const MOST_EASY_TO_NAME = 5;
 
 /** Is this field one of the ones everybody can answer without thinking? */
 export function isEasy(spec: FieldSpec): boolean {
-  const key = canonicalKey(spec);
-  return key !== null && EASY.some((group) => group.keys.includes(key));
+  return easyGroupOf(spec) !== undefined;
 }
 
 /** "a, b and c" — how a person lists things out loud. "a, b or c" when only one can be picked. */
@@ -130,10 +149,7 @@ export function openingLine(
   const done = new Set(filled);
   const easyGroups = EASY.map((group) => ({
     say: group.say,
-    fields: fields.filter((spec) => {
-      const key = canonicalKey(spec);
-      return key !== null && group.keys.includes(key);
-    }),
+    fields: fields.filter((spec) => easyGroupOf(spec) === group),
   })).filter((group) => group.fields.length > 0);
 
   // A group is in when the parts the form needs are in. Greenhouse puts an optional "Preferred
@@ -268,16 +284,24 @@ const ADDRESS_PART =
  * other part under the same heading, so a lone "Country" dropdown stays its own question.
  */
 function addressFields(specs: FieldSpec[]): Set<string> {
+  // By meaning when the model has said: a part of an address, whoever's it is — the section and
+  // whose it is keep one person's address apart from a business's. Else by the offline words.
+  const known = (spec: FieldSpec) => spec.understood && spec.understood.confidence !== "low";
+  const isPart = (spec: FieldSpec) =>
+    known(spec) ? conceptById(spec.understood!.concept)?.group === "address" : ADDRESS_PART.test(spec.label);
+  const isStreet = (spec: FieldSpec) =>
+    known(spec) ? ["address.street", "address.full"].includes(spec.understood!.concept) : /street|address/i.test(spec.label);
+
   const bySection = new Map<string, FieldSpec[]>();
   for (const spec of specs) {
-    if (!ADDRESS_PART.test(spec.label)) continue;
-    const key = spec.section ?? "";
+    if (!isPart(spec)) continue;
+    const key = `${spec.section ?? ""}\u0000${spec.understood?.subject ?? ""}`;
     bySection.set(key, [...(bySection.get(key) ?? []), spec]);
   }
 
   const grouped = new Set<string>();
   for (const parts of bySection.values()) {
-    const hasStreet = parts.some((spec) => /street|address/i.test(spec.label));
+    const hasStreet = parts.some(isStreet);
     if (hasStreet && parts.length >= 2) for (const spec of parts) grouped.add(spec.id);
   }
   return grouped;

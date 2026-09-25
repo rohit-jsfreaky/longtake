@@ -3,7 +3,7 @@
  * from divs — and the file upload, which is never answered by voice.
  */
 
-import { DATE_MASK, DIGIT_MASK } from "../shapes";
+import { calendarDay, DATE_MASK, DIGIT_MASK } from "../shapes";
 import type { FieldSpec, SpokenValue } from "../types";
 import type { WidgetAdapter } from "./index";
 import { announce, cannot, clearShown, clearText, leave, readBack, readShown, readText, setNativeValue, sleep, type WriteOutcome } from "./kit";
@@ -92,15 +92,9 @@ export function asFieldDate(value: string, spec: FieldSpec, el: HTMLElement): st
   const mask = DATE_MASK.exec((spec.placeholder ?? "").trim());
   if (!isNative && !mask) return value;
 
-  const iso = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value.trim());
-  let y: number, m: number, d: number;
-  if (iso) {
-    [y, m, d] = [Number(iso[1]), Number(iso[2]), Number(iso[3])];
-  } else {
-    const parsed = new Date(value.replace(/(\d+)(st|nd|rd|th)\b/gi, "$1"));
-    if (Number.isNaN(parsed.getTime())) return value;
-    [y, m, d] = [parsed.getFullYear(), parsed.getMonth() + 1, parsed.getDate()];
-  }
+  const day = calendarDay(value);
+  if (!day) return value;
+  const { y, m, d } = day;
   const two = (n: number) => String(n).padStart(2, "0");
   if (isNative || !mask) return `${y}-${two(m)}-${two(d)}`;
 

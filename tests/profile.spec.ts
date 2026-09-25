@@ -165,6 +165,17 @@ test.describe("which fact a field is", () => {
     expect(keys.get("dob_m")).toEqual({ concept: "identity.date_of_birth", part: "month" });
   });
 
+  // Workable captions its lone country-code picker "Telephone country code": the code is the whole
+  // of its concept there, and a caption must not split one answer into two facts.
+  test("a page's caption names a piece only where the answer is split across boxes", () => {
+    const lone = factKeys([spec("c", "Phone", { kind: "select", part: "Telephone country code" })], { c: meaning("contact.phone.country_code") });
+    expect(lone.get("c")).toEqual({ concept: "contact.phone.country_code" });
+    const split = factKeys([spec("d", "Date of birth", { part: "Day" }), spec("y", "Date of birth", { part: "Year" })], { d: meaning("identity.date_of_birth"), y: meaning("identity.date_of_birth") });
+    expect([split.get("d")?.part, split.get("y")?.part]).toEqual(["day", "year"]);
+    const yearOnly = factKeys([spec("y", "Year of birth")], { y: meaning("identity.date_of_birth", { part: "year" }) });
+    expect(yearOnly.get("y")).toEqual({ concept: "identity.date_of_birth", part: "year" });
+  });
+
   test("a piece that only repeats its concept is the concept itself", () => {
     const keys = factKeys([spec("c", "Country", { kind: "select" })], { c: meaning("contact.phone.country_code", { part: "country_code" }) });
     expect(keys.get("c")).toEqual({ concept: "contact.phone.country_code" });
@@ -291,6 +302,46 @@ test.describe("what goes into the next form", () => {
     const profile = keep([observe("contact.phone.country_code", "India +91", "plus nine one"), observe("contact.phone.number", "98765 43210", "98765 43210")]).profile;
     const [found] = recallFor([spec("tel", "Phone", { kind: "tel" })], { tel: meaning("contact.phone") }, profile, NOW);
     expect(found).toMatchObject({ value: "+91 98765 43210", sure: false, why: "put_together" });
+  });
+
+  // A date is one answer too: said whole on one form, split into day / month / year boxes on the
+  // next (GOV.UK, IRCC, Jotform) — each box its piece, by the calendar, not by words.
+  test("a whole date of birth goes into a form that splits it: text boxes by number, lists by position or value", () => {
+    const profile = keep([observe("identity.date_of_birth", "1996-05-14", "meri date of birth 14 May 1996 hai")]).profile;
+    const dob = (part: string) => meaning("identity.date_of_birth", { part });
+    const months = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+    const found = recallFor(
+      [
+        spec("d", "Date of birth", { part: "Day" }),
+        spec("m", "Date of birth", { part: "Month", kind: "select", options: [{ value: "", label: "Select month" }, ...months.map((label, i) => ({ value: String(i + 1), label }))] }),
+        spec("y", "Date of birth", { part: "Year", kind: "select", options: [{ value: "1997", label: "1997" }, { value: "1996", label: "1996" }] }),
+      ],
+      { d: dob("day"), m: dob("month"), y: dob("year") },
+      profile,
+      NOW,
+    );
+    expect(found.map((r) => [r.fieldId, r.value, r.sure])).toEqual([
+      ["d", "14", true],
+      ["m", "May", true],
+      ["y", "1996", true],
+    ]);
+  });
+
+  test("a whole date box, when only the pieces are known, is offered put together — for a yes", () => {
+    const pieces = ([["day", "14"], ["month", "05"], ["year", "1996"]] as const).map(([part, value]) => observe("identity.date_of_birth", value, `dob ${value}`, {}, { part }));
+    const [found] = recallFor([spec("dob", "Date of Birth", { kind: "date" })], { dob: meaning("identity.date_of_birth") }, keep(pieces).profile, NOW);
+    expect(found).toMatchObject({ value: "1996-05-14", sure: false, why: "put_together" });
+  });
+
+  test("a first and last name out of a two-word full name are offered, never assumed; three words are not split", () => {
+    const two = keep([observe("identity.full_name", "Asha Verma", "mera naam Asha Verma hai")]).profile;
+    const found = recallFor([spec("f", "First name"), spec("l", "Last name")], { f: meaning("identity.first_name"), l: meaning("identity.last_name") }, two, NOW);
+    expect(found.map((r) => [r.value, r.sure, r.why])).toEqual([
+      ["Asha", false, "taken_apart"],
+      ["Verma", false, "taken_apart"],
+    ]);
+    const three = keep([observe("identity.full_name", "Asha Rani Verma", "Asha Rani Verma")]).profile;
+    expect(recallFor([spec("f", "First name")], { f: meaning("identity.first_name") }, three, NOW)).toEqual([]);
   });
 
   test("a close neighbour in the vocabulary is offered, never put in: a city for 'where are you based'", () => {

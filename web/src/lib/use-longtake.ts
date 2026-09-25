@@ -23,6 +23,7 @@ import {
   type Hesitation,
   type KnownFact,
   type LogEntry,
+  type ProfileStore,
   type ShapedAnswer,
   type StartProblem,
   type WriteOutcome,
@@ -126,6 +127,8 @@ export type UseLongtake = {
   stop: () => Promise<void>;
   forgetOne: (id: string) => void;
   forgetEverything: () => void;
+  /** What is known about the person, and its one owner on this page — for a view that edits it. */
+  profileStore: ProfileStore;
 };
 
 const noop = () => () => {};
@@ -149,16 +152,19 @@ export function useLongtake({
    * and starting the microphone.
    */
   const conductorRef = useRef<Conductor | null>(null);
+  // One owner of the profile per page: the call and the view that edits it share it.
+  const storeRef = useRef<ProfileStore | null>(null);
+  const store = useCallback((): ProfileStore => (storeRef.current ??= siteProfileStore()), []);
   const conductor = useCallback((): Conductor => {
     conductorRef.current ??= new Conductor({
       root: () => root?.() ?? document,
       ignore,
-      profile: siteProfileStore(),
+      profile: store(),
       logFrames: true,
       services: { getToken: siteToken, workletUrl: "/pcm-processor.js", voice: chooseVoice(), dictate, understand },
     });
     return conductorRef.current;
-  }, [ignore, root]);
+  }, [ignore, root, store]);
 
   const subscribe = useCallback((listener: () => void) => conductor().subscribe(listener), [conductor]);
   const view: ConductorView | null = useSyncExternalStore(
@@ -246,6 +252,7 @@ export function useLongtake({
     stop,
     forgetOne,
     forgetEverything,
+    profileStore: store(),
   };
 }
 

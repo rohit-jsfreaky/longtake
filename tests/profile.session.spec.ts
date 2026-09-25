@@ -336,3 +336,23 @@ test.describe("the call and the settings page at once", () => {
     expect(out.result.nothing_to_settle).toEqual(["Email"]);
   });
 });
+
+// GOV.UK marks nothing required and needs every answer. A form that marks nothing does not mark
+// anything optional either: its questions are asked, never offered as "the optional ones".
+test("a form that marks nothing required asks its questions, and never calls them optional", async ({ page }) => {
+  await load(
+    page,
+    `<fieldset><legend>What is your date of birth?</legend>
+       <label for="d">Day</label><input id="d" inputmode="numeric">
+       <label for="m">Month</label><input id="m" inputmode="numeric">
+       <label for="y">Year</label><input id="y" inputmode="numeric"></fieldset>
+     <button type="submit">Continue</button>`,
+  );
+  const move = await page.evaluate(async () => {
+    const L = window.__longtake;
+    const s = new L.LongtakeSession({ root: () => document, ignore: "" });
+    await s.open();
+    return s.move();
+  });
+  expect(move.kind).toBe("ask");
+});

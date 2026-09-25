@@ -201,3 +201,24 @@ test.describe("the order questions are asked in", () => {
     expect(order).toEqual(["email", "first_name", "why", "salary"]);
   });
 });
+
+// Once the model has said what each field means, the conversation goes by that, not by English
+// keys: a German form's "Vorname" is an easy question, and an emergency contact's phone never is.
+test.describe("what the model understood decides the easy questions", () => {
+  const understood = (concept: string, subject = "self") => ({ understood: { concept, subject, confidence: "high" } });
+
+  test("a first name in another language is asked first; somebody else's phone is not an easy one", async ({ page }) => {
+    await load(page, "<p>no form needed</p>");
+    const [order, line] = await page.evaluate((specs) => {
+      const L = window.__longtake;
+      return [L.inAskingOrder(specs as never).map((spec) => spec.id), L.openingLine(specs as never, "Bewerbung")];
+    }, [
+      { ...f("warum", "Warum wir?", "textarea") },
+      { ...f("notfall", "Telefon", "tel"), section: "Notfallkontakt", ...understood("contact.phone", "other_person") },
+      { ...f("vorname", "Vorname"), ...understood("identity.first_name") },
+      { ...f("mail", "E-Mail-Adresse", "email"), ...understood("contact.email") },
+    ]);
+    expect(order).toEqual(["vorname", "mail", "warum", "notfall"]);
+    expect(line).toContain("Easy ones first: your name and email");
+  });
+});

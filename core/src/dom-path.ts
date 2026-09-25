@@ -258,7 +258,7 @@ export function toggleGroup(el: Element): HTMLElement[] {
 }
 
 /** Everything in a group that takes an answer — what a set of checkboxes must be alone in. */
-const ANSWERING =
+export const ANSWERING =
   "input:not([type='hidden']), select, textarea, [role='checkbox'], [role='radio'], [role='switch'], [role='combobox'], [role='listbox'], [role='textbox'], [contenteditable='true']";
 
 /**

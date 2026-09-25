@@ -166,4 +166,6 @@ export type Truth = {
   pages: TruthPage[];
   pageContext?: { mustContain: string[] };
   verified: { by: string; at: string } | null;
+  /** Fields corrected after verification, by whom and why — an independent review of a disagreement. */
+  corrected?: { by: string; at: string; rule: string; fields: { key: string; was: string; now: string; why: string }[] }[];
 };

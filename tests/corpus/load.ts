@@ -200,13 +200,26 @@ export async function joinTruth(page: Page, fields: Locator[][]): Promise<ReadJo
     const located = fields.map((locators) => locators.map((locator) => window.__corpusFind!(locator)));
     const elements = located.map((all) => all.map((one) => (one === "elsewhere" ? null : one)));
     const size = (el: Element) => el.querySelectorAll("*").length;
+    /**
+     * A rich-text editor standing in for the textarea the page hides (Jotform's nicEdit): the truth
+     * names the textarea, the form's real control; the product writes the editor beside it.
+     */
+    const standsFor = (handle: Element, el: Element) => {
+      if (!(handle as HTMLElement).isContentEditable || el.localName !== "textarea" || el.getClientRects().length > 0) return false;
+      let block = handle.parentElement;
+      for (let hops = 0; block && hops < 3; hops++, block = block.parentElement) {
+        const nearest = Array.from(block.querySelectorAll("textarea")).find((node) => node.getClientRects().length === 0);
+        if (nearest) return nearest === el;
+      }
+      return false;
+    };
     /** How closely a handle is this field: lower is closer, -1 is not at all. */
     const closeness = (handle: Element, els: (Element | null)[]) => {
       let best = -1;
       els.forEach((el, i) => {
         if (!el) return;
         const rank =
-          handle === el ? i === 0 ? 0 : 1 : el.contains(handle) ? 2 + size(el) : handle.contains(el) ? 1e6 + size(handle) : -1;
+          handle === el ? i === 0 ? 0 : 1 : el.contains(handle) ? 2 + size(el) : handle.contains(el) ? 1e6 + size(handle) : standsFor(handle, el) ? 2e6 : -1;
         if (rank >= 0 && (best < 0 || rank < best)) best = rank;
       });
       return best;

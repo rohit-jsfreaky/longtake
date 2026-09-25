@@ -44,7 +44,7 @@ for (const form of forms) {
     }
 
     const result = scoreFill(form.fill!.cases, runs, (key) => byKey.get(key)?.question ?? key);
-    if (form.fill!.verified) saveResult("fill", form.id, { ...result, checkedBy: [form.truth!.verified!.by, form.fill!.verified.by] });
+    if (form.fill!.verified) saveResult("fill", form.id, { ...result, checkedBy: [form.truth!.verified!.by, form.fill!.verified.by, ...(form.truth!.corrected ?? []).map((c) => c.by)] });
     else test.info().annotations.push({ type: "unverified plan", description: JSON.stringify(result.rows.filter((r) => r.problems.length)) });
 
     expect(result.counts.collateral, "an answer changed a field nobody answered").toBe(0);

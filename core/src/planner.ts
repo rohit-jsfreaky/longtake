@@ -139,7 +139,12 @@ export function nextMove(state: FormState, plan: Plan): Move {
     ...specs.filter((spec) => !later.has(spec.id)),
     ...specs.filter((spec) => later.has(spec.id)),
   ];
-  const required = lastIfLater(inAskingOrder(open.filter((f) => f.spec.required).map((f) => f.spec)));
+  // A form that marks nothing required does not say anything is optional either — GOV.UK marks
+  // nothing and needs every answer. Its questions are simply asked, in their order; offering them
+  // as "the optional ones" once nothing is required told a person their date of birth could wait.
+  const marksNone = state.fields.every((f) => !f.spec.required);
+  const toAsk = (f: FieldState) => f.spec.required || marksNone;
+  const required = lastIfLater(inAskingOrder(open.filter(toAsk).map((f) => f.spec)));
 
   if (required.length > 0) {
     const first = factsOf(required[0]!, specs);
@@ -156,7 +161,7 @@ export function nextMove(state: FormState, plan: Plan): Move {
     return { kind: "ask", fields: batch(required.map((spec) => factsOf(spec, specs)).filter((f) => !f.group || f.field === first.field)) };
   }
 
-  const optional = lastIfLater(inAskingOrder(open.filter((f) => !f.spec.required).map((f) => f.spec))).map((spec) =>
+  const optional = lastIfLater(inAskingOrder(open.filter((f) => !toAsk(f)).map((f) => f.spec))).map((spec) =>
     factsOf(spec, specs),
   );
   const next = state.actions.find((a) => a.kind === "next");

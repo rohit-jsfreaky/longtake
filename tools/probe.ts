@@ -75,6 +75,7 @@ import {
   accessibleDescription,
   fallbackMeanings,
   validateMeanings,
+  applyMeaningHints,
 } from "@longtake/core";
 import { FakeVoice } from "./replay/fake-voice";
 import { runScript } from "./replay/run-script";
@@ -152,6 +153,7 @@ declare global {
       accessibleDescription: typeof accessibleDescription;
       fallbackMeanings: typeof fallbackMeanings;
       validateMeanings: typeof validateMeanings;
+      applyMeaningHints: typeof applyMeaningHints;
       Conductor: typeof Conductor;
       FakeVoice: typeof FakeVoice;
       runScript: typeof runScript;
@@ -234,6 +236,7 @@ window.__longtake = {
   accessibleDescription,
   fallbackMeanings,
   validateMeanings,
+  applyMeaningHints,
   Conductor,
   FakeVoice,
   runScript,

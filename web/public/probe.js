@@ -1208,6 +1208,46 @@
   // core/src/shapes.ts
   var DATE_MASK = /^(mm|dd|yyyy)([/.\-\s])(mm|dd)\2(yyyy|mm|dd)$/i;
   var DIGIT_MASK = /^[\s()+\-./]*[09#](?:[\s()+\-./]*[09#])*[\s()+\-./]*$/;
+  function calendarDay(value) {
+    const iso = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value.trim());
+    if (iso) return { y: Number(iso[1]), m: Number(iso[2]), d: Number(iso[3]) };
+    const parsed = new Date(value.replace(/(\d+)(st|nd|rd|th)\b/gi, "$1"));
+    if (Number.isNaN(parsed.getTime())) return null;
+    return { y: parsed.getFullYear(), m: parsed.getMonth() + 1, d: parsed.getDate() };
+  }
+
+  // core/src/phones.ts
+  var DIAL_CODE = /\+\d{1,4}\b/;
+  var PHONE_WHOLE = "contact.phone";
+  var PHONE_NUMBER = "contact.phone.number";
+  var PHONE_CODE = "contact.phone.country_code";
+  function phoneFields(specs) {
+    const pairs = /* @__PURE__ */ new Map();
+    for (const tel of specs.filter((spec) => spec.kind === "tel")) {
+      const code = specs.find(
+        (spec) => spec !== tel && spec.kind === "select" && (spec.section ?? "") === (tel.section ?? "") && (/country code|dial(ling)? code|^code$/i.test(spec.label) || (spec.options?.length ?? 0) > 0 && spec.options.filter((o) => DIAL_CODE.test(o.label)).length >= spec.options.length / 2)
+      );
+      if (code) {
+        pairs.set(tel.id, code.id);
+        pairs.set(code.id, tel.id);
+      }
+    }
+    return pairs;
+  }
+  function dialCodeOf(value) {
+    return /^\s*\+\s*(\d{1,4})\b/.exec(value)?.[1] ?? null;
+  }
+  function dialCodeIn(text4) {
+    return /\+\s*(\d{1,4})\b/.exec(text4)?.[1] ?? null;
+  }
+  function withoutDialCode(value) {
+    return value.replace(/^\s*\+\s*\d{1,4}[\s.-]*/, "");
+  }
+  function optionForDialCode(spec, code) {
+    const pattern = new RegExp(`\\+\\s*${code}\\b`);
+    const matches = (spec.options ?? []).filter((o) => pattern.test(o.label));
+    return matches.length === 1 ? matches[0].label : null;
+  }
 
   // core/src/reader.ts
   var CANDIDATE_SELECTOR = [
@@ -1294,7 +1334,8 @@
       if (Array.from(block.querySelectorAll(CANDIDATE_SELECTOR)).some((node) => isOtherField(node) && !ours(node))) return none;
       const orphan = Array.from(block.querySelectorAll("label")).find((label) => before(label) && !labelsAChoice(label) && textOf(label));
       if (orphan) return { text: textOf(orphan), from: [orphan] };
-      const counts = (node) => before(node) && !ours(node) && shownText(node) && tidy(node.textContent ?? "") !== "";
+      const clickable = (node) => node.parentElement?.closest("a[href], button, [role='button'], [role='link'], [onclick]") ?? null;
+      const counts = (node) => before(node) && !ours(node) && shownText(node) && tidy(node.textContent ?? "") !== "" && !(clickable(node) && block.contains(clickable(node)));
       const walker = block.ownerDocument.createTreeWalker(block, NodeFilter.SHOW_TEXT);
       let first2 = null;
       for (let node = walker.nextNode(); node && !first2; node = walker.nextNode()) if (counts(node)) first2 = node;
@@ -1333,12 +1374,32 @@
     const piece = (text4) => text4 !== "" && PART_ONLY.test(cleanLabel(text4));
     if (!piece(own.text)) {
       const labels = Array.from(el.labels ?? []).map(textOf);
-      const part = labels.length > 1 ? labels.find(piece) : void 0;
+      const part = (labels.length > 1 ? labels.find(piece) : void 0) ?? sharedQuestionPiece(el, own.text);
       return part ? { ...own, part: cleanLabel(part) } : own;
     }
     const whole = wholeQuestion(el);
     if (!whole) return own;
     return whole.boxes > 1 ? { text: whole.text, from: whole.from, part: cleanLabel(own.text) } : { text: whole.text, from: whole.from };
+  }
+  function sharedQuestionPiece(el, question) {
+    const ids = (el.getAttribute("aria-labelledby") ?? "").split(/\s+/).filter(Boolean);
+    if (ids.length < 2) return void 0;
+    const root = el.getRootNode();
+    const shared = (id) => root.querySelectorAll(`[aria-labelledby~="${CSS.escape(id)}"]`).length > 1;
+    if (!ids.some(shared)) return void 0;
+    const own = ids.filter((id) => !shared(id)).map((id) => root.querySelector(`#${CSS.escape(id)}`)).filter((node) => node !== null && isVisible(node) && textOf(node) !== "" && !question.includes(textOf(node)));
+    return own.length === 1 ? textOf(own[0]) : void 0;
+  }
+  function calendarChoices(options, part) {
+    const piece = part.toLowerCase();
+    const keep = (fits, least) => {
+      const real = options.filter((option) => fits(option.label.trim()));
+      return real.length >= least && real.length === options.length - 1 ? real : options;
+    };
+    if (/^(day|dd)$/.test(piece)) return keep((label) => /^\d{1,2}$/.test(label) && Number(label) >= 1 && Number(label) <= 31, 28);
+    if (/^(year|yyyy)$/.test(piece)) return keep((label) => /^\d{4}$/.test(label), 2);
+    if (/^(month|mm)$/.test(piece)) return options.length === 13 ? options.slice(1) : options;
+    return options;
   }
   var MOST_PARTS = 4;
   function wholeQuestion(el) {
@@ -1385,6 +1446,13 @@
       const text4 = wrappingLabelText(wrapping, el);
       if (text4) return { text: text4, from: [wrapping] };
     }
+    if (el.isContentEditable) {
+      const standsFor = hiddenTextareaBeside(el);
+      if (standsFor) {
+        const named2 = ownLabelOf(standsFor);
+        if (named2.text) return named2;
+      }
+    }
     const legend = el.closest("fieldset")?.querySelector("legend");
     const legendText = textOf(legend);
     if (legendText) return { text: legendText, from: [legend] };
@@ -1406,6 +1474,14 @@
     }
     const standard = accessibleName(el);
     return { text: standard, from: [] };
+  }
+  function hiddenTextareaBeside(editor) {
+    let block = editor.parentElement;
+    for (let hops = 0; block && hops < 3; hops++, block = block.parentElement) {
+      const textarea = Array.from(block.querySelectorAll("textarea")).find((node) => node !== editor && !isVisible(node));
+      if (textarea) return textarea;
+    }
+    return null;
   }
   function isMenuButton(el) {
     const popup = el.getAttribute("aria-haspopup");
@@ -1596,13 +1672,13 @@
       if (el.hasAttribute("aria-pressed")) {
         const toggles = toggleGroup(el);
         if (toggles[0] !== el || !isVisible(el)) return;
-        const { text: question, from } = ownBlockLabel(toggles, isAField);
-        const label2 = cleanLabel(question);
+        const { text: question2, from } = ownBlockLabel(toggles, isAField);
+        const label2 = cleanLabel(question2);
         const spec2 = {
           id: takeId(label2 || "choice", index),
           label: label2,
           kind: "radio",
-          required: STARRED.test(question) || drawsAStar(from),
+          required: STARRED.test(question2) || drawsAStar(from),
           options: toggles.map((toggle) => {
             const text4 = tidy(toggle.textContent ?? "");
             return { value: text4, label: text4 };
@@ -1658,13 +1734,13 @@
             if (el.required) existing.required = true;
             return;
           }
-          const question = groupQuestion(el) || ownBlockLabel(siblings.length > 0 ? siblings : [el], isAField).text;
-          const groupLabel = cleanLabel(question || name);
+          const question2 = groupQuestion(el) || ownBlockLabel(siblings.length > 0 ? siblings : [el], isAField).text;
+          const groupLabel = cleanLabel(question2 || name);
           const spec2 = {
             id: takeId(groupLabel || name, index),
             label: groupLabel,
             kind: kind === "radio" ? "radio" : "multiselect",
-            required: el.required || groupRequired(el, question),
+            required: el.required || groupRequired(el, question2),
             options: [option],
             ...visible ? {} : { suspectedHoneypot: true }
           };
@@ -1676,19 +1752,30 @@
           return;
         }
       }
-      const id = takeId(part && label ? `${label} ${part}` : label || name || el.id, index);
+      let question = label;
+      let ticking = "";
+      if (kind === "checkbox" && tag === "input") {
+        const container = el.parentElement?.closest(GROUP_CONTAINER);
+        const named2 = container && container.querySelectorAll(ANSWERING).length === 1 ? cleanLabel(containerName(container)) : "";
+        if (named2 && named2 !== label) {
+          question = named2;
+          ticking = label;
+        }
+      }
+      const id = takeId(part && question ? `${question} ${part}` : question || name || el.id, index);
       const spec = {
         id,
-        label,
+        label: question,
         kind,
         required: Boolean(el.required) || el.getAttribute("aria-required") === "true" || starred || choicesSayRequired(el)
       };
       if (part) spec.part = part;
+      spec.nameSource = labelledFrom.some((node) => isVisible(node)) ? "shown" : "attribute";
       const selector = uniqueSelector(el, ownerDocumentOf(root));
       if (selector) spec.selector = selector;
       const options = optionsOf(el);
-      if (options) spec.options = options;
-      const description = describe(el, label);
+      if (options) spec.options = part ? calendarChoices(options, part) : options;
+      const description = [ticking, describe(el, question)].filter(Boolean).join(" \u2014 ");
       if (description) spec.description = description;
       const maxLength = el.maxLength;
       if (maxLength && maxLength > 0) spec.maxLength = maxLength;
@@ -1713,6 +1800,13 @@
       handles.set(id, el);
     });
     placeInSections(root, specs, handles, usedIds);
+    for (const [id, partner] of phoneFields(specs)) {
+      const spec = specs.find((s) => s.id === id);
+      const tel = specs.find((s) => s.id === partner);
+      if (!spec || !tel || spec.kind === "tel" || spec.nameSource !== "attribute" || spec.part || !tel.label) continue;
+      spec.part = spec.label;
+      spec.label = tel.label;
+    }
     return { specs, handles, skipped, url, readAt: Date.now() };
   }
   var HEADING_SELECTOR = "h1,h2,h3,h4,h5,h6,legend,[role='heading']";
@@ -2498,15 +2592,9 @@
     const isNative = el.tagName.toLowerCase() === "input" && el.type === "date";
     const mask = DATE_MASK.exec((spec.placeholder ?? "").trim());
     if (!isNative && !mask) return value;
-    const iso = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value.trim());
-    let y, m, d;
-    if (iso) {
-      [y, m, d] = [Number(iso[1]), Number(iso[2]), Number(iso[3])];
-    } else {
-      const parsed = new Date(value.replace(/(\d+)(st|nd|rd|th)\b/gi, "$1"));
-      if (Number.isNaN(parsed.getTime())) return value;
-      [y, m, d] = [parsed.getFullYear(), parsed.getMonth() + 1, parsed.getDate()];
-    }
+    const day = calendarDay(value);
+    if (!day) return value;
+    const { y, m, d } = day;
     const two = (n) => String(n).padStart(2, "0");
     if (isNative || !mask) return `${y}-${two(m)}-${two(d)}`;
     const [, first, sep, second, third] = mask;
@@ -3356,54 +3444,218 @@
     }
   };
 
-  // core/src/phones.ts
-  var DIAL_CODE = /\+\d{1,4}\b/;
-  var PHONE_WHOLE = "contact.phone";
-  var PHONE_NUMBER = "contact.phone.number";
-  var PHONE_CODE = "contact.phone.country_code";
-  function phoneFields(specs) {
-    const pairs = /* @__PURE__ */ new Map();
-    for (const tel of specs.filter((spec) => spec.kind === "tel")) {
-      const code = specs.find(
-        (spec) => spec !== tel && spec.kind === "select" && (spec.section ?? "") === (tel.section ?? "") && (/country code|dial(ling)? code|^code$/i.test(spec.label) || (spec.options?.length ?? 0) > 0 && spec.options.filter((o) => DIAL_CODE.test(o.label)).length >= spec.options.length / 2)
-      );
-      if (code) {
-        pairs.set(tel.id, code.id);
-        pairs.set(code.id, tel.id);
-      }
-    }
-    return pairs;
+  // core/src/concepts.ts
+  var c = (id, say, valueKind, scope, volatility, extra = {}) => ({
+    id,
+    say,
+    valueKind,
+    scope,
+    volatility,
+    ...extra
+  });
+  var CONCEPTS = [
+    // ── Who they are ──────────────────────────────────────────────────────────────────────
+    c("identity.full_name", "full name", "text", "remember", "stable", { group: "name" }),
+    c("identity.first_name", "first name", "text", "remember", "stable", { group: "name" }),
+    c("identity.middle_name", "middle name", "text", "remember", "stable", { group: "name" }),
+    c("identity.last_name", "last name", "text", "remember", "stable", { group: "name" }),
+    c("identity.preferred_name", "preferred name", "text", "remember", "stable"),
+    c("identity.name_prefix", "title (Mr, Ms, Dr)", "choice", "remember", "stable"),
+    c("identity.name_pronunciation", "how the name is said", "text", "remember", "stable"),
+    c("identity.pronouns", "pronouns", "choice", "remember", "stable"),
+    c("identity.date_of_birth", "date of birth", "date", "remember", "stable", { group: "date_of_birth" }),
+    c("identity.age", "age", "number", "this_form", "volatile"),
+    c("identity.sex", "sex", "choice", "sensitive", "stable"),
+    c("identity.nationality", "nationality", "choice", "remember", "stable"),
+    c("identity.marital_status", "marital status", "choice", "sensitive", "slow"),
+    c("identity.signature", "signature", "text", "never", "stable"),
+    // ── How to reach them ────────────────────────────────────────────────────────────────
+    c("contact.email", "email", "email", "remember", "slow"),
+    c("contact.phone", "phone number", "phone", "remember", "slow", { group: "phone" }),
+    c("contact.phone.country_code", "phone country code", "choice", "remember", "slow", { group: "phone" }),
+    c("contact.phone.area_code", "phone area code", "phone", "remember", "slow", { group: "phone" }),
+    c("contact.phone.number", "phone number (without its codes)", "phone", "remember", "slow", { group: "phone" }),
+    c("contact.preferred_method", "best way to reach them", "choice", "remember", "slow"),
+    // ── Where ────────────────────────────────────────────────────────────────────────────
+    c("address.full", "address", "long", "remember", "slow", { group: "address" }),
+    c("address.street", "street address", "text", "remember", "slow", { group: "address" }),
+    c("address.street2", "address line 2", "text", "remember", "slow", { group: "address" }),
+    c("address.city", "city", "text", "remember", "slow", { group: "address" }),
+    c("address.state", "state or region", "text", "remember", "slow", { group: "address" }),
+    c("address.postal_code", "postal code", "text", "remember", "slow", { group: "address" }),
+    c("address.country", "country", "choice", "remember", "slow", { group: "address" }),
+    c("address.current_location", "where they are based", "text", "remember", "slow"),
+    c("address.country_of_residence", "country they live in", "choice", "remember", "slow"),
+    // ── Documents ────────────────────────────────────────────────────────────────────────
+    c("document.passport_number", "passport number", "text", "sensitive", "slow"),
+    c("document.passport_country", "passport country", "choice", "remember", "stable"),
+    c("document.passport_expiry", "passport expiry", "date", "sensitive", "slow"),
+    c("document.national_id", "national ID number", "text", "sensitive", "stable"),
+    c("document.tax_id", "tax number", "text", "sensitive", "stable"),
+    c("document.health_insurance_number", "health insurance number", "text", "sensitive", "slow"),
+    c("document.drivers_license", "driving licence number", "text", "sensitive", "slow"),
+    // ── Education (one entry per school) ─────────────────────────────────────────────────
+    c("education.school", "school or university", "choice", "remember", "stable", { group: "education", repeatable: true }),
+    c("education.degree", "degree", "choice", "remember", "stable", { group: "education", repeatable: true }),
+    c("education.field_of_study", "field of study", "choice", "remember", "stable", { group: "education", repeatable: true }),
+    c("education.start_date", "study start date", "month", "remember", "stable", { group: "education", repeatable: true }),
+    c("education.graduation_date", "graduation date", "month", "remember", "stable", { group: "education", repeatable: true }),
+    c("education.gpa", "grade average", "text", "remember", "stable", { group: "education", repeatable: true }),
+    c("education.highest_level", "highest level of education", "choice", "remember", "slow"),
+    c("education.student_type", "kind of student", "choice", "this_form", "slow"),
+    c("education.interests", "subjects of interest", "choice", "this_form", "slow"),
+    // ── Work history (one entry per job) ─────────────────────────────────────────────────
+    c("employment.current_employer", "current company", "text", "remember", "slow"),
+    c("employment.current_title", "current job title", "text", "remember", "slow"),
+    c("employment.employer", "company", "text", "remember", "stable", { group: "employment", repeatable: true }),
+    c("employment.title", "job title", "text", "remember", "stable", { group: "employment", repeatable: true }),
+    c("employment.start_date", "job start date", "month", "remember", "stable", { group: "employment", repeatable: true }),
+    c("employment.end_date", "job end date", "month", "remember", "stable", { group: "employment", repeatable: true }),
+    c("employment.description", "what they did there", "long", "remember", "stable", { group: "employment", repeatable: true }),
+    c("employment.years_experience", "years of experience", "number", "remember", "slow"),
+    c("employment.headline", "professional headline", "text", "remember", "slow"),
+    c("employment.notice_period", "notice period", "text", "this_form", "volatile"),
+    c("employment.earliest_start", "earliest start date", "text", "this_form", "volatile"),
+    c("employment.expected_salary", "expected salary", "text", "this_form", "volatile"),
+    c("employment.current_salary", "current salary", "text", "sensitive", "volatile"),
+    c("employment.interviewing_elsewhere", "other interviews under way", "long", "this_form", "volatile"),
+    // ── Links ────────────────────────────────────────────────────────────────────────────
+    c("links.linkedin", "LinkedIn", "url", "remember", "slow"),
+    c("links.github", "GitHub", "url", "remember", "slow"),
+    c("links.portfolio", "portfolio", "url", "remember", "slow"),
+    c("links.website", "website", "url", "remember", "slow"),
+    c("links.twitter", "X / Twitter", "url", "remember", "slow"),
+    c("links.other", "other links", "url", "remember", "slow"),
+    // ── The job, the place, the terms ──────────────────────────────────────────────────────
+    // Authorisation and sponsorship are kept: they are the person's standing, asked the same way on
+    // form after form (the old memory kept them too). The rest depends on this job and this place.
+    c("work.authorized", "authorised to work there", "yesno", "remember", "slow"),
+    c("work.needs_sponsorship", "needs visa sponsorship", "yesno", "remember", "slow"),
+    c("work.willing_to_relocate", "willing to relocate", "yesno", "this_form", "volatile"),
+    c("work.relocation_plans", "relocation plans", "long", "this_form", "volatile"),
+    c("work.lives_near_office", "lives near the office", "yesno", "this_form", "volatile"),
+    c("work.office_attendance", "able to work from the office", "yesno", "this_form", "volatile"),
+    c("work.remote_preference", "remote or office preference", "choice", "remember", "slow"),
+    c("work.travel", "comfortable with travel", "yesno", "this_form", "volatile"),
+    c("work.security_clearance", "security clearance", "choice", "sensitive", "slow"),
+    c("work.compensation_ok", "fine with the pay range", "yesno", "this_form", "volatile"),
+    c("work.languages", "languages spoken", "choice", "remember", "stable"),
+    c("work.language_level", "level in a language", "choice", "remember", "slow"),
+    // ── How they found this ──────────────────────────────────────────────────────────────
+    c("source.how_heard", "how they heard about this", "choice", "this_form", "volatile"),
+    c("source.referrer_name", "who referred them", "text", "this_form", "volatile"),
+    c("source.referrer_email", "referrer's email", "email", "this_form", "volatile"),
+    // ── Consents (always asked fresh) ────────────────────────────────────────────────────
+    c("consent.privacy", "privacy notice agreement", "yesno", "never", "volatile"),
+    c("consent.terms", "terms agreement", "yesno", "never", "volatile"),
+    c("consent.marketing", "marketing messages", "yesno", "never", "volatile"),
+    c("consent.background_check", "background check consent", "yesno", "never", "volatile"),
+    c("consent.recording", "recording or AI notetaker consent", "yesno", "never", "volatile"),
+    c("consent.future_contact", "being contacted later", "yesno", "never", "volatile"),
+    c("consent.data_processing", "data processing consent", "yesno", "never", "volatile"),
+    // ── Equal-opportunity questions (sensitive, always optional to answer) ───────────────
+    c("eeo.gender", "gender", "choice", "sensitive", "stable"),
+    c("eeo.gender_identity", "gender identity", "choice", "sensitive", "stable"),
+    c("eeo.transgender", "transgender experience", "choice", "sensitive", "stable"),
+    c("eeo.sexual_orientation", "sexual orientation", "choice", "sensitive", "stable"),
+    c("eeo.lgbtq", "LGBTQ+ community", "choice", "sensitive", "stable"),
+    c("eeo.race_ethnicity", "race or ethnicity", "choice", "sensitive", "stable"),
+    c("eeo.hispanic_latino", "Hispanic or Latino", "choice", "sensitive", "stable"),
+    c("eeo.veteran_status", "veteran status", "choice", "sensitive", "slow"),
+    c("eeo.disability_status", "disability status", "choice", "sensitive", "slow"),
+    // ── Health (sensitive) ───────────────────────────────────────────────────────────────
+    c("health.allergies", "allergies", "long", "sensitive", "slow"),
+    c("health.medications", "current medications", "long", "sensitive", "volatile"),
+    c("health.conditions", "health conditions", "long", "sensitive", "slow"),
+    c("health.history", "medical history", "long", "sensitive", "slow"),
+    c("health.family_history", "family medical history", "long", "sensitive", "stable"),
+    c("health.symptoms", "current symptoms", "long", "sensitive", "volatile"),
+    c("health.lifestyle", "lifestyle (sleep, diet, exercise, smoking)", "long", "sensitive", "slow"),
+    c("health.mental", "psychological history", "long", "sensitive", "slow"),
+    c("health.doctor", "their doctor", "text", "sensitive", "slow"),
+    // ── An organisation's own details (subject: organization) ───────────────────────────
+    c("organization.name", "organisation name", "text", "remember", "slow"),
+    c("organization.type", "kind of organisation", "choice", "remember", "slow"),
+    // ── Answers written for this form ────────────────────────────────────────────────────
+    c("text.about_you", "about them", "long", "remember", "slow"),
+    c("text.cover_letter", "cover letter", "long", "this_form", "volatile"),
+    c("text.why_this", "why this company or role", "long", "this_form", "volatile"),
+    c("text.additional_info", "anything else", "long", "this_form", "volatile"),
+    // ── The form itself ──────────────────────────────────────────────────────────────────
+    c("meta.today", "today's date", "date", "never", "volatile"),
+    c("meta.signature_date", "date signed", "date", "never", "volatile"),
+    c("meta.search", "a search box, not a question", "text", "never", "volatile"),
+    // Anything else: the form's own question. Its `gist` (from the model) says what it asks.
+    c("other", "this form's own question", "text", "this_form", "volatile")
+  ];
+  var BY_ID = new Map(CONCEPTS.map((concept) => [concept.id, concept]));
+  function conceptById(id) {
+    return BY_ID.get(id);
   }
-  function dialCodeOf(value) {
-    return /^\s*\+\s*(\d{1,4})\b/.exec(value)?.[1] ?? null;
-  }
-  function dialCodeIn(text4) {
-    return /\+\s*(\d{1,4})\b/.exec(text4)?.[1] ?? null;
-  }
-  function withoutDialCode(value) {
-    return value.replace(/^\s*\+\s*\d{1,4}[\s.-]*/, "");
-  }
-  function optionForDialCode(spec, code) {
-    const pattern = new RegExp(`\\+\\s*${code}\\b`);
-    const matches = (spec.options ?? []).filter((o) => pattern.test(o.label));
-    return matches.length === 1 ? matches[0].label : null;
-  }
+  var RELATED_CONCEPTS = {
+    "address.current_location": ["address.city"],
+    "address.city": ["address.current_location"],
+    "address.country_of_residence": ["address.country"],
+    "address.country": ["address.country_of_residence"],
+    "links.website": ["links.portfolio"],
+    "links.portfolio": ["links.website"]
+  };
+  var LEGACY_KEY_TO_CONCEPT = {
+    first_name: "identity.first_name",
+    last_name: "identity.last_name",
+    full_name: "identity.full_name",
+    preferred_name: "identity.preferred_name",
+    email: "contact.email",
+    phone: "contact.phone",
+    city: "address.city",
+    country: "address.country",
+    postal_code: "address.postal_code",
+    linkedin: "links.linkedin",
+    github: "links.github",
+    portfolio: "links.portfolio",
+    current_employer: "employment.current_employer",
+    current_title: "employment.current_title",
+    years_experience: "employment.years_experience",
+    notice_period: "employment.notice_period",
+    expected_salary: "employment.expected_salary",
+    current_salary: "employment.current_salary",
+    willing_to_relocate: "work.willing_to_relocate",
+    work_authorization: "work.authorized",
+    needs_sponsorship: "work.needs_sponsorship",
+    about_you: "text.about_you"
+  };
 
   // core/src/conversation.ts
   var MOST_CHOICES_TO_READ_OUT = 6;
   var EASY = [
-    { keys: ["first_name", "last_name", "full_name", "preferred_name"], say: "your name" },
-    { keys: ["email"], say: "email" },
-    { keys: ["phone"], say: "phone number" },
-    { keys: ["city", "country", "postal_code"], say: "where you're based" },
-    { keys: ["linkedin"], say: "LinkedIn" },
-    { keys: ["github"], say: "GitHub" },
-    { keys: ["portfolio"], say: "website" }
+    {
+      keys: ["first_name", "last_name", "full_name", "preferred_name"],
+      concepts: ["identity.first_name", "identity.last_name", "identity.middle_name", "identity.full_name", "identity.preferred_name"],
+      say: "your name"
+    },
+    { keys: ["email"], concepts: ["contact.email"], say: "email" },
+    { keys: ["phone"], concepts: ["contact.phone", "contact.phone.number", "contact.phone.country_code", "contact.phone.area_code"], say: "phone number" },
+    {
+      keys: ["city", "country", "postal_code"],
+      concepts: ["address.city", "address.country", "address.postal_code", "address.current_location", "address.country_of_residence"],
+      say: "where you're based"
+    },
+    { keys: ["linkedin"], concepts: ["links.linkedin"], say: "LinkedIn" },
+    { keys: ["github"], concepts: ["links.github"], say: "GitHub" },
+    { keys: ["portfolio"], concepts: ["links.portfolio", "links.website"], say: "website" }
   ];
+  function easyGroupOf(spec) {
+    const understood = spec.understood;
+    if (understood && understood.confidence !== "low") {
+      if (understood.subject !== "self") return void 0;
+      return EASY.find((group) => group.concepts.includes(understood.concept));
+    }
+    const key = canonicalKey(spec);
+    return key === null ? void 0 : EASY.find((group) => group.keys.includes(key));
+  }
   var MOST_EASY_TO_NAME = 5;
   function isEasy(spec) {
-    const key = canonicalKey(spec);
-    return key !== null && EASY.some((group) => group.keys.includes(key));
+    return easyGroupOf(spec) !== void 0;
   }
   function spokenList(items, last = "and") {
     if (items.length <= 1) return items.join("");
@@ -3434,10 +3686,7 @@
     const done = new Set(filled);
     const easyGroups = EASY.map((group) => ({
       say: group.say,
-      fields: fields.filter((spec) => {
-        const key = canonicalKey(spec);
-        return key !== null && group.keys.includes(key);
-      })
+      fields: fields.filter((spec) => easyGroupOf(spec) === group)
     })).filter((group) => group.fields.length > 0);
     const alreadyIn = easyGroups.filter((group) => {
       const needed = group.fields.filter((spec) => spec.required);
@@ -3483,15 +3732,18 @@
   }
   var ADDRESS_PART = /street|address|city|town|state|province|county|post(al)? ?code|zip|pin ?code|country/i;
   function addressFields(specs) {
+    const known = (spec) => spec.understood && spec.understood.confidence !== "low";
+    const isPart = (spec) => known(spec) ? conceptById(spec.understood.concept)?.group === "address" : ADDRESS_PART.test(spec.label);
+    const isStreet = (spec) => known(spec) ? ["address.street", "address.full"].includes(spec.understood.concept) : /street|address/i.test(spec.label);
     const bySection = /* @__PURE__ */ new Map();
     for (const spec of specs) {
-      if (!ADDRESS_PART.test(spec.label)) continue;
-      const key = spec.section ?? "";
+      if (!isPart(spec)) continue;
+      const key = `${spec.section ?? ""}\0${spec.understood?.subject ?? ""}`;
       bySection.set(key, [...bySection.get(key) ?? [], spec]);
     }
     const grouped = /* @__PURE__ */ new Set();
     for (const parts of bySection.values()) {
-      const hasStreet = parts.some((spec) => /street|address/i.test(spec.label));
+      const hasStreet = parts.some(isStreet);
       if (hasStreet && parts.length >= 2) for (const spec of parts) grouped.add(spec.id);
     }
     return grouped;
@@ -3962,187 +4214,6 @@
     return flat2(a) === flat2(b);
   }
 
-  // core/src/concepts.ts
-  var c = (id, say, valueKind, scope, volatility, extra = {}) => ({
-    id,
-    say,
-    valueKind,
-    scope,
-    volatility,
-    ...extra
-  });
-  var CONCEPTS = [
-    // ── Who they are ──────────────────────────────────────────────────────────────────────
-    c("identity.full_name", "full name", "text", "remember", "stable", { group: "name" }),
-    c("identity.first_name", "first name", "text", "remember", "stable", { group: "name" }),
-    c("identity.middle_name", "middle name", "text", "remember", "stable", { group: "name" }),
-    c("identity.last_name", "last name", "text", "remember", "stable", { group: "name" }),
-    c("identity.preferred_name", "preferred name", "text", "remember", "stable"),
-    c("identity.name_prefix", "title (Mr, Ms, Dr)", "choice", "remember", "stable"),
-    c("identity.name_pronunciation", "how the name is said", "text", "remember", "stable"),
-    c("identity.pronouns", "pronouns", "choice", "remember", "stable"),
-    c("identity.date_of_birth", "date of birth", "date", "remember", "stable", { group: "date_of_birth" }),
-    c("identity.age", "age", "number", "this_form", "volatile"),
-    c("identity.sex", "sex", "choice", "sensitive", "stable"),
-    c("identity.nationality", "nationality", "choice", "remember", "stable"),
-    c("identity.marital_status", "marital status", "choice", "sensitive", "slow"),
-    c("identity.signature", "signature", "text", "never", "stable"),
-    // ── How to reach them ────────────────────────────────────────────────────────────────
-    c("contact.email", "email", "email", "remember", "slow"),
-    c("contact.phone", "phone number", "phone", "remember", "slow", { group: "phone" }),
-    c("contact.phone.country_code", "phone country code", "choice", "remember", "slow", { group: "phone" }),
-    c("contact.phone.area_code", "phone area code", "phone", "remember", "slow", { group: "phone" }),
-    c("contact.phone.number", "phone number (without its codes)", "phone", "remember", "slow", { group: "phone" }),
-    c("contact.preferred_method", "best way to reach them", "choice", "remember", "slow"),
-    // ── Where ────────────────────────────────────────────────────────────────────────────
-    c("address.full", "address", "long", "remember", "slow", { group: "address" }),
-    c("address.street", "street address", "text", "remember", "slow", { group: "address" }),
-    c("address.street2", "address line 2", "text", "remember", "slow", { group: "address" }),
-    c("address.city", "city", "text", "remember", "slow", { group: "address" }),
-    c("address.state", "state or region", "text", "remember", "slow", { group: "address" }),
-    c("address.postal_code", "postal code", "text", "remember", "slow", { group: "address" }),
-    c("address.country", "country", "choice", "remember", "slow", { group: "address" }),
-    c("address.current_location", "where they are based", "text", "remember", "slow"),
-    c("address.country_of_residence", "country they live in", "choice", "remember", "slow"),
-    // ── Documents ────────────────────────────────────────────────────────────────────────
-    c("document.passport_number", "passport number", "text", "sensitive", "slow"),
-    c("document.passport_country", "passport country", "choice", "remember", "stable"),
-    c("document.passport_expiry", "passport expiry", "date", "sensitive", "slow"),
-    c("document.national_id", "national ID number", "text", "sensitive", "stable"),
-    c("document.tax_id", "tax number", "text", "sensitive", "stable"),
-    c("document.health_insurance_number", "health insurance number", "text", "sensitive", "slow"),
-    c("document.drivers_license", "driving licence number", "text", "sensitive", "slow"),
-    // ── Education (one entry per school) ─────────────────────────────────────────────────
-    c("education.school", "school or university", "choice", "remember", "stable", { group: "education", repeatable: true }),
-    c("education.degree", "degree", "choice", "remember", "stable", { group: "education", repeatable: true }),
-    c("education.field_of_study", "field of study", "choice", "remember", "stable", { group: "education", repeatable: true }),
-    c("education.start_date", "study start date", "date", "remember", "stable", { group: "education", repeatable: true }),
-    c("education.graduation_date", "graduation date", "date", "remember", "stable", { group: "education", repeatable: true }),
-    c("education.gpa", "grade average", "text", "remember", "stable", { group: "education", repeatable: true }),
-    c("education.highest_level", "highest level of education", "choice", "remember", "slow"),
-    c("education.student_type", "kind of student", "choice", "this_form", "slow"),
-    c("education.interests", "subjects of interest", "choice", "this_form", "slow"),
-    // ── Work history (one entry per job) ─────────────────────────────────────────────────
-    c("employment.current_employer", "current company", "text", "remember", "slow"),
-    c("employment.current_title", "current job title", "text", "remember", "slow"),
-    c("employment.employer", "company", "text", "remember", "stable", { group: "employment", repeatable: true }),
-    c("employment.title", "job title", "text", "remember", "stable", { group: "employment", repeatable: true }),
-    c("employment.start_date", "job start date", "date", "remember", "stable", { group: "employment", repeatable: true }),
-    c("employment.end_date", "job end date", "date", "remember", "stable", { group: "employment", repeatable: true }),
-    c("employment.description", "what they did there", "long", "remember", "stable", { group: "employment", repeatable: true }),
-    c("employment.years_experience", "years of experience", "number", "remember", "slow"),
-    c("employment.headline", "professional headline", "text", "remember", "slow"),
-    c("employment.notice_period", "notice period", "text", "this_form", "volatile"),
-    c("employment.earliest_start", "earliest start date", "date", "this_form", "volatile"),
-    c("employment.expected_salary", "expected salary", "text", "this_form", "volatile"),
-    c("employment.current_salary", "current salary", "text", "sensitive", "volatile"),
-    c("employment.interviewing_elsewhere", "other interviews under way", "long", "this_form", "volatile"),
-    // ── Links ────────────────────────────────────────────────────────────────────────────
-    c("links.linkedin", "LinkedIn", "url", "remember", "slow"),
-    c("links.github", "GitHub", "url", "remember", "slow"),
-    c("links.portfolio", "portfolio", "url", "remember", "slow"),
-    c("links.website", "website", "url", "remember", "slow"),
-    c("links.twitter", "X / Twitter", "url", "remember", "slow"),
-    c("links.other", "other links", "url", "remember", "slow"),
-    // ── The job, the place, the terms ──────────────────────────────────────────────────────
-    // Authorisation and sponsorship are kept: they are the person's standing, asked the same way on
-    // form after form (the old memory kept them too). The rest depends on this job and this place.
-    c("work.authorized", "authorised to work there", "yesno", "remember", "slow"),
-    c("work.needs_sponsorship", "needs visa sponsorship", "yesno", "remember", "slow"),
-    c("work.willing_to_relocate", "willing to relocate", "yesno", "this_form", "volatile"),
-    c("work.relocation_plans", "relocation plans", "long", "this_form", "volatile"),
-    c("work.lives_near_office", "lives near the office", "yesno", "this_form", "volatile"),
-    c("work.office_attendance", "able to work from the office", "yesno", "this_form", "volatile"),
-    c("work.remote_preference", "remote or office preference", "choice", "remember", "slow"),
-    c("work.travel", "comfortable with travel", "yesno", "this_form", "volatile"),
-    c("work.security_clearance", "security clearance", "choice", "sensitive", "slow"),
-    c("work.compensation_ok", "fine with the pay range", "yesno", "this_form", "volatile"),
-    c("work.languages", "languages spoken", "choice", "remember", "stable"),
-    c("work.language_level", "level in a language", "choice", "remember", "slow"),
-    // ── How they found this ──────────────────────────────────────────────────────────────
-    c("source.how_heard", "how they heard about this", "choice", "this_form", "volatile"),
-    c("source.referrer_name", "who referred them", "text", "this_form", "volatile"),
-    c("source.referrer_email", "referrer's email", "email", "this_form", "volatile"),
-    // ── Consents (always asked fresh) ────────────────────────────────────────────────────
-    c("consent.privacy", "privacy notice agreement", "yesno", "never", "volatile"),
-    c("consent.terms", "terms agreement", "yesno", "never", "volatile"),
-    c("consent.marketing", "marketing messages", "yesno", "never", "volatile"),
-    c("consent.background_check", "background check consent", "yesno", "never", "volatile"),
-    c("consent.recording", "recording or AI notetaker consent", "yesno", "never", "volatile"),
-    c("consent.future_contact", "being contacted later", "yesno", "never", "volatile"),
-    c("consent.data_processing", "data processing consent", "yesno", "never", "volatile"),
-    // ── Equal-opportunity questions (sensitive, always optional to answer) ───────────────
-    c("eeo.gender", "gender", "choice", "sensitive", "stable"),
-    c("eeo.gender_identity", "gender identity", "choice", "sensitive", "stable"),
-    c("eeo.transgender", "transgender experience", "choice", "sensitive", "stable"),
-    c("eeo.sexual_orientation", "sexual orientation", "choice", "sensitive", "stable"),
-    c("eeo.lgbtq", "LGBTQ+ community", "choice", "sensitive", "stable"),
-    c("eeo.race_ethnicity", "race or ethnicity", "choice", "sensitive", "stable"),
-    c("eeo.hispanic_latino", "Hispanic or Latino", "choice", "sensitive", "stable"),
-    c("eeo.veteran_status", "veteran status", "choice", "sensitive", "slow"),
-    c("eeo.disability_status", "disability status", "choice", "sensitive", "slow"),
-    // ── Health (sensitive) ───────────────────────────────────────────────────────────────
-    c("health.allergies", "allergies", "long", "sensitive", "slow"),
-    c("health.medications", "current medications", "long", "sensitive", "volatile"),
-    c("health.conditions", "health conditions", "long", "sensitive", "slow"),
-    c("health.history", "medical history", "long", "sensitive", "slow"),
-    c("health.family_history", "family medical history", "long", "sensitive", "stable"),
-    c("health.symptoms", "current symptoms", "long", "sensitive", "volatile"),
-    c("health.lifestyle", "lifestyle (sleep, diet, exercise, smoking)", "long", "sensitive", "slow"),
-    c("health.mental", "psychological history", "long", "sensitive", "slow"),
-    c("health.doctor", "their doctor", "text", "sensitive", "slow"),
-    // ── An organisation's own details (subject: organization) ───────────────────────────
-    c("organization.name", "organisation name", "text", "remember", "slow"),
-    c("organization.type", "kind of organisation", "choice", "remember", "slow"),
-    // ── Answers written for this form ────────────────────────────────────────────────────
-    c("text.about_you", "about them", "long", "remember", "slow"),
-    c("text.cover_letter", "cover letter", "long", "this_form", "volatile"),
-    c("text.why_this", "why this company or role", "long", "this_form", "volatile"),
-    c("text.additional_info", "anything else", "long", "this_form", "volatile"),
-    // ── The form itself ──────────────────────────────────────────────────────────────────
-    c("meta.today", "today's date", "date", "never", "volatile"),
-    c("meta.signature_date", "date signed", "date", "never", "volatile"),
-    c("meta.search", "a search box, not a question", "text", "never", "volatile"),
-    // Anything else: the form's own question. Its `gist` (from the model) says what it asks.
-    c("other", "this form's own question", "text", "this_form", "volatile")
-  ];
-  var BY_ID = new Map(CONCEPTS.map((concept) => [concept.id, concept]));
-  function conceptById(id) {
-    return BY_ID.get(id);
-  }
-  var RELATED_CONCEPTS = {
-    "address.current_location": ["address.city"],
-    "address.city": ["address.current_location"],
-    "address.country_of_residence": ["address.country"],
-    "address.country": ["address.country_of_residence"],
-    "links.website": ["links.portfolio"],
-    "links.portfolio": ["links.website"]
-  };
-  var LEGACY_KEY_TO_CONCEPT = {
-    first_name: "identity.first_name",
-    last_name: "identity.last_name",
-    full_name: "identity.full_name",
-    preferred_name: "identity.preferred_name",
-    email: "contact.email",
-    phone: "contact.phone",
-    city: "address.city",
-    country: "address.country",
-    postal_code: "address.postal_code",
-    linkedin: "links.linkedin",
-    github: "links.github",
-    portfolio: "links.portfolio",
-    current_employer: "employment.current_employer",
-    current_title: "employment.current_title",
-    years_experience: "employment.years_experience",
-    notice_period: "employment.notice_period",
-    expected_salary: "employment.expected_salary",
-    current_salary: "employment.current_salary",
-    willing_to_relocate: "work.willing_to_relocate",
-    work_authorization: "work.authorized",
-    needs_sponsorship: "work.needs_sponsorship",
-    about_you: "text.about_you"
-  };
-
   // core/src/profile.ts
   var PROFILE_VERSION = 2;
   var HISTORY = 12;
@@ -4161,10 +4232,16 @@
   function factKeys(specs, meanings) {
     const keys = /* @__PURE__ */ new Map();
     const seen = /* @__PURE__ */ new Map();
+    const boxes = /* @__PURE__ */ new Map();
+    for (const spec of specs) {
+      const meaning = meanings[spec.id];
+      if (meaning?.subject === "self") boxes.set(meaning.concept, (boxes.get(meaning.concept) ?? 0) + 1);
+    }
     for (const spec of specs) {
       const meaning = meanings[spec.id];
       if (!meaning || meaning.subject !== "self" || meaning.concept === "other") continue;
-      const named2 = asPart(meaning.part) ?? asPart(spec.part);
+      const split = (boxes.get(meaning.concept) ?? 0) > 1 && !conceptById(meaning.concept)?.repeatable;
+      const named2 = asPart(meaning.part) ?? (split ? asPart(spec.part) : void 0);
       const part = named2 && !meaning.concept.endsWith(`.${named2}`) ? named2 : void 0;
       const concept = conceptById(meaning.concept);
       let entry;
@@ -4382,6 +4459,16 @@
     }
     return found;
   }
+  function datePiece(day, part, spec) {
+    const which = /^(d|dd|day|date)$/.test(part) ? "d" : /^(m|mm|month)$/.test(part) ? "m" : /^(y|yy|yyyy|year)$/.test(part) ? "y" : null;
+    if (!which) return null;
+    const n = day[which];
+    const choices = realChoices(spec.options);
+    if (choices.length === 0) return which === "y" ? String(n) : String(n).padStart(2, "0");
+    if (which === "m" && choices.length === 12) return choices[n - 1] ?? null;
+    if (which === "d" && choices.length === 31) return choices[n - 1] ?? null;
+    return choices.find((choice) => Number(choice.trim()) === n) ?? null;
+  }
   function answerFor(key, spec, profile) {
     const get = (concept) => profile.facts[factId({ concept })];
     const own = profile.facts[factId(key)];
@@ -4393,7 +4480,31 @@
       }
     }
     if (own) return { id: own.id, fact: own, value: own.value, evidence: evidenceOf(own) };
+    if (key.part && !key.entry && conceptById(key.concept)?.valueKind === "date") {
+      const whole = get(key.concept);
+      const day = typeof whole?.value === "string" ? calendarDay(whole.value) : null;
+      const piece = whole && day ? datePiece(day, key.part, spec) : null;
+      return whole && piece ? { id: whole.id, fact: whole, value: piece, evidence: evidenceOf(whole) } : null;
+    }
     if (key.part || key.entry) return null;
+    if (conceptById(key.concept)?.valueKind === "date") {
+      const [d, m, y] = ["day", "month", "year"].map((part) => profile.facts[factId({ concept: key.concept, part })]);
+      if (!d || !m || !y) return null;
+      const month = String(m.value);
+      const two = (n) => n.padStart(2, "0");
+      const iso = /^\d{1,2}$/.test(month) ? `${y.value}-${two(month)}-${two(String(d.value))}` : null;
+      const day = calendarDay(iso ?? `${d.value} ${month} ${y.value}`);
+      if (!day) return null;
+      const value = `${day.y}-${two(String(day.m))}-${two(String(day.d))}`;
+      return { id: y.id, fact: y, value, evidence: [d, m, y].map(evidenceOf).join(" \u2014 "), why: "put_together" };
+    }
+    if (key.concept === "identity.first_name" || key.concept === "identity.last_name") {
+      const full = get("identity.full_name");
+      const words3 = typeof full?.value === "string" ? full.value.trim().split(/\s+/) : [];
+      if (full && words3.length === 2) {
+        return { id: full.id, fact: full, value: key.concept === "identity.first_name" ? words3[0] : words3[1], evidence: evidenceOf(full), why: "taken_apart" };
+      }
+    }
     if (key.concept === PHONE_NUMBER || key.concept === PHONE_CODE) {
       const whole = get(PHONE_WHOLE);
       if (!whole || typeof whole.value !== "string") return null;
@@ -4444,7 +4555,8 @@
     from_a_while_ago: "it was a while ago and may have changed",
     carried_over: "saved by an older version of Longtake",
     closest_choice: "the closest of this form's choices",
-    put_together: "put together from their first and last name"
+    put_together: "put together from pieces they gave on another form",
+    taken_apart: "taken from their full name \u2014 which part is which is theirs to say"
   };
   function migrateV1(memory) {
     const changes = [];
@@ -4649,7 +4761,9 @@
       ...specs2.filter((spec) => !later.has(spec.id)),
       ...specs2.filter((spec) => later.has(spec.id))
     ];
-    const required = lastIfLater(inAskingOrder(open.filter((f) => f.spec.required).map((f) => f.spec)));
+    const marksNone = state.fields.every((f) => !f.spec.required);
+    const toAsk = (f) => f.spec.required || marksNone;
+    const required = lastIfLater(inAskingOrder(open.filter(toAsk).map((f) => f.spec)));
     if (required.length > 0) {
       const first = factsOf(required[0], specs);
       if (first.group) {
@@ -4658,7 +4772,7 @@
       }
       return { kind: "ask", fields: batch(required.map((spec) => factsOf(spec, specs)).filter((f) => !f.group || f.field === first.field)) };
     }
-    const optional = lastIfLater(inAskingOrder(open.filter((f) => !f.spec.required).map((f) => f.spec))).map(
+    const optional = lastIfLater(inAskingOrder(open.filter((f) => !toAsk(f)).map((f) => f.spec))).map(
       (spec) => factsOf(spec, specs)
     );
     const next = state.actions.find((a) => a.kind === "next");
@@ -4996,6 +5110,24 @@
       };
     }
   }
+  function applyMeaningHints(specs, meanings) {
+    let changed = false;
+    for (const spec of specs) {
+      const meaning = meanings[spec.id];
+      if (!meaning || meaning.source !== "model") continue;
+      const understood = { concept: meaning.concept, subject: meaning.subject, confidence: meaning.confidence };
+      if (JSON.stringify(spec.understood) !== JSON.stringify(understood)) {
+        spec.understood = understood;
+        changed = true;
+      }
+      const date = conceptById(meaning.concept)?.valueKind === "date";
+      if (date && spec.kind === "text" && !spec.part && meaning.confidence !== "low") {
+        spec.kind = "date";
+        changed = true;
+      }
+    }
+    return changed;
+  }
   function fallbackMeanings(specs) {
     const meanings = {};
     for (const spec of specs) {
@@ -5247,6 +5379,7 @@
         await waitForForm();
         const read = await harvestOptions(this.registry.adopt(this.readNow()).read);
         this.current = read;
+        applyMeaningHints(read.specs, this.meanings);
         this.title = titleOf(read, this.scope());
         const understood = this.understandForm(read);
         await Promise.race([understood, new Promise((done) => setTimeout(done, UNDERSTAND_WAIT_MS))]);
@@ -5339,6 +5472,7 @@
       }
       if (fresh === 0 || !this.current) return;
       this.options.log?.(`understood ${fresh} field(s)`);
+      if (applyMeaningHints(this.current.specs, this.meanings)) this.options.onReshape?.();
       const waiting = this.unlearned;
       this.unlearned = [];
       for (const how of ["spoken", "confirmed"]) {
@@ -5356,6 +5490,7 @@
       await waitForForm();
       const read = await harvestOptions(this.registry.adopt(this.readNow()).read);
       this.current = read;
+      applyMeaningHints(read.specs, this.meanings);
       this.title = titleOf(read, this.scope());
       this.plan = { optionalOffered: false };
       void this.understandForm(read);
@@ -5739,6 +5874,7 @@
         await harvestOptions({ ...change.read, specs: change.appeared });
         const read = change.read;
         this.current = read;
+        applyMeaningHints(read.specs, this.meanings);
         if (change.appeared.length === 0 && change.disappeared.length === 0) {
           this.options.onChange?.();
           return null;
@@ -7039,6 +7175,7 @@ ${text4}`.trim();
     accessibleDescription,
     fallbackMeanings,
     validateMeanings,
+    applyMeaningHints,
     Conductor,
     FakeVoice,
     runScript,
