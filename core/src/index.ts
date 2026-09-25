@@ -32,6 +32,8 @@ export * from "./reconnect";
 export * from "./voice";
 export * from "./concepts";
 export * from "./understand";
+export * from "./profile";
+export * from "./profile-store";
 export * from "./notices";
 export * from "./conductor";
 

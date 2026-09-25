@@ -5,9 +5,9 @@
  * planning, the voice, the tools, watching the page — is the same `Conductor` the landing page
  * runs, which is the only reason a demo or a replay on the site proves anything about this. What is
  * particular to an extension is only plumbing: where the token comes from (the background worker,
- * which may reach the site), where the audio worklet is (inside the extension), where remembered
- * answers live (`chrome.storage`, so they follow the person from one site to the next), and the
- * panel.
+ * which may reach the site), where the audio worklet is (inside the extension), where what is
+ * known about the person lives (the background worker owns it, so it follows them from one site to
+ * the next), and the panel.
  *
  * The toolbar icon or the hotkey opens the panel; its Start button starts the call. See panel.ts
  * for why the call waits for that click.
@@ -15,39 +15,23 @@
  * Built by `npm run build:extension` into `extension/dist/content.js`.
  */
 
-import { Conductor, MEMORY_VERSION, readForm, type ConductorView, type Memory } from "@longtake/core";
+import { Conductor, readForm, type ConductorView, type FormSnapshot } from "@longtake/core";
 
 import { miss, notice, Panel, type PanelView } from "./panel";
+import { profileClient } from "./profile-client";
 
 /** Our own panel, and nothing else, is never part of their form. */
 const IGNORE = "[data-longtake-ignore]";
-const MEMORY_KEY = "longtake.memory.v1";
-
-// ── Remembered answers: chrome.storage, read once, then kept in step ─────────────────────
-
-let memoryCache: Memory = {};
-const memoryReady = chrome.storage.local
-  .get(MEMORY_KEY)
-  .then((stored) => {
-    const saved = stored[MEMORY_KEY] as { version: number; memory: Memory } | undefined;
-    if (saved?.version === MEMORY_VERSION) memoryCache = saved.memory ?? {};
-  })
-  .catch(() => undefined);
-
-// Saved answers edited or removed on the settings page take effect straight away, not on reload.
-chrome.storage.onChanged.addListener((changes, area) => {
-  if (area !== "local" || !changes[MEMORY_KEY]) return;
-  const saved = changes[MEMORY_KEY].newValue as { version: number; memory: Memory } | undefined;
-  memoryCache = saved?.version === MEMORY_VERSION ? saved.memory ?? {} : {};
-});
-
-const memory = {
-  load: () => memoryCache,
-  save: (next: Memory) => {
-    memoryCache = next;
-    void chrome.storage.local.set({ [MEMORY_KEY]: { version: MEMORY_VERSION, memory: next } }).catch(() => undefined);
-  },
-};
+/** What each field means, from the site's model route — reached through the background worker. */
+async function understand(snapshot: FormSnapshot): Promise<unknown> {
+  const reply = (await chrome.runtime.sendMessage({ type: "longtake:api", path: "/api/understand", body: snapshot })) as
+    | { status?: number; body?: { error?: string }; error?: string }
+    | undefined;
+  if (!reply || reply.error || !reply.status || reply.status >= 400) {
+    throw new Error(reply?.error ?? reply?.body?.error ?? "The Longtake site did not answer.");
+  }
+  return reply.body;
+}
 
 const tellBackground = (message: Record<string, unknown>) =>
   void chrome.runtime.sendMessage(message).catch(() => undefined);
@@ -122,13 +106,12 @@ function toPanel(view: ConductorView): PanelView {
 
 async function begin(): Promise<void> {
   if (conductor?.running) return;
-  await memoryReady;
   const settings = (await chrome.storage.local.get(["wsUrl", "voice"])) as { wsUrl?: string; voice?: string };
 
   conductor ??= new Conductor({
     root: () => document,
     ignore: IGNORE,
-    memory,
+    profile: profileClient,
     services: {
       getToken: async () => {
         const reply = (await chrome.runtime.sendMessage({ type: "longtake:token" })) as { token?: string; error?: string };
@@ -138,6 +121,7 @@ async function begin(): Promise<void> {
       workletUrl: chrome.runtime.getURL("dist/pcm-processor.js"),
       ...(settings.wsUrl ? { wsUrl: settings.wsUrl } : {}),
       voice: settings.voice ?? "charles",
+      understand,
     },
     onActive: (active) => tellBackground({ type: "longtake:active", active }),
   });

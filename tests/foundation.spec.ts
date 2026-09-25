@@ -12,7 +12,7 @@
 
 import { expect, test, type Page } from "@playwright/test";
 
-import { load } from "./helpers";
+import { load, saidBefore } from "./helpers";
 
 /** A dropdown built like the landing page's: a div trigger, a portal menu, a × to clear it. */
 const combo = (id: string, label: string, options: string[], required = false) => `
@@ -68,19 +68,22 @@ const APPLICATION = `
   <label for="years">Total years of experience</label><input id="years" required>
   ${combo("gender", "Gender", ["Male", "Female", "Decline To Self Identify"])}`;
 
-/** Build a session in the page with an in-page memory store, and expose helpers to the tests. */
-async function withSession(page: Page, body: string, memory: Record<string, unknown> = {}) {
+/**
+ * Build a session in the page, with a profile holding what they said on an earlier form and the
+ * stand-in model for what fields mean, and expose it to the tests.
+ */
+async function withSession(page: Page, body: string, before: unknown[] = []) {
   await load(page, body);
-  await page.evaluate((mem) => {
+  await page.evaluate((changes) => {
     const L = window.__longtake;
-    let stored = mem;
     const session = new L.LongtakeSession({
       root: () => document,
       ignore: "[data-longtake-ignore]",
-      memory: { load: () => stored as never, save: (m) => { stored = m as never; } },
+      profile: L.memoryProfileStore(L.applyChanges(L.emptyProfile(), changes as never).profile),
+      understand: L.fakeUnderstanding(),
     });
     (window as unknown as { __s: typeof session }).__s = session;
-  }, memory);
+  }, before);
 }
 
 type Snap = {
@@ -194,7 +197,7 @@ test.describe("one form state — where every value came from", () => {
        <label for="c">Phone</label><input id="c">
        <label for="d">Website</label><input id="d" value="rohit.dev">
        <label for="e">Notes</label><input id="e">`,
-      { first_name: { key: "first_name", value: "Rohit", evidence: "my name is Rohit", askedAs: "First name", savedAt: 1, sourceUrl: "" } },
+      saidBefore({ "identity.first_name": ["Rohit", "my name is Rohit"] }),
     );
     await page.evaluate(async () => {
       const s = (window as unknown as { __s: InstanceType<typeof window.__longtake.LongtakeSession> }).__s;
@@ -214,11 +217,15 @@ test.describe("one form state — where every value came from", () => {
 
   /** #11 — counted off the page, remembered answers included. */
   test("the count comes from the page, not from this session's writes", async ({ page }) => {
-    await withSession(page, APPLICATION, {
-      first_name: { key: "first_name", value: "Rohit", evidence: "my name is Rohit Kashyap", askedAs: "First Name", savedAt: 1, sourceUrl: "" },
-      last_name: { key: "last_name", value: "Kashyap", evidence: "my name is Rohit Kashyap", askedAs: "Last Name", savedAt: 1, sourceUrl: "" },
-      country: { key: "country", value: "India", evidence: "I'm from Kolkata, India", askedAs: "Country", savedAt: 1, sourceUrl: "" },
-    });
+    await withSession(
+      page,
+      APPLICATION,
+      saidBefore({
+        "identity.first_name": ["Rohit", "my name is Rohit Kashyap"],
+        "identity.last_name": ["Kashyap", "my name is Rohit Kashyap"],
+        "address.country": ["India", "I'm from Kolkata, India"],
+      }),
+    );
     await page.evaluate(async () => {
       const s = (window as unknown as { __s: InstanceType<typeof window.__longtake.LongtakeSession> }).__s;
       await s.prefill();
@@ -231,9 +238,7 @@ test.describe("one form state — where every value came from", () => {
 
   /** #12, end to end: the opening line must know Country is filled. */
   test("the opening line never asks for something already in a custom dropdown", async ({ page }) => {
-    await withSession(page, APPLICATION, {
-      country: { key: "country", value: "India", evidence: "I'm from Kolkata, India", askedAs: "Country", savedAt: 1, sourceUrl: "" },
-    });
+    await withSession(page, APPLICATION, saidBefore({ "address.country": ["India", "I'm from Kolkata, India"] }));
     const greeting = await page.evaluate(async () => {
       const s = (window as unknown as { __s: InstanceType<typeof window.__longtake.LongtakeSession> }).__s;
       await s.prefill();

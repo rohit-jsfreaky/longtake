@@ -18,13 +18,15 @@
 
 import { checkEvidence } from "./evidence";
 import { clipFor, type TimelinePoint } from "./clip";
-import { CLEAR_TOOL_NAME, CONFIRM_TOOL_NAME, FILL_TOOL_NAME, LATER_TOOL_NAME, PRESS_TOOL_NAME } from "./binder";
+import { CLEAR_TOOL_NAME, CONFIRM_TOOL_NAME, FILL_TOOL_NAME, LATER_TOOL_NAME, PRESS_TOOL_NAME, SAVE_TOOL_NAME } from "./binder";
 import { configForField, fieldsWorthShaping, shapeResult, type DictationConfig, type DictationResult, type ShapedAnswer } from "./dictation";
 import type { FormState } from "./form-state";
 import { readHesitation, type Hesitation } from "./hesitation";
-import type { RememberedAnswer } from "./memory";
 import { missesIn, type Missed } from "./notices";
-import { LongtakeSession, type MemoryStore } from "./session";
+import type { KnownFact } from "./profile";
+import type { ProfileStore } from "./profile-store";
+import { LongtakeSession } from "./session";
+import type { FormSnapshot } from "./understand";
 import {
   CONVERSATION_MODE,
   startVoiceSession,
@@ -57,7 +59,8 @@ export type ConductorView = {
   partial: string;
   shaped: Record<string, ShapedAnswer>;
   hesitations: Record<string, Hesitation>;
-  known: RememberedAnswer[];
+  /** Everything known about the person, newest first. */
+  known: KnownFact[];
   log: LogEntry[];
 };
 
@@ -69,6 +72,8 @@ export type ConductorServices = {
   voice?: string;
   /** One Dictation pass over one answer's audio. Absent where Dictation is not reachable. */
   dictate?: (config: DictationConfig, pcmBase64: string) => Promise<DictationResult>;
+  /** What each field means, from the model. Absent: the offline reading, which fills nothing unasked. */
+  understand?: (snapshot: FormSnapshot) => Promise<unknown>;
   /** The call itself. A fake in tests; `startVoiceSession` everywhere else. */
   startVoice?: (options: VoiceSessionOptions) => Promise<VoiceSession>;
 };
@@ -76,7 +81,8 @@ export type ConductorServices = {
 export type ConductorOptions = {
   root: () => Document | Element;
   ignore: string;
-  memory: MemoryStore;
+  /** What is known about the person, and its one owner. In memory for this page when absent. */
+  profile?: ProfileStore;
   services: ConductorServices;
   /** Log every frame in both directions, not just tool calls and turns. The site's debug view wants it. */
   logFrames?: boolean;
@@ -88,6 +94,7 @@ const EMPTY_FORM: FormState = {
   title: "",
   fields: [],
   theirs: [],
+  asks: [],
   actions: [],
   progress: { filled: 0, total: 0, requiredLeft: 0, optionalLeft: 0 },
 };
@@ -140,9 +147,15 @@ export class Conductor {
     const session: LongtakeSession = new LongtakeSession({
       root: options.root,
       ignore: options.ignore,
-      memory: options.memory,
+      ...(options.profile ? { profile: options.profile } : {}),
+      ...(options.services.understand ? { understand: options.services.understand } : {}),
       log: (line) => this.note("app", line),
-      onChange: () => this.update({ form: session.state(), known: session.remembered() }),
+      onChange: () => this.update({ form: session.state(), known: session.known() }),
+      // Answers from last time went in after the call had opened: the agent hears about it now.
+      onPromptStale: () => {
+        this.refresh();
+        this.syncPrompt();
+      },
       // The form's questions changed under the call: new tools and a new prompt, straight away.
       onReshape: () => {
         const problems = session.toolProblems();
@@ -156,6 +169,8 @@ export class Conductor {
       },
     });
     this.session = session;
+    // A settings edit, or another tab, changed what is known: shown at once, used from here on.
+    options.profile?.subscribe?.((profile) => session.profileChanged(profile));
     this.current = {
       status: "idle",
       error: null,
@@ -202,7 +217,7 @@ export class Conductor {
   private refresh(): void {
     const form = this.session.state();
     for (const field of form.fields) if (field.value !== null) this.missed.delete(field.spec.id);
-    this.update({ form, known: this.session.remembered(), missed: [...this.missed.values()] });
+    this.update({ form, known: this.session.known(), missed: [...this.missed.values()] });
   }
 
   // ── Before the call ────────────────────────────────────────────────────────────────
@@ -213,12 +228,12 @@ export class Conductor {
     return this.prepared;
   }
 
-  forgetOne(key: string): void {
-    this.session.forgetOne(key);
+  forgetOne(id: string): Promise<void> {
+    return this.session.forgetOne(id);
   }
 
-  forgetEverything(): void {
-    this.session.forgetEverything();
+  forgetEverything(): Promise<void> {
+    return this.session.forgetEverything();
   }
 
   get running(): boolean {
@@ -341,10 +356,13 @@ export class Conductor {
   }
 
   private finish(): void {
+    const wasLive = !this.stopped;
     this.stopped = true;
     this.detach?.();
     this.detach = null;
     this.options.onActive?.(false);
+    // What they typed by hand is kept too — offered back only for a yes.
+    if (wasLive) void this.session.finish().then(() => this.refresh(), () => undefined);
   }
 
   /** Everything said so far, the turn still being spoken included. */
@@ -429,6 +447,7 @@ export class Conductor {
     // extension's background remembers the tab was live, and the next page offers to carry on.
     if (name === PRESS_TOOL_NAME) return (await session.press(args, heard)).result;
     if (name === LATER_TOOL_NAME) return session.setAside(args, heard).result;
+    if (name === SAVE_TOOL_NAME) return (await session.saveForNextTime(args, heard)).result;
     return { error: `Unknown tool "${name}".` };
   }
 
@@ -504,7 +523,7 @@ export class Conductor {
     if (prompt === this.sentPrompt) return;
     this.sentPrompt = prompt;
     this.voice.setSystemPrompt(prompt);
-    this.note("app", "form changed by hand — agent brought up to date");
+    this.note("app", "form changed without a tool call — agent brought up to date");
   }
 
   // ── A long answer's own audio: the clip, and the Dictation pass that uses it ─────────

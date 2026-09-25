@@ -14,6 +14,7 @@
 
 import { LEGACY_KEY_TO_CONCEPT, conceptById, conceptList, type Scope, type Subject } from "./concepts";
 import { canonicalKey } from "./memory";
+import { PHONE_CODE, PHONE_NUMBER, PHONE_WHOLE, phoneFields } from "./phones";
 import { fieldName, type FieldSpec } from "./types";
 
 export type Confidence = "high" | "medium" | "low";
@@ -134,6 +135,7 @@ const text = (value: unknown, cap: number) => (typeof value === "string" ? value
  *   - an organisation's own details (`organization.*`) are an organisation's, whatever it said;
  *   - someone else's or an organisation's answer is never kept for the person's next form;
  *   - a meaning with no stated confidence is low;
+ *   - a dial-code picker beside a phone box is that phone's country code (`phoneStructure`);
  *   - one person has one first name: a concept given as theirs to two boxes cannot be theirs both
  *     times, and code cannot tell which it is — so neither is trusted enough to fill unasked.
  */
@@ -166,6 +168,8 @@ export function validateMeanings(raw: unknown, specs: FieldSpec[]): Meanings {
     };
   }
 
+  phoneStructure(meanings, specs);
+
   // The same answer claimed as theirs twice — a patient's first name and their emergency contact's,
   // a business's street and their own. Two pieces of one answer (a date's day and month) and a
   // repeatable concept (a second school) are not the same answer twice.
@@ -181,6 +185,36 @@ export function validateMeanings(raw: unknown, specs: FieldSpec[]): Meanings {
     for (const id of ids) if (meanings[id]!.confidence === "high") meanings[id]!.confidence = "medium";
   }
   return meanings;
+}
+
+/**
+ * A phone split in two, read as the structure it is: a picker whose options are dialling codes,
+ * beside a phone box, is that phone's country code — and the box is the number without it. Whose
+ * phone is the box's to say: an emergency contact's code picker is theirs too. Structure, not
+ * language (phones.ts); the words around a bare "Country" picker once made the model call it the
+ * person's country, and the phone's code then never found its way to the next form.
+ */
+function phoneStructure(meanings: Meanings, specs: FieldSpec[]): void {
+  const pairs = phoneFields(specs);
+  const byId = new Map(specs.map((spec) => [spec.id, spec]));
+  for (const [id, partner] of pairs) {
+    const meaning = meanings[id];
+    const spec = byId.get(id);
+    if (!meaning || !spec) continue;
+    const isBox = spec.kind === "tel";
+    if (isBox && meaning.concept !== PHONE_WHOLE) continue;
+    const box = isBox ? meaning : meanings[partner];
+    const concept = isBox ? PHONE_NUMBER : PHONE_CODE;
+    const subject = box?.subject ?? meaning.subject;
+    const defaults = conceptById(concept)!;
+    meanings[id] = {
+      ...meaning,
+      concept,
+      subject,
+      scope: subject === "self" ? defaults.scope : narrower(defaults.scope, "this_form"),
+      ...(!isBox && box ? { confidence: box.confidence } : {}),
+    };
+  }
 }
 
 /**
@@ -203,6 +237,7 @@ export function fallbackMeanings(specs: FieldSpec[]): Meanings {
       source: "fallback",
     };
   }
+  phoneStructure(meanings, specs);
   return meanings;
 }
 

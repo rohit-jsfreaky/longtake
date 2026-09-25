@@ -2522,6 +2522,10 @@
     let next = 0;
     return shape.replace(/[09#]/g, () => digits[next++]);
   }
+  function sameCharacters(a, b) {
+    const flat2 = (v) => v.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+    return flat2(a) !== "" && flat2(a) === flat2(b);
+  }
   var text = {
     name: "text",
     matches: () => true,
@@ -2532,7 +2536,7 @@
       announce(el, ["input", "change"]);
       leave(el);
       const found = readBack(el);
-      return found === value ? { fieldId: spec.id, status: "written", wrote: value } : { fieldId: spec.id, status: "rejected-by-page", wrote: value, found };
+      return found === value || sameCharacters(found, value) ? { fieldId: spec.id, status: "written", wrote: found } : { fieldId: spec.id, status: "rejected-by-page", wrote: value, found };
     },
     read: readTyped,
     clear: clearTyped
@@ -2833,6 +2837,31 @@
           }
         },
         required: ["fields", "evidence"],
+        additionalProperties: false
+      },
+      execution_mode: EXECUTION_MODE,
+      timeout_seconds: TIMEOUT_SECONDS
+    };
+  }
+  var SAVE_TOOL_NAME = "save_for_next_time";
+  function buildSaveTool(specs) {
+    const ids = specs.filter((spec) => !spec.suspectedHoneypot && spec.kind !== "file").map((spec) => spec.id);
+    return {
+      type: "function",
+      name: SAVE_TOOL_NAME,
+      description: "Only after DO NEXT had you ask about next time (keep a new answer, forget a cleared one, remember a personal one): report their reply. agreed: true if they said yes in any words or language, false if not. Changes nothing on this form.",
+      parameters: {
+        type: "object",
+        properties: {
+          fields: {
+            type: "array",
+            description: "The fields you asked about.",
+            items: ids.length > 0 ? { type: "string", enum: ids } : { type: "string" }
+          },
+          agreed: { type: "boolean", description: "Did they say yes?" },
+          evidence: { type: "string", description: "Their reply, quoted exactly." }
+        },
+        required: ["fields", "agreed", "evidence"],
         additionalProperties: false
       },
       execution_mode: EXECUTION_MODE,
@@ -3259,64 +3288,6 @@
     });
     return hits.length === 1 ? hits[0].key : null;
   }
-  function remember(memory, specs, values, sourceUrl = "", now = Date.now()) {
-    const byId = new Map(specs.map((spec) => [spec.id, spec]));
-    const next = { ...memory };
-    for (const spoken of values) {
-      const spec = byId.get(spoken.fieldId);
-      if (!spec) continue;
-      if (!spoken.evidence || spoken.evidence.trim() === "") continue;
-      if (spec.suspectedHoneypot) continue;
-      const key = canonicalKey(spec);
-      if (!key) continue;
-      next[key] = {
-        key,
-        value: spoken.value,
-        evidence: spoken.evidence,
-        askedAs: spec.label || spec.id,
-        savedAt: now,
-        sourceUrl
-      };
-    }
-    return next;
-  }
-  function recall(memory, specs) {
-    const found = [];
-    for (const spec of specs) {
-      if (spec.suspectedHoneypot) continue;
-      if (spec.kind === "file") continue;
-      const key = canonicalKey(spec);
-      if (!key) continue;
-      const known = memory[key];
-      if (!known) continue;
-      found.push({
-        fieldId: spec.id,
-        key,
-        value: known.value,
-        evidence: known.evidence,
-        previouslyAskedAs: known.askedAs
-      });
-    }
-    return found;
-  }
-  function asSpokenValues(recalled) {
-    return recalled.map((item) => ({
-      fieldId: item.fieldId,
-      value: item.value,
-      evidence: item.evidence
-    }));
-  }
-  function listMemory(memory) {
-    return Object.values(memory).sort((a, b) => b.savedAt - a.savedAt);
-  }
-  function forget(memory, key) {
-    const next = { ...memory };
-    delete next[key];
-    return next;
-  }
-  function forgetAll() {
-    return {};
-  }
 
   // core/src/dispatch.ts
   var MAX_HOLD_MS = 2500;
@@ -3385,6 +3356,39 @@
     }
   };
 
+  // core/src/phones.ts
+  var DIAL_CODE = /\+\d{1,4}\b/;
+  var PHONE_WHOLE = "contact.phone";
+  var PHONE_NUMBER = "contact.phone.number";
+  var PHONE_CODE = "contact.phone.country_code";
+  function phoneFields(specs) {
+    const pairs = /* @__PURE__ */ new Map();
+    for (const tel of specs.filter((spec) => spec.kind === "tel")) {
+      const code = specs.find(
+        (spec) => spec !== tel && spec.kind === "select" && (spec.section ?? "") === (tel.section ?? "") && (/country code|dial(ling)? code|^code$/i.test(spec.label) || (spec.options?.length ?? 0) > 0 && spec.options.filter((o) => DIAL_CODE.test(o.label)).length >= spec.options.length / 2)
+      );
+      if (code) {
+        pairs.set(tel.id, code.id);
+        pairs.set(code.id, tel.id);
+      }
+    }
+    return pairs;
+  }
+  function dialCodeOf(value) {
+    return /^\s*\+\s*(\d{1,4})\b/.exec(value)?.[1] ?? null;
+  }
+  function dialCodeIn(text4) {
+    return /\+\s*(\d{1,4})\b/.exec(text4)?.[1] ?? null;
+  }
+  function withoutDialCode(value) {
+    return value.replace(/^\s*\+\s*\d{1,4}[\s.-]*/, "");
+  }
+  function optionForDialCode(spec, code) {
+    const pattern = new RegExp(`\\+\\s*${code}\\b`);
+    const matches = (spec.options ?? []).filter((o) => pattern.test(o.label));
+    return matches.length === 1 ? matches[0].label : null;
+  }
+
   // core/src/conversation.ts
   var MOST_CHOICES_TO_READ_OUT = 6;
   var EASY = [
@@ -3413,7 +3417,8 @@
   }
   function openingLine(specs, title = "", {
     filled = [],
-    remembered = false
+    remembered = false,
+    toConfirm = []
   } = {}) {
     const fields = answerable(specs);
     if (fields.length === 0) {
@@ -3440,6 +3445,11 @@
     });
     const toSay = easyGroups.filter((group) => !alreadyIn.includes(group)).map((group) => group.say).slice(0, MOST_EASY_TO_NAME);
     const kept = alreadyIn.length ? ` I've already put in ${spokenList(alreadyIn.map((group) => group.say).slice(0, MOST_EASY_TO_NAME))}${remembered ? " from last time" : ""} \u2014 give ${alreadyIn.length === 1 ? "it" : "them"} a quick look.` : "";
+    if (toConfirm.length > 0) {
+      const named2 = toConfirm.slice(0, 3);
+      const more = toConfirm.length > named2.length ? ` and ${toConfirm.length - named2.length} more` : "";
+      return `${intro}${kept} From last time I also have ${spokenList(named2)}${more} \u2014 they're on screen. Still right?`;
+    }
     if (toSay.length > 0) {
       return `${intro}${kept} Easy ones first: ${spokenList(toSay)}. Say them all at once if you like.`;
     }
@@ -3485,20 +3495,6 @@
       if (hasStreet && parts.length >= 2) for (const spec of parts) grouped.add(spec.id);
     }
     return grouped;
-  }
-  var DIAL_CODE = /\+\d{1,4}\b/;
-  function phoneFields(specs) {
-    const pairs = /* @__PURE__ */ new Map();
-    for (const tel of specs.filter((spec) => spec.kind === "tel")) {
-      const code = specs.find(
-        (spec) => spec !== tel && spec.kind === "select" && (spec.section ?? "") === (tel.section ?? "") && (/country code|dial(ling)? code|^code$/i.test(spec.label) || (spec.options?.length ?? 0) > 0 && spec.options.filter((o) => DIAL_CODE.test(o.label)).length >= spec.options.length / 2)
-      );
-      if (code) {
-        pairs.set(tel.id, code.id);
-        pairs.set(code.id, tel.id);
-      }
-    }
-    return pairs;
   }
   function questionOf(spec) {
     return fieldName(spec);
@@ -3755,6 +3751,7 @@
       this.pending = /* @__PURE__ */ new Map();
       /** Fields that already had something in them when the session opened. */
       this.atOpen = /* @__PURE__ */ new Set();
+      this.toSettle = /* @__PURE__ */ new Map();
     }
     /** Record something we wrote. A later write to the same field replaces it — they corrected it. */
     wrote(id, entry, now = Date.now()) {
@@ -3796,6 +3793,20 @@
     }
     release(id) {
       this.pending.delete(id);
+    }
+    /** Something to ask about next time, for this field. A newer one replaces it. */
+    ask(id, ask) {
+      this.toSettle.set(id, ask);
+    }
+    askFor(id) {
+      return this.toSettle.get(id);
+    }
+    asks() {
+      return [...this.toSettle.entries()];
+    }
+    /** Asked and answered — or no longer true. */
+    settle(id) {
+      this.toSettle.delete(id);
     }
     /** Mark what was already on the form before anybody spoke — autofill, the page's own defaults. */
     markAtOpen(ids) {
@@ -3876,10 +3887,16 @@
       fields.push(state);
     }
     const theirs = read.skipped.filter((skipped) => /file|upload/i.test(skipped.reason)).map((skipped) => skipped.label).filter(Boolean);
+    const bySpec = new Map(read.specs.map((spec) => [spec.id, spec]));
+    const asks = ledger.asks().flatMap(([id, ask]) => {
+      const spec = bySpec.get(id) ?? ledger.entry(id)?.spec;
+      return spec ? [{ spec, ask }] : [];
+    });
     return {
       title,
       fields,
       theirs,
+      asks,
       actions: buttons?.actions ?? [],
       ...buttons?.submitLabel ? { submitLabel: buttons.submitLabel } : {},
       progress: {
@@ -3945,7 +3962,632 @@
     return flat2(a) === flat2(b);
   }
 
+  // core/src/concepts.ts
+  var c = (id, say, valueKind, scope, volatility, extra = {}) => ({
+    id,
+    say,
+    valueKind,
+    scope,
+    volatility,
+    ...extra
+  });
+  var CONCEPTS = [
+    // ── Who they are ──────────────────────────────────────────────────────────────────────
+    c("identity.full_name", "full name", "text", "remember", "stable", { group: "name" }),
+    c("identity.first_name", "first name", "text", "remember", "stable", { group: "name" }),
+    c("identity.middle_name", "middle name", "text", "remember", "stable", { group: "name" }),
+    c("identity.last_name", "last name", "text", "remember", "stable", { group: "name" }),
+    c("identity.preferred_name", "preferred name", "text", "remember", "stable"),
+    c("identity.name_prefix", "title (Mr, Ms, Dr)", "choice", "remember", "stable"),
+    c("identity.name_pronunciation", "how the name is said", "text", "remember", "stable"),
+    c("identity.pronouns", "pronouns", "choice", "remember", "stable"),
+    c("identity.date_of_birth", "date of birth", "date", "remember", "stable", { group: "date_of_birth" }),
+    c("identity.age", "age", "number", "this_form", "volatile"),
+    c("identity.sex", "sex", "choice", "sensitive", "stable"),
+    c("identity.nationality", "nationality", "choice", "remember", "stable"),
+    c("identity.marital_status", "marital status", "choice", "sensitive", "slow"),
+    c("identity.signature", "signature", "text", "never", "stable"),
+    // ── How to reach them ────────────────────────────────────────────────────────────────
+    c("contact.email", "email", "email", "remember", "slow"),
+    c("contact.phone", "phone number", "phone", "remember", "slow", { group: "phone" }),
+    c("contact.phone.country_code", "phone country code", "choice", "remember", "slow", { group: "phone" }),
+    c("contact.phone.area_code", "phone area code", "phone", "remember", "slow", { group: "phone" }),
+    c("contact.phone.number", "phone number (without its codes)", "phone", "remember", "slow", { group: "phone" }),
+    c("contact.preferred_method", "best way to reach them", "choice", "remember", "slow"),
+    // ── Where ────────────────────────────────────────────────────────────────────────────
+    c("address.full", "address", "long", "remember", "slow", { group: "address" }),
+    c("address.street", "street address", "text", "remember", "slow", { group: "address" }),
+    c("address.street2", "address line 2", "text", "remember", "slow", { group: "address" }),
+    c("address.city", "city", "text", "remember", "slow", { group: "address" }),
+    c("address.state", "state or region", "text", "remember", "slow", { group: "address" }),
+    c("address.postal_code", "postal code", "text", "remember", "slow", { group: "address" }),
+    c("address.country", "country", "choice", "remember", "slow", { group: "address" }),
+    c("address.current_location", "where they are based", "text", "remember", "slow"),
+    c("address.country_of_residence", "country they live in", "choice", "remember", "slow"),
+    // ── Documents ────────────────────────────────────────────────────────────────────────
+    c("document.passport_number", "passport number", "text", "sensitive", "slow"),
+    c("document.passport_country", "passport country", "choice", "remember", "stable"),
+    c("document.passport_expiry", "passport expiry", "date", "sensitive", "slow"),
+    c("document.national_id", "national ID number", "text", "sensitive", "stable"),
+    c("document.tax_id", "tax number", "text", "sensitive", "stable"),
+    c("document.health_insurance_number", "health insurance number", "text", "sensitive", "slow"),
+    c("document.drivers_license", "driving licence number", "text", "sensitive", "slow"),
+    // ── Education (one entry per school) ─────────────────────────────────────────────────
+    c("education.school", "school or university", "choice", "remember", "stable", { group: "education", repeatable: true }),
+    c("education.degree", "degree", "choice", "remember", "stable", { group: "education", repeatable: true }),
+    c("education.field_of_study", "field of study", "choice", "remember", "stable", { group: "education", repeatable: true }),
+    c("education.start_date", "study start date", "date", "remember", "stable", { group: "education", repeatable: true }),
+    c("education.graduation_date", "graduation date", "date", "remember", "stable", { group: "education", repeatable: true }),
+    c("education.gpa", "grade average", "text", "remember", "stable", { group: "education", repeatable: true }),
+    c("education.highest_level", "highest level of education", "choice", "remember", "slow"),
+    c("education.student_type", "kind of student", "choice", "this_form", "slow"),
+    c("education.interests", "subjects of interest", "choice", "this_form", "slow"),
+    // ── Work history (one entry per job) ─────────────────────────────────────────────────
+    c("employment.current_employer", "current company", "text", "remember", "slow"),
+    c("employment.current_title", "current job title", "text", "remember", "slow"),
+    c("employment.employer", "company", "text", "remember", "stable", { group: "employment", repeatable: true }),
+    c("employment.title", "job title", "text", "remember", "stable", { group: "employment", repeatable: true }),
+    c("employment.start_date", "job start date", "date", "remember", "stable", { group: "employment", repeatable: true }),
+    c("employment.end_date", "job end date", "date", "remember", "stable", { group: "employment", repeatable: true }),
+    c("employment.description", "what they did there", "long", "remember", "stable", { group: "employment", repeatable: true }),
+    c("employment.years_experience", "years of experience", "number", "remember", "slow"),
+    c("employment.headline", "professional headline", "text", "remember", "slow"),
+    c("employment.notice_period", "notice period", "text", "this_form", "volatile"),
+    c("employment.earliest_start", "earliest start date", "date", "this_form", "volatile"),
+    c("employment.expected_salary", "expected salary", "text", "this_form", "volatile"),
+    c("employment.current_salary", "current salary", "text", "sensitive", "volatile"),
+    c("employment.interviewing_elsewhere", "other interviews under way", "long", "this_form", "volatile"),
+    // ── Links ────────────────────────────────────────────────────────────────────────────
+    c("links.linkedin", "LinkedIn", "url", "remember", "slow"),
+    c("links.github", "GitHub", "url", "remember", "slow"),
+    c("links.portfolio", "portfolio", "url", "remember", "slow"),
+    c("links.website", "website", "url", "remember", "slow"),
+    c("links.twitter", "X / Twitter", "url", "remember", "slow"),
+    c("links.other", "other links", "url", "remember", "slow"),
+    // ── The job, the place, the terms ──────────────────────────────────────────────────────
+    // Authorisation and sponsorship are kept: they are the person's standing, asked the same way on
+    // form after form (the old memory kept them too). The rest depends on this job and this place.
+    c("work.authorized", "authorised to work there", "yesno", "remember", "slow"),
+    c("work.needs_sponsorship", "needs visa sponsorship", "yesno", "remember", "slow"),
+    c("work.willing_to_relocate", "willing to relocate", "yesno", "this_form", "volatile"),
+    c("work.relocation_plans", "relocation plans", "long", "this_form", "volatile"),
+    c("work.lives_near_office", "lives near the office", "yesno", "this_form", "volatile"),
+    c("work.office_attendance", "able to work from the office", "yesno", "this_form", "volatile"),
+    c("work.remote_preference", "remote or office preference", "choice", "remember", "slow"),
+    c("work.travel", "comfortable with travel", "yesno", "this_form", "volatile"),
+    c("work.security_clearance", "security clearance", "choice", "sensitive", "slow"),
+    c("work.compensation_ok", "fine with the pay range", "yesno", "this_form", "volatile"),
+    c("work.languages", "languages spoken", "choice", "remember", "stable"),
+    c("work.language_level", "level in a language", "choice", "remember", "slow"),
+    // ── How they found this ──────────────────────────────────────────────────────────────
+    c("source.how_heard", "how they heard about this", "choice", "this_form", "volatile"),
+    c("source.referrer_name", "who referred them", "text", "this_form", "volatile"),
+    c("source.referrer_email", "referrer's email", "email", "this_form", "volatile"),
+    // ── Consents (always asked fresh) ────────────────────────────────────────────────────
+    c("consent.privacy", "privacy notice agreement", "yesno", "never", "volatile"),
+    c("consent.terms", "terms agreement", "yesno", "never", "volatile"),
+    c("consent.marketing", "marketing messages", "yesno", "never", "volatile"),
+    c("consent.background_check", "background check consent", "yesno", "never", "volatile"),
+    c("consent.recording", "recording or AI notetaker consent", "yesno", "never", "volatile"),
+    c("consent.future_contact", "being contacted later", "yesno", "never", "volatile"),
+    c("consent.data_processing", "data processing consent", "yesno", "never", "volatile"),
+    // ── Equal-opportunity questions (sensitive, always optional to answer) ───────────────
+    c("eeo.gender", "gender", "choice", "sensitive", "stable"),
+    c("eeo.gender_identity", "gender identity", "choice", "sensitive", "stable"),
+    c("eeo.transgender", "transgender experience", "choice", "sensitive", "stable"),
+    c("eeo.sexual_orientation", "sexual orientation", "choice", "sensitive", "stable"),
+    c("eeo.lgbtq", "LGBTQ+ community", "choice", "sensitive", "stable"),
+    c("eeo.race_ethnicity", "race or ethnicity", "choice", "sensitive", "stable"),
+    c("eeo.hispanic_latino", "Hispanic or Latino", "choice", "sensitive", "stable"),
+    c("eeo.veteran_status", "veteran status", "choice", "sensitive", "slow"),
+    c("eeo.disability_status", "disability status", "choice", "sensitive", "slow"),
+    // ── Health (sensitive) ───────────────────────────────────────────────────────────────
+    c("health.allergies", "allergies", "long", "sensitive", "slow"),
+    c("health.medications", "current medications", "long", "sensitive", "volatile"),
+    c("health.conditions", "health conditions", "long", "sensitive", "slow"),
+    c("health.history", "medical history", "long", "sensitive", "slow"),
+    c("health.family_history", "family medical history", "long", "sensitive", "stable"),
+    c("health.symptoms", "current symptoms", "long", "sensitive", "volatile"),
+    c("health.lifestyle", "lifestyle (sleep, diet, exercise, smoking)", "long", "sensitive", "slow"),
+    c("health.mental", "psychological history", "long", "sensitive", "slow"),
+    c("health.doctor", "their doctor", "text", "sensitive", "slow"),
+    // ── An organisation's own details (subject: organization) ───────────────────────────
+    c("organization.name", "organisation name", "text", "remember", "slow"),
+    c("organization.type", "kind of organisation", "choice", "remember", "slow"),
+    // ── Answers written for this form ────────────────────────────────────────────────────
+    c("text.about_you", "about them", "long", "remember", "slow"),
+    c("text.cover_letter", "cover letter", "long", "this_form", "volatile"),
+    c("text.why_this", "why this company or role", "long", "this_form", "volatile"),
+    c("text.additional_info", "anything else", "long", "this_form", "volatile"),
+    // ── The form itself ──────────────────────────────────────────────────────────────────
+    c("meta.today", "today's date", "date", "never", "volatile"),
+    c("meta.signature_date", "date signed", "date", "never", "volatile"),
+    c("meta.search", "a search box, not a question", "text", "never", "volatile"),
+    // Anything else: the form's own question. Its `gist` (from the model) says what it asks.
+    c("other", "this form's own question", "text", "this_form", "volatile")
+  ];
+  var BY_ID = new Map(CONCEPTS.map((concept) => [concept.id, concept]));
+  function conceptById(id) {
+    return BY_ID.get(id);
+  }
+  var RELATED_CONCEPTS = {
+    "address.current_location": ["address.city"],
+    "address.city": ["address.current_location"],
+    "address.country_of_residence": ["address.country"],
+    "address.country": ["address.country_of_residence"],
+    "links.website": ["links.portfolio"],
+    "links.portfolio": ["links.website"]
+  };
+  var LEGACY_KEY_TO_CONCEPT = {
+    first_name: "identity.first_name",
+    last_name: "identity.last_name",
+    full_name: "identity.full_name",
+    preferred_name: "identity.preferred_name",
+    email: "contact.email",
+    phone: "contact.phone",
+    city: "address.city",
+    country: "address.country",
+    postal_code: "address.postal_code",
+    linkedin: "links.linkedin",
+    github: "links.github",
+    portfolio: "links.portfolio",
+    current_employer: "employment.current_employer",
+    current_title: "employment.current_title",
+    years_experience: "employment.years_experience",
+    notice_period: "employment.notice_period",
+    expected_salary: "employment.expected_salary",
+    current_salary: "employment.current_salary",
+    willing_to_relocate: "work.willing_to_relocate",
+    work_authorization: "work.authorized",
+    needs_sponsorship: "work.needs_sponsorship",
+    about_you: "text.about_you"
+  };
+
+  // core/src/profile.ts
+  var PROFILE_VERSION = 2;
+  var HISTORY = 12;
+  var VOLATILE_DAYS = 30;
+  var DAY_MS = 864e5;
+  function emptyProfile() {
+    return { version: 2, facts: {}, answers: {}, settings: { rememberSensitive: false } };
+  }
+  function factId(key) {
+    return `${key.concept}${key.part ? `#${key.part}` : ""}${key.entry ? `@${key.entry}` : ""}`;
+  }
+  function asPart(text4) {
+    const part = (text4 ?? "").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "_").replace(/^_+|_+$/g, "");
+    return part || void 0;
+  }
+  function factKeys(specs, meanings) {
+    const keys = /* @__PURE__ */ new Map();
+    const seen = /* @__PURE__ */ new Map();
+    for (const spec of specs) {
+      const meaning = meanings[spec.id];
+      if (!meaning || meaning.subject !== "self" || meaning.concept === "other") continue;
+      const named2 = asPart(meaning.part) ?? asPart(spec.part);
+      const part = named2 && !meaning.concept.endsWith(`.${named2}`) ? named2 : void 0;
+      const concept = conceptById(meaning.concept);
+      let entry;
+      if (concept?.repeatable) {
+        const base = `${meaning.concept}#${part ?? ""}`;
+        entry = meaning.entry?.index ?? seen.get(base) ?? 0;
+        seen.set(base, entry + 1);
+      }
+      keys.set(spec.id, { concept: meaning.concept, ...part ? { part } : {}, ...entry ? { entry } : {} });
+    }
+    return keys;
+  }
+  function sameValue(a, b) {
+    if (typeof a === "boolean" || typeof b === "boolean") return a === b;
+    const flat2 = (v) => (Array.isArray(v) ? [...v].map((x) => normalise(String(x))).sort() : [normalise(v)]).join("|");
+    return flat2(a) === flat2(b);
+  }
+  function isEmpty(value) {
+    if (typeof value === "boolean") return false;
+    if (Array.isArray(value)) return value.length === 0;
+    return value.trim() === "";
+  }
+  function keepable(concept) {
+    const known = conceptById(concept);
+    if (!known || concept === "other") return "no";
+    if (known.scope === "remember") return "yes";
+    if (known.scope === "sensitive") return "sensitive";
+    return "no";
+  }
+  function withTelling(fact, from, value, now) {
+    return {
+      ...fact,
+      value,
+      history: [...fact.history, { ...from, value }].slice(-HISTORY),
+      updatedAt: now
+    };
+  }
+  function applyChanges(profile, changes, now = Date.now()) {
+    let next = { ...profile, facts: { ...profile.facts }, answers: { ...profile.answers }, settings: { ...profile.settings } };
+    const questions = [];
+    let changed = false;
+    for (const change of changes) {
+      switch (change.type) {
+        case "observe": {
+          const kept = keepable(change.key.concept);
+          if (kept === "no" || isEmpty(change.value)) break;
+          if (kept === "sensitive" && !next.settings.rememberSensitive && !change.allowSensitive) break;
+          const trusted = change.from.source === "spoken" || change.from.source === "confirmed";
+          if (trusted && !change.from.evidence.trim()) break;
+          const id = factId(change.key);
+          const known = next.facts[id];
+          if (!known) {
+            next.facts[id] = {
+              id,
+              ...change.key,
+              gist: change.gist,
+              value: change.value,
+              history: [{ ...change.from, value: change.value }],
+              sensitive: kept === "sensitive",
+              createdAt: now,
+              updatedAt: now,
+              useCount: 1
+            };
+            changed = true;
+            break;
+          }
+          if (sameValue(known.value, change.value)) {
+            next.facts[id] = { ...withTelling(known, change.from, known.value, now), useCount: known.useCount + 1 };
+            changed = true;
+            break;
+          }
+          const last = known.history[known.history.length - 1];
+          const correction = !!change.from.session && last?.session === change.from.session && last.field === change.from.field;
+          if (correction) {
+            next.facts[id] = withTelling(known, change.from, change.value, now);
+            changed = true;
+            break;
+          }
+          questions.push({ id, key: change.key, gist: known.gist || change.gist, was: known.value, now: change.value, from: change.from });
+          break;
+        }
+        case "replace": {
+          const known = next.facts[change.id];
+          if (known) {
+            next.facts[change.id] = withTelling(known, change.from, change.value, now);
+            changed = true;
+          } else if (change.key && keepable(change.key.concept) !== "no") {
+            next.facts[change.id] = {
+              id: change.id,
+              ...change.key,
+              gist: change.gist ?? "",
+              value: change.value,
+              history: [{ ...change.from, value: change.value }],
+              sensitive: keepable(change.key.concept) === "sensitive",
+              createdAt: now,
+              updatedAt: now,
+              useCount: 1
+            };
+            changed = true;
+          }
+          break;
+        }
+        case "unobserve": {
+          const known = next.facts[change.id];
+          if (!known) break;
+          const history = known.history.filter((h) => !(h.session === change.session && h.field === change.field));
+          if (history.length === known.history.length) break;
+          if (history.length === 0) delete next.facts[change.id];
+          else next.facts[change.id] = { ...known, history, value: history[history.length - 1].value, updatedAt: now };
+          changed = true;
+          break;
+        }
+        case "used":
+          for (const id of change.ids) {
+            const known = next.facts[id];
+            if (known) next.facts[id] = { ...known, useCount: known.useCount + 1 };
+          }
+          changed = change.ids.length > 0 || changed;
+          break;
+        case "delete":
+          if (next.facts[change.id]) {
+            delete next.facts[change.id];
+            changed = true;
+          }
+          break;
+        case "deleteAll":
+          next = { ...emptyProfile(), settings: next.settings };
+          changed = true;
+          break;
+        case "saveAnswer":
+          next.answers[change.answer.id] = change.answer;
+          changed = true;
+          break;
+        case "deleteAnswer":
+          if (next.answers[change.id]) {
+            delete next.answers[change.id];
+            changed = true;
+          }
+          break;
+        case "settings":
+          next.settings = { ...next.settings, ...change.settings };
+          changed = true;
+          break;
+        case "import":
+          for (const fact of Object.values(change.profile.facts)) {
+            const known = next.facts[fact.id];
+            if (!known || fact.updatedAt > known.updatedAt) next.facts[fact.id] = fact;
+          }
+          for (const answer of Object.values(change.profile.answers)) {
+            const known = next.answers[answer.id];
+            if (!known || answer.at > known.at) next.answers[answer.id] = answer;
+          }
+          changed = true;
+          break;
+      }
+    }
+    return { profile: next, questions, changed };
+  }
+  var CHOICE_KINDS = /* @__PURE__ */ new Set(["select", "radio", "multiselect", "checkbox"]);
+  function bestTelling(fact) {
+    const same = fact.history.filter((h) => sameValue(h.value, fact.value));
+    const trusted = [...same].reverse().find((h) => h.source === "spoken" || h.source === "confirmed" || h.source === "edited");
+    return trusted ?? same[same.length - 1] ?? fact.history[fact.history.length - 1];
+  }
+  function evidenceOf(fact) {
+    const telling = bestTelling(fact);
+    if (telling.evidence.trim()) return telling.evidence;
+    const where = telling.host ? ` on ${telling.host}` : "";
+    return telling.source === "edited" ? `saved by you in Longtake: ${shownValue(fact.value)}` : `typed by you${where}: ${shownValue(fact.value)}`;
+  }
+  function shownValue(value) {
+    if (value === true) return "Yes";
+    if (value === false) return "No";
+    return Array.isArray(value) ? value.join(", ") : value;
+  }
+  function fitsChoices(spec, value, evidence) {
+    if (!CHOICE_KINDS.has(spec.kind) || !spec.options?.length) return "fits";
+    if (typeof value === "boolean") return "fits";
+    const wanted = Array.isArray(value) ? value : [value];
+    let closest = false;
+    for (const item of wanted) {
+      const option = matchOption(spec, item);
+      if (!option) return "no";
+      const exact = normalise(option.label) === normalise(item) || optionNamedIn(spec, evidence)?.label === option.label;
+      if (!exact) closest = true;
+    }
+    return closest ? "closest" : "fits";
+  }
+  function recallFor(specs, meanings, profile, now = Date.now()) {
+    const keys = factKeys(specs, meanings);
+    const found = [];
+    for (const spec of specs) {
+      if (spec.suspectedHoneypot || spec.kind === "file") continue;
+      const meaning = meanings[spec.id];
+      const key = keys.get(spec.id);
+      if (!meaning || !key) continue;
+      const concept = conceptById(meaning.concept);
+      if (!concept || concept.scope !== "remember" && concept.scope !== "sensitive") continue;
+      const answer = answerFor(key, spec, profile);
+      if (!answer) continue;
+      const { fact, value, evidence } = answer;
+      let why = answer.why;
+      const fit = fitsChoices(spec, value, evidence);
+      if (fit === "no") continue;
+      const telling = bestTelling(fact);
+      if (!why) why = reasonToAsk(meaning, fact, telling, fit, now);
+      found.push({
+        fieldId: spec.id,
+        factId: answer.id,
+        value,
+        evidence,
+        sure: !why,
+        ...why ? { why } : {}
+      });
+    }
+    return found;
+  }
+  function answerFor(key, spec, profile) {
+    const get = (concept) => profile.facts[factId({ concept })];
+    const own = profile.facts[factId(key)];
+    if (key.concept === PHONE_CODE && !key.part && !key.entry) {
+      for (const fact of [own, get(PHONE_WHOLE)]) {
+        const code = typeof fact?.value === "string" ? dialCodeIn(fact.value) : null;
+        const option = code ? optionForDialCode(spec, code) : null;
+        if (fact && option) return { id: fact.id, fact, value: option, evidence: evidenceOf(fact) };
+      }
+    }
+    if (own) return { id: own.id, fact: own, value: own.value, evidence: evidenceOf(own) };
+    if (key.part || key.entry) return null;
+    if (key.concept === PHONE_NUMBER || key.concept === PHONE_CODE) {
+      const whole = get(PHONE_WHOLE);
+      if (!whole || typeof whole.value !== "string") return null;
+      if (key.concept === PHONE_NUMBER) return { id: whole.id, fact: whole, value: withoutDialCode(whole.value), evidence: evidenceOf(whole) };
+      const code = dialCodeOf(whole.value);
+      const option = code ? optionForDialCode(spec, code) : null;
+      return option ? { id: whole.id, fact: whole, value: option, evidence: evidenceOf(whole) } : null;
+    }
+    if (key.concept === PHONE_WHOLE) {
+      const number = get(PHONE_NUMBER);
+      if (!number || typeof number.value !== "string") return null;
+      const code = get(PHONE_CODE);
+      const dial = typeof code?.value === "string" ? dialCodeIn(code.value) : null;
+      return {
+        id: number.id,
+        fact: number,
+        value: dial ? `+${dial} ${number.value}` : number.value,
+        evidence: code ? `${evidenceOf(code)} \u2014 ${evidenceOf(number)}` : evidenceOf(number),
+        why: "put_together"
+      };
+    }
+    if (key.concept === "identity.full_name") {
+      const first = get("identity.first_name");
+      const last = get("identity.last_name");
+      if (!first || !last || typeof first.value !== "string" || typeof last.value !== "string") return null;
+      return { id: factId({ concept: "identity.full_name" }), fact: first, value: `${first.value} ${last.value}`, evidence: `${evidenceOf(first)} \u2014 ${evidenceOf(last)}`, why: "put_together" };
+    }
+    for (const near of RELATED_CONCEPTS[key.concept] ?? []) {
+      const fact = get(near);
+      if (fact) return { id: fact.id, fact, value: fact.value, evidence: evidenceOf(fact), why: "not_sure_same_question" };
+    }
+    return null;
+  }
+  function reasonToAsk(meaning, fact, telling, fit, now) {
+    if (fact.sensitive || meaning.scope === "sensitive") return "sensitive";
+    if (meaning.source !== "model" || meaning.confidence !== "high") return "not_sure_same_question";
+    if (telling.source === "typed") return "typed_last_time";
+    if (telling.source === "migrated" || telling.source === "imported") return "carried_over";
+    const concept = conceptById(fact.concept);
+    if (concept?.volatility === "volatile" && now - fact.updatedAt > VOLATILE_DAYS * DAY_MS) return "from_a_while_ago";
+    if (fit === "closest") return "closest_choice";
+    return void 0;
+  }
+  var RECALL_WHY_WORDS = {
+    sensitive: "a personal detail, so it's checked every time",
+    typed_last_time: "they typed it last time rather than said it",
+    not_sure_same_question: "this question may not be quite the same one",
+    from_a_while_ago: "it was a while ago and may have changed",
+    carried_over: "saved by an older version of Longtake",
+    closest_choice: "the closest of this form's choices",
+    put_together: "put together from their first and last name"
+  };
+  function migrateV1(memory) {
+    const changes = [];
+    for (const answer of Object.values(memory)) {
+      const concept = LEGACY_KEY_TO_CONCEPT[answer.key];
+      if (!concept) continue;
+      let host = "";
+      try {
+        host = new URL(answer.sourceUrl).host;
+      } catch {
+      }
+      changes.push({
+        type: "observe",
+        key: { concept },
+        gist: answer.askedAs,
+        value: answer.value,
+        allowSensitive: true,
+        from: {
+          value: answer.value,
+          evidence: answer.evidence,
+          source: "migrated",
+          host,
+          url: answer.sourceUrl,
+          askedAs: answer.askedAs,
+          formTitle: "",
+          at: answer.savedAt
+        }
+      });
+    }
+    return changes;
+  }
+  function exportProfile(profile) {
+    return JSON.stringify({ longtake: "profile", version: PROFILE_VERSION, exportedAt: (/* @__PURE__ */ new Date()).toISOString(), facts: profile.facts, answers: profile.answers }, null, 2);
+  }
+  var isValue = (v) => typeof v === "string" || typeof v === "boolean" || Array.isArray(v) && v.every((x) => typeof x === "string");
+  function parseProfile(text4) {
+    let raw;
+    try {
+      raw = JSON.parse(text4);
+    } catch {
+      return null;
+    }
+    if (!raw || raw.longtake !== "profile" || raw.version !== PROFILE_VERSION) return null;
+    const profile = emptyProfile();
+    for (const item of Object.values(raw.facts ?? {})) {
+      if (!item || typeof item.concept !== "string" || keepable(item.concept) === "no" || !isValue(item.value)) continue;
+      const key = {
+        concept: item.concept,
+        ...typeof item.part === "string" && item.part ? { part: asPart(item.part) } : {},
+        ...Number.isInteger(item.entry) && item.entry > 0 ? { entry: item.entry } : {}
+      };
+      const id = factId(key);
+      const history = (Array.isArray(item.history) ? item.history : []).filter((h) => !!h && isValue(h.value) && typeof h.evidence === "string").map((h) => ({
+        value: h.value,
+        evidence: h.evidence.slice(0, 2e3),
+        source: ["spoken", "confirmed", "typed", "edited", "migrated", "imported"].includes(h.source) ? h.source : "imported",
+        host: String(h.host ?? "").slice(0, 200),
+        url: String(h.url ?? "").slice(0, 500),
+        askedAs: String(h.askedAs ?? "").slice(0, 300),
+        formTitle: String(h.formTitle ?? "").slice(0, 200),
+        at: Number(h.at) || 0
+      })).slice(-HISTORY);
+      const at = Number(item.updatedAt) || Date.now();
+      profile.facts[id] = {
+        id,
+        ...key,
+        gist: String(item.gist ?? "").slice(0, 120),
+        value: item.value,
+        history: history.length ? history : [{ value: item.value, evidence: "", source: "imported", host: "", url: "", askedAs: "", formTitle: "", at }],
+        sensitive: keepable(item.concept) === "sensitive",
+        createdAt: Number(item.createdAt) || at,
+        updatedAt: at,
+        useCount: Number(item.useCount) || 0
+      };
+    }
+    for (const item of Object.values(raw.answers ?? {})) {
+      if (!item || typeof item.id !== "string" || typeof item.text !== "string") continue;
+      profile.answers[item.id] = {
+        id: item.id.slice(0, 120),
+        gist: String(item.gist ?? "").slice(0, 120),
+        question: String(item.question ?? "").slice(0, 300),
+        text: item.text.slice(0, 1e4),
+        said: Array.isArray(item.said) ? item.said.filter((s) => typeof s === "string").slice(0, 20) : [],
+        host: String(item.host ?? "").slice(0, 200),
+        at: Number(item.at) || 0,
+        uses: Number(item.uses) || 0
+      };
+    }
+    return profile;
+  }
+  var CATEGORY_NAMES = {
+    identity: "About you",
+    contact: "Contact",
+    address: "Address",
+    links: "Links",
+    document: "Documents",
+    education: "Education",
+    employment: "Work history",
+    work: "Work",
+    eeo: "Equal-opportunity questions",
+    health: "Health",
+    text: "In your own words"
+  };
+  var ORDINALS = ["", "second", "third", "fourth", "fifth", "sixth"];
+  function sayFact(fact) {
+    const concept = conceptById(fact.concept);
+    const base = concept?.say ?? fact.gist ?? fact.concept;
+    const part = fact.part ? ` \u2014 ${fact.part.replace(/_/g, " ")}` : "";
+    const entry = fact.entry ? ` (${ORDINALS[fact.entry] ?? `#${fact.entry + 1}`})` : "";
+    return `${base}${part}${entry}`;
+  }
+  function groupFacts(profile) {
+    const groups = /* @__PURE__ */ new Map();
+    for (const fact of Object.values(profile.facts)) {
+      const category = fact.concept.split(".")[0];
+      groups.set(category, [...groups.get(category) ?? [], fact]);
+    }
+    const order = Object.keys(CATEGORY_NAMES);
+    return [...groups.entries()].sort(([a], [b]) => (order.indexOf(a) + 1 || 99) - (order.indexOf(b) + 1 || 99)).map(([category, facts]) => ({
+      category,
+      name: CATEGORY_NAMES[category] ?? category,
+      facts: facts.sort((a, b) => a.id.localeCompare(b.id))
+    }));
+  }
+  function knownFacts(profile) {
+    return Object.values(profile.facts).sort((a, b) => b.updatedAt - a.updatedAt).map((fact) => {
+      const telling = fact.history[fact.history.length - 1];
+      return {
+        id: fact.id,
+        say: sayFact(fact),
+        value: shownValue(fact.value),
+        evidence: telling.evidence,
+        source: telling.source,
+        host: telling.host,
+        at: telling.at,
+        sensitive: fact.sensitive
+      };
+    });
+  }
+
   // core/src/planner.ts
+  var RECALLED_AT_ONCE = 4;
+  var UPDATES_AT_ONCE = 3;
   var ASK_AT_ONCE = 4;
   function batch(facts) {
     const [first] = facts;
@@ -3963,8 +4605,8 @@
   }
   function nextMove(state, plan) {
     const specs = state.fields.map((f) => f.spec);
-    const waiting = state.fields.find((f) => f.pending);
-    if (waiting?.pending) {
+    const waiting = state.fields.find((f) => f.pending && f.pending.reason !== "from_last_time");
+    if (waiting?.pending && waiting.pending.reason !== "from_last_time") {
       return {
         kind: "confirm",
         field: factsOf(waiting.spec, specs),
@@ -3973,9 +4615,33 @@
         reason: waiting.pending.reason
       };
     }
+    const recalled = state.fields.filter((f) => f.pending?.reason === "from_last_time").slice(0, RECALLED_AT_ONCE);
+    if (recalled.length > 0) {
+      return {
+        kind: "confirm_recalled",
+        fields: recalled.map((f) => ({
+          field: factsOf(f.spec, specs),
+          suggestion: f.pending.suggestion,
+          ...f.pending.why ? { why: f.pending.why } : {}
+        }))
+      };
+    }
     const wrong = state.fields.find((f) => f.error && f.value !== null);
     if (wrong?.error) {
       return { kind: "resolve", field: factsOf(wrong.spec, specs), problem: wrong.error, value: shown(wrong.value) };
+    }
+    const updates = state.asks.filter((a) => a.ask.kind !== "sensitive").slice(0, UPDATES_AT_ONCE);
+    if (updates.length > 0) {
+      return {
+        kind: "update_profile",
+        asks: updates.map(({ spec, ask }) => ({
+          field: spec.id,
+          question: fieldName(spec),
+          kind: ask.kind === "changed" ? "changed" : "forget",
+          was: ask.kind === "sensitive" ? "" : shownValue(ask.was),
+          ...ask.kind === "changed" ? { now: shownValue(ask.now) } : {}
+        }))
+      };
     }
     const open = state.fields.filter(isOpen);
     const later = new Set(open.filter((f) => f.later).map((f) => f.spec.id));
@@ -3996,13 +4662,15 @@
       (spec) => factsOf(spec, specs)
     );
     const next = state.actions.find((a) => a.kind === "next");
+    const personal = state.asks.filter((a) => a.ask.kind === "sensitive");
+    const keep = personal.length ? { keep: { fields: personal.map((a) => a.spec.id), questions: personal.map((a) => fieldName(a.spec)) } } : {};
     if (optional.length > 0) {
       if (!plan.optionalOffered) return { kind: "offer_optional", fields: optional };
-      if (next) return { kind: "optional", fields: optional, next: next.label };
-      return state.submitLabel ? { kind: "optional", fields: optional, submit: state.submitLabel } : { kind: "optional", fields: optional };
+      if (next) return { kind: "optional", fields: optional, next: next.label, ...keep };
+      return state.submitLabel ? { kind: "optional", fields: optional, submit: state.submitLabel, ...keep } : { kind: "optional", fields: optional, ...keep };
     }
-    if (next) return { kind: "next_page", label: next.label };
-    return state.submitLabel ? { kind: "handover", theirs: state.theirs, submit: state.submitLabel } : { kind: "handover", theirs: state.theirs };
+    if (next) return { kind: "next_page", label: next.label, ...keep };
+    return state.submitLabel ? { kind: "handover", theirs: state.theirs, submit: state.submitLabel, ...keep } : { kind: "handover", theirs: state.theirs, ...keep };
   }
   var SOURCE_WORDS = {
     spoken: "they said it",
@@ -4033,10 +4701,24 @@
     const now = batch(fields);
     return now.length > 1 ? `these together, in one question: ${now.map(describe2).join("; ")}` : describe2(now[0]);
   }
+  function keepFirst(keep) {
+    if (!keep) return "";
+    return `First, once: ask whether to remember their answers to ${keep.questions.join(", ")} for next time \u2014 they stay on this device \u2014 and call save_for_next_time for ${keep.fields.join(", ")} with agreed true or false. Then: `;
+  }
   function doNext(move) {
     switch (move.kind) {
       case "confirm":
         return move.reason === "hedged" ? `They weren't sure for "${move.field.question}" (they said: "${move.heard}"). Ask which it is before anything goes in.` : `"${move.field.question}" is waiting for their yes: they said "${move.heard}", and the closest the form offers is "${move.suggestion}". Ask if that's right, then call confirm_answer for ${move.field.field} with agreed true or false \u2014 you judge their reply, in whatever words. If not, offer the other choices.`;
+      case "confirm_recalled": {
+        const list = move.fields.map((f) => `${f.field.question}: "${f.suggestion}"`).join("; ");
+        return `From their last form, ready to go in on their yes: ${list}. Say them briefly and ask if they are still right. For each, call confirm_answer with agreed true if they accept it, in any words, or false if not; if they give a new answer, fill it with fill_fields instead.`;
+      }
+      case "update_profile": {
+        const each = move.asks.map(
+          (a) => a.kind === "changed" ? `"${a.question}" was "${a.was}" last time and is "${a.now}" now \u2014 keep the new one for next time?` : `they cleared "${a.question}", which came from last time \u2014 forget it for next time too?`
+        ).join(" ");
+        return `Before the next question, one thing about next time: ${each} Ask in a few words, then call save_for_next_time for ${move.asks.map((a) => a.field).join(", ")} with agreed true or false \u2014 you judge their reply.`;
+      }
       case "resolve":
         return `The form won't accept "${move.value}" for "${move.field.question}" \u2014 it says: "${move.problem}". Tell them in a few words and ask for it again.`;
       case "ask": {
@@ -4055,12 +4737,12 @@
       case "offer_optional":
         return `Every required field is in. Say so, and ask if they want to do the ${move.fields.length} optional ones or hear what they are: ${move.fields.map((f) => f.question).join("; ")}.`;
       case "optional":
-        return move.next ? `If they wanted the optional ones, ask for ${askFor(move.fields)}. If they didn't, ask if they're ready for the next page, and press "${move.next}" with press_form_button only on their yes.` : `If they wanted the optional ones, ask for ${askFor(move.fields)}. If they didn't, hand over: everything they told you is in, and they should ${move.submit ? `look it over and press "${move.submit}" themselves` : "look it over and send it themselves"}.`;
+        return keepFirst(move.keep) + (move.next ? `If they wanted the optional ones, ask for ${askFor(move.fields)}. If they didn't, ask if they're ready for the next page, and press "${move.next}" with press_form_button only on their yes.` : `If they wanted the optional ones, ask for ${askFor(move.fields)}. If they didn't, hand over: everything they told you is in, and they should ${move.submit ? `look it over and press "${move.submit}" themselves` : "look it over and send it themselves"}.`);
       case "next_page":
-        return `Everything needed on this page is in. Ask if they're ready for the next page, and press "${move.label}" with press_form_button only on their yes.`;
+        return keepFirst(move.keep) + `Everything needed on this page is in. Ask if they're ready for the next page, and press "${move.label}" with press_form_button only on their yes.`;
       case "handover": {
         const send = move.submit ? `look it over and press "${move.submit}" themselves` : "look it over and send it themselves";
-        return move.theirs.length > 0 ? `Nothing left for you. Say everything they told you is in, that ${move.theirs.join(" and ")} is theirs to do by hand, and that they should ${send}.` : `Nothing left for you. Say everything they told you is in, and that they should ${send}.`;
+        return keepFirst(move.keep) + (move.theirs.length > 0 ? `Nothing left for you. Say everything they told you is in, that ${move.theirs.join(" and ")} is theirs to do by hand, and that they should ${send}.` : `Nothing left for you. Say everything they told you is in, and that they should ${send}.`);
       }
     }
   }
@@ -4097,7 +4779,9 @@
     }
     const waiting = state.fields.filter((f) => f.pending);
     for (const f of waiting) {
-      lines.push(`Waiting for their yes: ${factsOf(f.spec, specs).question} \u2192 "${f.pending.suggestion}" (they said "${f.pending.heard}")`);
+      lines.push(
+        f.pending.reason === "from_last_time" ? `Waiting for their yes: ${factsOf(f.spec, specs).question} \u2192 "${f.pending.suggestion}" (from their last form)` : `Waiting for their yes: ${factsOf(f.spec, specs).question} \u2192 "${f.pending.suggestion}" (they said "${f.pending.heard}")`
+      );
     }
     const problems = state.fields.filter((f) => f.error && f.value !== null);
     for (const f of problems) {
@@ -4117,6 +4801,12 @@
     switch (move.kind) {
       case "confirm":
         return move.reason === "hedged" ? `${where}. For ${move.field.question}, which was it?` : `${where}. For ${move.field.question}, is ${move.suggestion} right?`;
+      case "confirm_recalled":
+        return `${where}. From last time I have ${move.fields.map((f) => f.field.question).join(", ")} \u2014 still right?`;
+      case "update_profile": {
+        const [first] = move.asks;
+        return `${where}. Quick one for next time: ${first.kind === "changed" ? `keep the new ${first.question}?` : `forget ${first.question} for next time too?`}`;
+      }
       case "resolve":
         return `${where}. The form won't take ${move.value} for ${move.field.question} \u2014 can you say it again?`;
       case "ask": {
@@ -4187,21 +4877,170 @@
     return { pressed: true };
   }
 
+  // core/src/profile-store.ts
+  function memoryProfileStore(initial = emptyProfile()) {
+    let profile = initial;
+    const listeners = /* @__PURE__ */ new Set();
+    const cache = /* @__PURE__ */ new Map();
+    return {
+      current: () => profile,
+      load: async () => profile,
+      apply: async (changes) => {
+        const applied = applyChanges(profile, changes);
+        if (applied.changed) {
+          profile = applied.profile;
+          for (const listener of listeners) listener(profile);
+        }
+        return applied;
+      },
+      subscribe: (listener) => {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+      meanings: {
+        get: async (key) => cache.get(key) ?? null,
+        put: async (key, meanings) => void cache.set(key, meanings)
+      }
+    };
+  }
+
+  // core/src/understand.ts
+  var FIRST_CHOICES = 12;
+  function snapshotOf(specs, page) {
+    return {
+      host: page.host,
+      title: page.title.slice(0, 120),
+      fields: specs.filter((spec) => !spec.suspectedHoneypot && spec.kind !== "file").map((spec) => ({
+        id: spec.id,
+        question: fieldName(spec).slice(0, 240),
+        kind: spec.kind,
+        required: spec.required,
+        ...spec.section ? { section: spec.section.slice(0, 120) } : {},
+        ...spec.description ? { description: spec.description.slice(0, 160) } : {},
+        ...spec.placeholder ? { placeholder: spec.placeholder.slice(0, 60) } : {},
+        ...spec.options?.length ? { options: spec.options.slice(0, FIRST_CHOICES).map((o) => o.label) } : {}
+      }))
+    };
+  }
+  async function structureKey(snapshot2) {
+    const bytes = new TextEncoder().encode(JSON.stringify(snapshot2.fields));
+    const digest = await crypto.subtle.digest("SHA-256", bytes);
+    const hex = Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
+    return `${snapshot2.host}#${hex.slice(0, 24)}`;
+  }
+  var SUBJECTS = ["self", "other_person", "organization", "none"];
+  var CONFIDENCES = ["high", "medium", "low"];
+  var KEEPS = { remember: 3, sensitive: 2, this_form: 1, never: 0 };
+  function narrower(a, b) {
+    return KEEPS[a] <= KEEPS[b] ? a : b;
+  }
+  var text3 = (value, cap) => typeof value === "string" ? value.trim().slice(0, cap) : "";
+  function validateMeanings(raw, specs) {
+    const ids = new Set(specs.map((spec) => spec.id));
+    const list = raw && typeof raw === "object" && Array.isArray(raw.fields) ? raw.fields : [];
+    const meanings = {};
+    for (const item of list) {
+      const id = text3(item?.id, 120);
+      if (!ids.has(id) || meanings[id]) continue;
+      const concept = conceptById(text3(item.concept, 80))?.id ?? "other";
+      const defaults = conceptById(concept);
+      const subject = concept.startsWith("organization.") ? "organization" : SUBJECTS.includes(item.subject) ? item.subject : "self";
+      const scope = subject === "self" ? defaults.scope : narrower(defaults.scope, "this_form");
+      const confidence = CONFIDENCES.includes(item.confidence) ? item.confidence : "low";
+      const part = text3(item.part, 40);
+      const entry = item.entry;
+      meanings[id] = {
+        concept,
+        subject,
+        scope,
+        ...part ? { part } : {},
+        ...entry && typeof entry.set === "string" && Number.isInteger(entry.index) ? { entry: { set: entry.set, index: entry.index } } : {},
+        gist: text3(item.gist, 80),
+        confidence,
+        source: "model"
+      };
+    }
+    phoneStructure(meanings, specs);
+    const partOf = new Map(specs.map((spec) => [spec.id, spec.part ?? ""]));
+    const theirs = /* @__PURE__ */ new Map();
+    for (const [id, meaning] of Object.entries(meanings)) {
+      if (meaning.subject !== "self" || meaning.concept === "other" || conceptById(meaning.concept)?.repeatable) continue;
+      const key = `${meaning.concept}|${partOf.get(id) || meaning.part || ""}`;
+      theirs.set(key, [...theirs.get(key) ?? [], id]);
+    }
+    for (const ids2 of theirs.values()) {
+      if (ids2.length < 2) continue;
+      for (const id of ids2) if (meanings[id].confidence === "high") meanings[id].confidence = "medium";
+    }
+    return meanings;
+  }
+  function phoneStructure(meanings, specs) {
+    const pairs = phoneFields(specs);
+    const byId = new Map(specs.map((spec) => [spec.id, spec]));
+    for (const [id, partner] of pairs) {
+      const meaning = meanings[id];
+      const spec = byId.get(id);
+      if (!meaning || !spec) continue;
+      const isBox = spec.kind === "tel";
+      if (isBox && meaning.concept !== PHONE_WHOLE) continue;
+      const box = isBox ? meaning : meanings[partner];
+      const concept = isBox ? PHONE_NUMBER : PHONE_CODE;
+      const subject = box?.subject ?? meaning.subject;
+      const defaults = conceptById(concept);
+      meanings[id] = {
+        ...meaning,
+        concept,
+        subject,
+        scope: subject === "self" ? defaults.scope : narrower(defaults.scope, "this_form"),
+        ...!isBox && box ? { confidence: box.confidence } : {}
+      };
+    }
+  }
+  function fallbackMeanings(specs) {
+    const meanings = {};
+    for (const spec of specs) {
+      if (spec.suspectedHoneypot || spec.kind === "file") continue;
+      const key = canonicalKey(spec);
+      const concept = key && LEGACY_KEY_TO_CONCEPT[key] || "other";
+      const defaults = conceptById(concept);
+      meanings[spec.id] = {
+        concept,
+        subject: "self",
+        scope: defaults.scope,
+        gist: fieldName(spec).slice(0, 80),
+        confidence: "low",
+        source: "fallback"
+      };
+    }
+    phoneStructure(meanings, specs);
+    return meanings;
+  }
+
   // core/src/session.ts
-  var CHOICE_KINDS = /* @__PURE__ */ new Set(["select", "radio", "multiselect", "checkbox"]);
+  var CHOICE_KINDS2 = /* @__PURE__ */ new Set(["select", "radio", "multiselect", "checkbox"]);
+  var UNDERSTAND_WAIT_MS = 4e3;
   var LongtakeSession = class {
     constructor(options) {
       this.options = options;
       this.ledger = new Ledger();
       this.registry = new FieldRegistry();
       this.current = null;
-      this.memory = {};
+      this.profile = emptyProfile();
+      /** What each field means: the offline reading until the model's arrives, then the model's. */
+      this.meanings = {};
+      this.understanding = null;
+      /** Answers given before the model said what their fields mean — learned once it has. */
+      this.unlearned = [];
+      this.recalled = false;
+      /** This call, for the profile's history: a correction within one call replaces, it does not ask. */
+      this.call = Math.random().toString(36).slice(2, 10);
       this.plan = { optionalOffered: false };
       this.title = "";
       this.chain = Promise.resolve();
       this.prefilled = Promise.resolve();
       this.writing = false;
       this.movedWhileWriting = false;
+      this.store = options.profile ?? memoryProfileStore();
     }
     // ── Reading ──────────────────────────────────────────────────────────────────────
     get read() {
@@ -4210,7 +5049,7 @@
     /** The form as it is right now. The only answer to "what is filled" anywhere in the product. */
     state() {
       if (!this.current) {
-        return { title: "", fields: [], theirs: [], actions: [], progress: { filled: 0, total: 0, requiredLeft: 0, optionalLeft: 0 } };
+        return { title: "", fields: [], theirs: [], actions: [], asks: [], progress: { filled: 0, total: 0, requiredLeft: 0, optionalLeft: 0 } };
       }
       return snapshot(this.current, this.ledger, this.title, this.buttons());
     }
@@ -4227,7 +5066,7 @@
     tools() {
       const specs = this.current?.specs ?? [];
       const press2 = this.current ? buildPressTool(this.buttons().actions) : null;
-      const always = [buildFillTool(specs), buildConfirmTool(specs), buildClearTool(specs), buildLaterTool(specs)];
+      const always = [buildFillTool(specs), buildConfirmTool(specs), buildClearTool(specs), buildLaterTool(specs), buildSaveTool(specs)];
       return press2 ? [...always, press2] : always;
     }
     /**
@@ -4262,7 +5101,8 @@
           spoken: []
         };
       }
-      const claim = { fieldId: id, value: pending.suggestion, evidence: `${pending.heard} \u2014 ${evidence}` };
+      const recalled = pending.reason === "from_last_time";
+      const claim = { fieldId: id, value: pending.value ?? pending.suggestion, evidence: `${pending.heard} \u2014 ${evidence}` };
       this.writing = true;
       this.movedWhileWriting = false;
       let results;
@@ -4271,8 +5111,9 @@
       } finally {
         this.writing = false;
       }
-      this.record(results, [claim], read, "spoken");
-      const reshaped = results[0]?.status === "written" && CHOICE_KINDS.has(spec.kind) || this.movedWhileWriting ? await this.pageChanged() : null;
+      await this.record(results, [claim], read, recalled ? "memory" : "spoken", recalled && pending.factId ? { [id]: pending.factId } : {});
+      if (recalled) await this.learn([{ ...claim, value: pending.value ?? pending.suggestion }], read, "confirmed");
+      const reshaped = results[0]?.status === "written" && CHOICE_KINDS2.has(spec.kind) || this.movedWhileWriting ? await this.pageChanged() : null;
       const result = this.report(results, [claim], reshaped, { waiting_for_yes: [] });
       this.options.onChange?.();
       return { result, outcomes: results, spoken: [claim] };
@@ -4366,7 +5207,8 @@
         this.title,
         {
           filled: state.fields.filter((f) => f.value !== null).map((f) => f.spec.id),
-          remembered: state.fields.some((f) => f.source === "memory")
+          remembered: state.fields.some((f) => f.source === "memory"),
+          toConfirm: state.fields.filter((f) => f.pending?.reason === "from_last_time").map((f) => fieldName(f.spec))
         }
       );
     }
@@ -4374,8 +5216,14 @@
     resumeGreeting() {
       return resumeLine(this.state(), this.move());
     }
-    remembered() {
-      return listMemory(this.memory);
+    /** Everything known about the person, newest first — for a surface to show and let them change. */
+    known() {
+      return knownFacts(this.profile);
+    }
+    /** The profile changed somewhere else — a settings page, another tab. */
+    profileChanged(profile) {
+      this.profile = profile;
+      this.options.onChange?.();
     }
     // ── Opening ──────────────────────────────────────────────────────────────────────
     scope() {
@@ -4394,22 +5242,113 @@
      */
     prefill() {
       this.prefilled = (async () => {
-        this.memory = this.options.memory.load();
-        if (Object.keys(this.memory).length === 0) return 0;
+        this.profile = await this.store.load().catch(() => emptyProfile());
+        if (Object.keys(this.profile.facts).length === 0) return 0;
         await waitForForm();
         const read = await harvestOptions(this.registry.adopt(this.readNow()).read);
         this.current = read;
         this.title = titleOf(read, this.scope());
-        const recalled = recall(this.memory, read.specs);
-        if (recalled.length === 0) return 0;
-        const values = asSpokenValues(recalled);
-        const results = await writeValues(read.specs, read.handles, values);
-        this.record(results, values, read, "memory");
-        this.options.log?.(`brought ${results.filter((r) => r.status === "written").length} answer(s) from an earlier form`);
-        this.options.onChange?.();
-        return results.length;
+        const understood = this.understandForm(read);
+        await Promise.race([understood, new Promise((done) => setTimeout(done, UNDERSTAND_WAIT_MS))]);
+        return this.recall(read);
       })();
       return this.prefilled;
+    }
+    /**
+     * Answers from last time, for fields still empty and untouched: the sure ones go in, the rest wait
+     * for a yes with their reason. Runs at open, and again when the form's meanings arrive late.
+     */
+    async recall(read) {
+      this.recalled = true;
+      const state = this.state();
+      const free = new Set(
+        state.fields.filter((f) => f.value === null && (!f.pending || f.pending.reason === "from_last_time") && !f.declined && !this.ledger.entry(f.spec.id)).map((f) => f.spec.id)
+      );
+      const found = recallFor(read.specs, this.meanings, this.profile).filter((r) => free.has(r.fieldId));
+      if (found.length === 0) return 0;
+      const sure = found.filter((r) => r.sure);
+      const values = sure.map((r) => ({ fieldId: r.fieldId, value: r.value, evidence: r.evidence }));
+      this.writing = true;
+      let results = [];
+      try {
+        results = values.length > 0 ? await writeValues(read.specs, read.handles, values) : [];
+      } finally {
+        this.writing = false;
+      }
+      await this.record(results, values, read, "memory", Object.fromEntries(sure.map((r) => [r.fieldId, r.factId])));
+      const wentIn = results.filter((r) => r.status === "written").map((r) => r.fieldId);
+      if (wentIn.length > 0) {
+        const ids = sure.filter((r) => wentIn.includes(r.fieldId)).map((r) => r.factId);
+        void this.store.apply([{ type: "used", ids }]).catch(() => void 0);
+      }
+      const refused = new Set(results.filter((r) => r.status !== "written").map((r) => r.fieldId));
+      for (const r of found.filter((r2) => !r2.sure || refused.has(r2.fieldId))) {
+        this.ledger.hold(r.fieldId, {
+          reason: "from_last_time",
+          suggestion: shownValue(r.value),
+          value: r.value,
+          heard: r.evidence,
+          factId: r.factId,
+          why: RECALL_WHY_WORDS[r.why ?? "closest_choice"]
+        });
+      }
+      this.options.log?.(`from last time: ${wentIn.length} in, ${found.length - wentIn.length} waiting for a yes`);
+      this.options.onChange?.();
+      return wentIn.length;
+    }
+    // ── What the form means ──────────────────────────────────────────────────────────
+    /**
+     * Ask what each field means — once per form structure, and cached on the device. A field already
+     * understood keeps its meaning; a field the form grew gets its own. A late answer upgrades the
+     * call: answers from last time go in, and what was said before it arrived is learned.
+     */
+    understandForm(read) {
+      for (const [id, meaning] of Object.entries(fallbackMeanings(read.specs))) {
+        if (!this.meanings[id]) this.meanings[id] = meaning;
+      }
+      const ask = this.options.understand;
+      if (!ask) return Promise.resolve();
+      const run = async () => {
+        const unknown = read.specs.filter((spec) => this.meanings[spec.id]?.source !== "model");
+        if (unknown.length === 0) return;
+        const scope = this.scope();
+        const doc = "ownerDocument" in scope && scope.ownerDocument ? scope.ownerDocument : scope;
+        const snapshot2 = snapshotOf(read.specs, { host: doc.location?.host ?? "", title: this.title });
+        if (snapshot2.fields.length === 0) return;
+        const key = await structureKey(snapshot2).catch(() => null);
+        let meanings = key ? await this.store.meanings?.get(key).catch(() => null) : null;
+        if (!meanings) {
+          meanings = validateMeanings(await ask(snapshot2), read.specs);
+          if (key && Object.keys(meanings).length > 0) await this.store.meanings?.put(key, meanings).catch(() => void 0);
+        }
+        await this.adopt(meanings);
+      };
+      const next = (this.understanding ?? Promise.resolve()).then(run).catch((cause) => {
+        this.options.log?.(`could not understand the form: ${cause instanceof Error ? cause.message : String(cause)}`);
+      });
+      this.understanding = next;
+      return next;
+    }
+    async adopt(meanings) {
+      const present = new Set(this.current?.specs.map((spec) => spec.id));
+      let fresh = 0;
+      for (const [id, meaning] of Object.entries(meanings)) {
+        if (!present.has(id) || this.meanings[id]?.source === "model") continue;
+        this.meanings[id] = meaning;
+        fresh++;
+      }
+      if (fresh === 0 || !this.current) return;
+      this.options.log?.(`understood ${fresh} field(s)`);
+      const waiting = this.unlearned;
+      this.unlearned = [];
+      for (const how of ["spoken", "confirmed"]) {
+        const values = waiting.filter((w) => w.how === how).map((w) => w.value);
+        if (values.length > 0) await this.learn(values, this.current, how);
+      }
+      if (this.recalled && Object.keys(this.profile.facts).length > 0) {
+        const wentIn = await this.recall(this.current);
+        if (wentIn > 0 || this.state().fields.some((f) => f.pending?.reason === "from_last_time")) this.options.onPromptStale?.();
+      }
     }
     /** Read the form, completely, before the conversation starts. */
     async open() {
@@ -4419,6 +5358,7 @@
       this.current = read;
       this.title = titleOf(read, this.scope());
       this.plan = { optionalOffered: false };
+      void this.understandForm(read);
       this.ledger.markAtOpen(
         this.state().fields.filter((f) => f.value !== null && !this.ledger.entry(f.spec.id)).map((f) => f.spec.id)
       );
@@ -4426,21 +5366,104 @@
       this.options.onChange?.();
     }
     // ── Filling ──────────────────────────────────────────────────────────────────────
-    /** Write down what went in, for the ledger and for memory. */
-    record(results, values, read, source) {
+    /** Write down what went in, for the ledger — and learn what was said, for next time. */
+    async record(results, values, read, source, facts = {}, wholePhones = /* @__PURE__ */ new Map()) {
       const byId = new Map(read.specs.map((spec) => [spec.id, spec]));
-      const kept = [];
+      const said2 = [];
       for (const result of results) {
         if (result.status !== "written") continue;
         const spec = byId.get(result.fieldId);
-        const said2 = values.find((v) => v.fieldId === result.fieldId);
-        if (!spec || !said2) continue;
-        this.ledger.wrote(result.fieldId, { source, value: result.wrote, evidence: said2.evidence, spec });
-        kept.push({ ...said2, value: result.wrote });
+        const claim = values.find((v) => v.fieldId === result.fieldId);
+        if (!spec || !claim) continue;
+        this.ledger.wrote(result.fieldId, {
+          source,
+          value: result.wrote,
+          evidence: claim.evidence,
+          spec,
+          ...facts[result.fieldId] ? { factId: facts[result.fieldId] } : {}
+        });
+        const whole = wholePhones.get(result.fieldId);
+        said2.push(whole ? { ...claim, value: whole } : claim);
       }
-      if (source === "spoken" && kept.length > 0) {
-        this.memory = remember(this.memory, read.specs, kept, read.url);
-        this.options.memory.save(this.memory);
+      if (source === "spoken" && said2.length > 0) await this.learn(said2, read, "spoken");
+    }
+    /** Where an answer was given, for its history. */
+    provenance(value, read, how) {
+      const spec = read.specs.find((s) => s.id === value.fieldId);
+      let host = "";
+      try {
+        host = new URL(read.url).host;
+      } catch {
+      }
+      return {
+        value: value.value,
+        evidence: value.evidence,
+        source: how,
+        host,
+        url: read.url,
+        askedAs: spec ? fieldName(spec).slice(0, 300) : value.fieldId,
+        formTitle: this.title.slice(0, 200),
+        at: Date.now(),
+        session: this.call,
+        field: value.fieldId
+      };
+    }
+    /**
+     * Keep what they said for next time — only their own answers, to questions that are asked the
+     * same way everywhere, on a meaning the model named with at least some confidence. Something
+     * already known, said differently, is not overwritten: it becomes a question for them. A
+     * personal answer is kept only if they say so, asked once at the end.
+     */
+    async learn(values, read, how) {
+      const keys = factKeys(read.specs, this.meanings);
+      const changes = [];
+      const personal = [];
+      for (const value of values) {
+        const meaning = this.meanings[value.fieldId];
+        if (!meaning || meaning.source !== "model") {
+          if (how !== "typed" && this.options.understand) this.unlearned.push({ value, how });
+          continue;
+        }
+        let key = keys.get(value.fieldId);
+        if (key?.concept === PHONE_NUMBER && typeof value.value === "string" && dialCodeOf(value.value)) key = { concept: PHONE_WHOLE };
+        const concept = key ? conceptById(key.concept) : void 0;
+        if (!key || !concept || meaning.confidence === "low") continue;
+        if (concept.scope !== "remember" && concept.scope !== "sensitive") continue;
+        const change = {
+          type: "observe",
+          key,
+          gist: meaning.gist || concept.say,
+          value: value.value,
+          from: this.provenance(value, read, how)
+        };
+        if (concept.scope === "sensitive" && !this.profile.settings.rememberSensitive) {
+          personal.push({ id: value.fieldId, change });
+          continue;
+        }
+        changes.push(change);
+      }
+      if (how !== "typed") {
+        for (const { id, change } of personal) {
+          this.ledger.ask(id, { kind: "sensitive", key: change.key, gist: change.gist, value: change.value, from: change.from });
+        }
+      }
+      if (changes.length === 0) return;
+      try {
+        const applied = await this.store.apply(changes);
+        this.profile = applied.profile;
+        const asked = /* @__PURE__ */ new Set();
+        for (const question of applied.questions) {
+          const field = question.from.field;
+          if (!field || how === "typed") continue;
+          asked.add(field);
+          this.ledger.ask(field, { kind: "changed", factId: question.id, key: question.key, gist: question.gist, was: question.was, now: question.now, from: question.from });
+        }
+        for (const change of changes) {
+          const field = change.type === "observe" ? change.from.field : void 0;
+          if (field && !asked.has(field) && this.ledger.askFor(field)?.kind === "changed") this.ledger.settle(field);
+        }
+      } catch (cause) {
+        this.options.log?.(`could not keep answers for next time: ${cause instanceof Error ? cause.message : String(cause)}`);
       }
     }
     /** The `fill_fields` tool. `heard` is everything the person has said so far, turn in progress included. */
@@ -4456,7 +5479,8 @@
       }
       const { spoken, unsupported } = keepOnlyWhatWasSaid(heard, claimed);
       const byId = new Map(read.specs.map((spec) => [spec.id, spec]));
-      const toWrite = [...this.splitPhones(spoken, read.specs)];
+      const phones = this.splitPhones(spoken, read.specs);
+      const toWrite = [...phones.extra];
       const held = [];
       for (const claim of spoken) {
         const spec = byId.get(claim.fieldId);
@@ -4481,13 +5505,13 @@
       } finally {
         this.writing = false;
       }
-      this.record(results, toWrite, read, "spoken");
+      await this.record(results, toWrite, read, "spoken", {}, phones.whole);
       const invented = unsupported.map((item) => ({
         fieldId: item.fieldId,
         status: "refused",
         reason: item.reason
       }));
-      const picked = results.some((r) => r.status === "written" && CHOICE_KINDS.has(byId.get(r.fieldId)?.kind ?? ""));
+      const picked = results.some((r) => r.status === "written" && CHOICE_KINDS2.has(byId.get(r.fieldId)?.kind ?? ""));
       const reshaped = picked || this.movedWhileWriting ? await this.pageChanged() : null;
       const outcomes = [...results, ...invented];
       const result = this.report(outcomes, claimed, reshaped, { waiting_for_yes: held });
@@ -4508,18 +5532,20 @@
       const pairs = phoneFields(specs);
       const byId = new Map(specs.map((spec) => [spec.id, spec]));
       const extra = [];
+      const whole = /* @__PURE__ */ new Map();
       for (const claim of spoken) {
         const codeId = pairs.get(claim.fieldId);
         if (byId.get(claim.fieldId)?.kind !== "tel" || !codeId) continue;
         if (spoken.some((c2) => c2.fieldId === codeId)) continue;
-        const said2 = /^\s*\+\s*(\d{1,4})\b/.exec(String(claim.value)) ?? /\+\s*(\d{1,4})\b/.exec(claim.evidence);
-        if (!said2) continue;
-        claim.value = String(claim.value).replace(/^\s*\+\s*\d{1,4}[\s.-]*/, "");
-        const code = new RegExp(`\\+\\s*${said2[1]}\\b`);
-        const matches = (byId.get(codeId).options ?? []).filter((o) => code.test(o.label));
-        if (matches.length === 1) extra.push({ fieldId: codeId, value: matches[0].label, evidence: claim.evidence });
+        const value = String(claim.value);
+        const code = dialCodeOf(value) ?? /\+\s*(\d{1,4})\b/.exec(claim.evidence)?.[1];
+        if (!code) continue;
+        claim.value = withoutDialCode(value);
+        whole.set(claim.fieldId, `+${code} ${claim.value}`);
+        const option = optionForDialCode(byId.get(codeId), code);
+        if (option) extra.push({ fieldId: codeId, value: option, evidence: claim.evidence });
       }
-      return extra;
+      return { extra, whole };
     }
     /** The `clear_fields` tool. */
     async clear(args, heard) {
@@ -4548,19 +5574,31 @@
         this.writing = false;
       }
       const cleared = results.filter((r) => r.status === "cleared").map((r) => r.fieldId);
+      const keys = factKeys(read.specs, this.meanings);
+      const undo = [];
+      const fromLastTime = [];
       for (const id of cleared) {
+        const entry = this.ledger.entry(id);
         this.ledger.decline(id);
-        const spec = byId.get(id);
-        const key = spec ? canonicalKey(spec) : null;
-        if (key && this.memory[key]) this.memory = forget(this.memory, key);
+        if (this.ledger.askFor(id)?.kind !== "forget") this.ledger.settle(id);
+        if (entry?.source === "memory" && entry.factId) {
+          this.ledger.ask(id, { kind: "forget", factId: entry.factId, was: this.profile.facts[entry.factId]?.value ?? entry.value });
+          fromLastTime.push({ field: id, question: question(id) });
+        } else if (entry?.source === "spoken") {
+          const key = keys.get(id);
+          if (key) undo.push({ type: "unobserve", id: factId(key), session: this.call, field: id });
+        }
       }
-      if (cleared.length > 0) this.options.memory.save(this.memory);
-      const reshaped = cleared.some((id) => CHOICE_KINDS.has(byId.get(id)?.kind ?? "")) || this.movedWhileWriting ? await this.pageChanged() : null;
+      if (undo.length > 0) {
+        await this.store.apply(undo).then((applied) => void (this.profile = applied.profile)).catch(() => void 0);
+      }
+      const reshaped = cleared.some((id) => CHOICE_KINDS2.has(byId.get(id)?.kind ?? "")) || this.movedWhileWriting ? await this.pageChanged() : null;
       const state = this.state();
       const move = this.move();
       const result = {
         cleared: cleared.map((id) => ({ field: id, question: question(id) })),
         not_cleared: results.filter((r) => r.status === "cannot-clear").map((r) => ({ field: r.fieldId, question: question(r.fieldId), why: r.reason })),
+        ...fromLastTime.length > 0 ? { was_from_last_time: fromLastTime } : {},
         progress: state.progress,
         ...reshaped ? { form_changed: this.changeFacts(reshaped) } : {},
         do_next: doNext(move),
@@ -4569,13 +5607,82 @@
       this.options.onChange?.();
       return { result, outcomes: [], spoken: [] };
     }
+    /**
+     * The `save_for_next_time` tool: their reply to a question about next time. A yes keeps the new
+     * answer, forgets the cleared one, or remembers the personal one; a no leaves what was saved as
+     * it was. Needs their words, like everything else. Nothing on the page changes.
+     */
+    async saveForNextTime(args, heard) {
+      const read = this.current;
+      if (!read) return { result: { error: "The form has not been read yet." }, outcomes: [], spoken: [] };
+      const fields = Array.isArray(args.fields) ? args.fields.map(String) : [];
+      const agreed = args.agreed === true;
+      const evidence = typeof args.evidence === "string" ? args.evidence : "";
+      if (!checkEvidence(heard, evidence).ok) {
+        return { result: { saved: [], why: "quote_not_found", submitted: false }, outcomes: [], spoken: [] };
+      }
+      const byId = new Map(read.specs.map((spec) => [spec.id, spec]));
+      const changes = [];
+      const settled = [];
+      const nothingAsked = [];
+      for (const id of fields) {
+        const ask = this.ledger.askFor(id);
+        if (!ask) {
+          nothingAsked.push(id);
+          continue;
+        }
+        if (agreed) {
+          if (ask.kind === "changed") changes.push({ type: "replace", id: ask.factId, value: ask.now, from: { ...ask.from, evidence: `${ask.from.evidence} \u2014 ${evidence}` }, key: ask.key, gist: ask.gist });
+          if (ask.kind === "forget") changes.push({ type: "delete", id: ask.factId });
+          if (ask.kind === "sensitive") changes.push({ type: "observe", key: ask.key, gist: ask.gist, value: ask.value, from: ask.from, allowSensitive: true });
+        }
+        this.ledger.settle(id);
+        settled.push(id);
+      }
+      if (changes.length > 0) {
+        try {
+          this.profile = (await this.store.apply(changes)).profile;
+        } catch (cause) {
+          this.options.log?.(`could not save for next time: ${cause instanceof Error ? cause.message : String(cause)}`);
+        }
+      }
+      const name = (id) => {
+        const spec = byId.get(id);
+        return spec ? fieldName(spec) : id;
+      };
+      const state = this.state();
+      const result = {
+        ...agreed ? { kept_for_next_time: settled.map(name) } : { left_as_before: settled.map(name) },
+        ...nothingAsked.length > 0 ? { nothing_to_settle: nothingAsked.map(name) } : {},
+        progress: state.progress,
+        do_next: doNext(this.move()),
+        submitted: false
+      };
+      this.options.onChange?.();
+      return { result, outcomes: [], spoken: [] };
+    }
+    /**
+     * The call is over. What they typed by hand into their own answers is kept — but only ever offered
+     * back for a yes, since nobody heard them say it.
+     */
+    async finish() {
+      const read = this.current;
+      if (!read) return;
+      const typed = this.state().fields.filter((f) => f.source === "typed" && f.value !== null).map((f) => ({ fieldId: f.spec.id, value: f.value, evidence: "" }));
+      const keys = factKeys(read.specs, this.meanings);
+      const fresh = typed.filter((t) => {
+        const key = keys.get(t.fieldId);
+        return key && !this.profile.facts[factId(key)];
+      });
+      if (fresh.length > 0) await this.learn(fresh, read, "typed");
+    }
     /** Replace an answer with a better-shaped version of the same words (the Dictation pass). */
     async rewrite(fieldId, value, evidence) {
       const read = this.current;
       if (!read) return;
       const values = [{ fieldId, value, evidence }];
       const results = await writeValues(read.specs, read.handles, values);
-      this.record(results, values, read, "spoken");
+      await this.record(results, values, read, "spoken");
       this.options.onChange?.();
     }
     /** What the agent is told after a fill: facts about this call, and the next move. */
@@ -4663,6 +5770,7 @@
             earlier_question: fieldName(earlier[1].spec)
           }];
         });
+        if (change.appeared.length > 0) void this.understandForm(read);
         this.options.log?.(`form changed: +${change.appeared.length} \u2212${change.disappeared.length}, restored ${restored.length}`);
         this.options.onReshape?.();
         this.options.onChange?.();
@@ -4672,16 +5780,18 @@
       this.chain = next.catch(() => void 0);
       return next;
     }
-    // ── Memory ───────────────────────────────────────────────────────────────────────
-    forgetOne(key) {
-      this.memory = forget(this.memory, key);
-      this.options.memory.save(this.memory);
+    // ── What is known about them ─────────────────────────────────────────────────────
+    async forgetOne(id) {
+      this.profile = (await this.store.apply([{ type: "delete", id }])).profile;
       this.options.onChange?.();
     }
-    forgetEverything() {
-      this.memory = forgetAll();
-      this.options.memory.save(this.memory);
+    async forgetEverything() {
+      this.profile = (await this.store.apply([{ type: "deleteAll" }])).profile;
       this.options.onChange?.();
+    }
+    /** What each field means, as far as is known now — for tests and the review panel. */
+    meaningOf(id) {
+      return this.meanings[id];
     }
     /** Specs as they are now — for callers that still need the raw field list. */
     specs() {
@@ -5246,244 +6356,6 @@
     };
   }
 
-  // core/src/concepts.ts
-  var c = (id, say, valueKind, scope, volatility, extra = {}) => ({
-    id,
-    say,
-    valueKind,
-    scope,
-    volatility,
-    ...extra
-  });
-  var CONCEPTS = [
-    // ── Who they are ──────────────────────────────────────────────────────────────────────
-    c("identity.full_name", "full name", "text", "remember", "stable", { group: "name" }),
-    c("identity.first_name", "first name", "text", "remember", "stable", { group: "name" }),
-    c("identity.middle_name", "middle name", "text", "remember", "stable", { group: "name" }),
-    c("identity.last_name", "last name", "text", "remember", "stable", { group: "name" }),
-    c("identity.preferred_name", "preferred name", "text", "remember", "stable"),
-    c("identity.name_prefix", "title (Mr, Ms, Dr)", "choice", "remember", "stable"),
-    c("identity.name_pronunciation", "how the name is said", "text", "remember", "stable"),
-    c("identity.pronouns", "pronouns", "choice", "remember", "stable"),
-    c("identity.date_of_birth", "date of birth", "date", "remember", "stable", { group: "date_of_birth" }),
-    c("identity.age", "age", "number", "this_form", "volatile"),
-    c("identity.sex", "sex", "choice", "sensitive", "stable"),
-    c("identity.nationality", "nationality", "choice", "remember", "stable"),
-    c("identity.marital_status", "marital status", "choice", "sensitive", "slow"),
-    c("identity.signature", "signature", "text", "never", "stable"),
-    // ── How to reach them ────────────────────────────────────────────────────────────────
-    c("contact.email", "email", "email", "remember", "slow"),
-    c("contact.phone", "phone number", "phone", "remember", "slow", { group: "phone" }),
-    c("contact.phone.country_code", "phone country code", "choice", "remember", "slow", { group: "phone" }),
-    c("contact.phone.area_code", "phone area code", "phone", "remember", "slow", { group: "phone" }),
-    c("contact.phone.number", "phone number (without its codes)", "phone", "remember", "slow", { group: "phone" }),
-    c("contact.preferred_method", "best way to reach them", "choice", "remember", "slow"),
-    // ── Where ────────────────────────────────────────────────────────────────────────────
-    c("address.full", "address", "long", "remember", "slow", { group: "address" }),
-    c("address.street", "street address", "text", "remember", "slow", { group: "address" }),
-    c("address.street2", "address line 2", "text", "remember", "slow", { group: "address" }),
-    c("address.city", "city", "text", "remember", "slow", { group: "address" }),
-    c("address.state", "state or region", "text", "remember", "slow", { group: "address" }),
-    c("address.postal_code", "postal code", "text", "remember", "slow", { group: "address" }),
-    c("address.country", "country", "choice", "remember", "slow", { group: "address" }),
-    c("address.current_location", "where they are based", "text", "remember", "slow"),
-    c("address.country_of_residence", "country they live in", "choice", "remember", "slow"),
-    // ── Documents ────────────────────────────────────────────────────────────────────────
-    c("document.passport_number", "passport number", "text", "sensitive", "slow"),
-    c("document.passport_country", "passport country", "choice", "remember", "stable"),
-    c("document.passport_expiry", "passport expiry", "date", "sensitive", "slow"),
-    c("document.national_id", "national ID number", "text", "sensitive", "stable"),
-    c("document.tax_id", "tax number", "text", "sensitive", "stable"),
-    c("document.health_insurance_number", "health insurance number", "text", "sensitive", "slow"),
-    c("document.drivers_license", "driving licence number", "text", "sensitive", "slow"),
-    // ── Education (one entry per school) ─────────────────────────────────────────────────
-    c("education.school", "school or university", "choice", "remember", "stable", { group: "education", repeatable: true }),
-    c("education.degree", "degree", "choice", "remember", "stable", { group: "education", repeatable: true }),
-    c("education.field_of_study", "field of study", "choice", "remember", "stable", { group: "education", repeatable: true }),
-    c("education.start_date", "study start date", "date", "remember", "stable", { group: "education", repeatable: true }),
-    c("education.graduation_date", "graduation date", "date", "remember", "stable", { group: "education", repeatable: true }),
-    c("education.gpa", "grade average", "text", "remember", "stable", { group: "education", repeatable: true }),
-    c("education.highest_level", "highest level of education", "choice", "remember", "slow"),
-    c("education.student_type", "kind of student", "choice", "this_form", "slow"),
-    c("education.interests", "subjects of interest", "choice", "this_form", "slow"),
-    // ── Work history (one entry per job) ─────────────────────────────────────────────────
-    c("employment.current_employer", "current company", "text", "remember", "slow"),
-    c("employment.current_title", "current job title", "text", "remember", "slow"),
-    c("employment.employer", "company", "text", "remember", "stable", { group: "employment", repeatable: true }),
-    c("employment.title", "job title", "text", "remember", "stable", { group: "employment", repeatable: true }),
-    c("employment.start_date", "job start date", "date", "remember", "stable", { group: "employment", repeatable: true }),
-    c("employment.end_date", "job end date", "date", "remember", "stable", { group: "employment", repeatable: true }),
-    c("employment.description", "what they did there", "long", "remember", "stable", { group: "employment", repeatable: true }),
-    c("employment.years_experience", "years of experience", "number", "remember", "slow"),
-    c("employment.headline", "professional headline", "text", "remember", "slow"),
-    c("employment.notice_period", "notice period", "text", "this_form", "volatile"),
-    c("employment.earliest_start", "earliest start date", "date", "this_form", "volatile"),
-    c("employment.expected_salary", "expected salary", "text", "this_form", "volatile"),
-    c("employment.current_salary", "current salary", "text", "sensitive", "volatile"),
-    c("employment.interviewing_elsewhere", "other interviews under way", "long", "this_form", "volatile"),
-    // ── Links ────────────────────────────────────────────────────────────────────────────
-    c("links.linkedin", "LinkedIn", "url", "remember", "slow"),
-    c("links.github", "GitHub", "url", "remember", "slow"),
-    c("links.portfolio", "portfolio", "url", "remember", "slow"),
-    c("links.website", "website", "url", "remember", "slow"),
-    c("links.twitter", "X / Twitter", "url", "remember", "slow"),
-    c("links.other", "other links", "url", "remember", "slow"),
-    // ── The job, the place, the terms ──────────────────────────────────────────────────────
-    // Authorisation and sponsorship are kept: they are the person's standing, asked the same way on
-    // form after form (the old memory kept them too). The rest depends on this job and this place.
-    c("work.authorized", "authorised to work there", "yesno", "remember", "slow"),
-    c("work.needs_sponsorship", "needs visa sponsorship", "yesno", "remember", "slow"),
-    c("work.willing_to_relocate", "willing to relocate", "yesno", "this_form", "volatile"),
-    c("work.relocation_plans", "relocation plans", "long", "this_form", "volatile"),
-    c("work.lives_near_office", "lives near the office", "yesno", "this_form", "volatile"),
-    c("work.office_attendance", "able to work from the office", "yesno", "this_form", "volatile"),
-    c("work.remote_preference", "remote or office preference", "choice", "remember", "slow"),
-    c("work.travel", "comfortable with travel", "yesno", "this_form", "volatile"),
-    c("work.security_clearance", "security clearance", "choice", "sensitive", "slow"),
-    c("work.compensation_ok", "fine with the pay range", "yesno", "this_form", "volatile"),
-    c("work.languages", "languages spoken", "choice", "remember", "stable"),
-    c("work.language_level", "level in a language", "choice", "remember", "slow"),
-    // ── How they found this ──────────────────────────────────────────────────────────────
-    c("source.how_heard", "how they heard about this", "choice", "this_form", "volatile"),
-    c("source.referrer_name", "who referred them", "text", "this_form", "volatile"),
-    c("source.referrer_email", "referrer's email", "email", "this_form", "volatile"),
-    // ── Consents (always asked fresh) ────────────────────────────────────────────────────
-    c("consent.privacy", "privacy notice agreement", "yesno", "never", "volatile"),
-    c("consent.terms", "terms agreement", "yesno", "never", "volatile"),
-    c("consent.marketing", "marketing messages", "yesno", "never", "volatile"),
-    c("consent.background_check", "background check consent", "yesno", "never", "volatile"),
-    c("consent.recording", "recording or AI notetaker consent", "yesno", "never", "volatile"),
-    c("consent.future_contact", "being contacted later", "yesno", "never", "volatile"),
-    c("consent.data_processing", "data processing consent", "yesno", "never", "volatile"),
-    // ── Equal-opportunity questions (sensitive, always optional to answer) ───────────────
-    c("eeo.gender", "gender", "choice", "sensitive", "stable"),
-    c("eeo.gender_identity", "gender identity", "choice", "sensitive", "stable"),
-    c("eeo.transgender", "transgender experience", "choice", "sensitive", "stable"),
-    c("eeo.sexual_orientation", "sexual orientation", "choice", "sensitive", "stable"),
-    c("eeo.lgbtq", "LGBTQ+ community", "choice", "sensitive", "stable"),
-    c("eeo.race_ethnicity", "race or ethnicity", "choice", "sensitive", "stable"),
-    c("eeo.hispanic_latino", "Hispanic or Latino", "choice", "sensitive", "stable"),
-    c("eeo.veteran_status", "veteran status", "choice", "sensitive", "slow"),
-    c("eeo.disability_status", "disability status", "choice", "sensitive", "slow"),
-    // ── Health (sensitive) ───────────────────────────────────────────────────────────────
-    c("health.allergies", "allergies", "long", "sensitive", "slow"),
-    c("health.medications", "current medications", "long", "sensitive", "volatile"),
-    c("health.conditions", "health conditions", "long", "sensitive", "slow"),
-    c("health.history", "medical history", "long", "sensitive", "slow"),
-    c("health.family_history", "family medical history", "long", "sensitive", "stable"),
-    c("health.symptoms", "current symptoms", "long", "sensitive", "volatile"),
-    c("health.lifestyle", "lifestyle (sleep, diet, exercise, smoking)", "long", "sensitive", "slow"),
-    c("health.mental", "psychological history", "long", "sensitive", "slow"),
-    c("health.doctor", "their doctor", "text", "sensitive", "slow"),
-    // ── An organisation's own details (subject: organization) ───────────────────────────
-    c("organization.name", "organisation name", "text", "remember", "slow"),
-    c("organization.type", "kind of organisation", "choice", "remember", "slow"),
-    // ── Answers written for this form ────────────────────────────────────────────────────
-    c("text.about_you", "about them", "long", "remember", "slow"),
-    c("text.cover_letter", "cover letter", "long", "this_form", "volatile"),
-    c("text.why_this", "why this company or role", "long", "this_form", "volatile"),
-    c("text.additional_info", "anything else", "long", "this_form", "volatile"),
-    // ── The form itself ──────────────────────────────────────────────────────────────────
-    c("meta.today", "today's date", "date", "never", "volatile"),
-    c("meta.signature_date", "date signed", "date", "never", "volatile"),
-    c("meta.search", "a search box, not a question", "text", "never", "volatile"),
-    // Anything else: the form's own question. Its `gist` (from the model) says what it asks.
-    c("other", "this form's own question", "text", "this_form", "volatile")
-  ];
-  var BY_ID = new Map(CONCEPTS.map((concept) => [concept.id, concept]));
-  function conceptById(id) {
-    return BY_ID.get(id);
-  }
-  var LEGACY_KEY_TO_CONCEPT = {
-    first_name: "identity.first_name",
-    last_name: "identity.last_name",
-    full_name: "identity.full_name",
-    preferred_name: "identity.preferred_name",
-    email: "contact.email",
-    phone: "contact.phone",
-    city: "address.city",
-    country: "address.country",
-    postal_code: "address.postal_code",
-    linkedin: "links.linkedin",
-    github: "links.github",
-    portfolio: "links.portfolio",
-    current_employer: "employment.current_employer",
-    current_title: "employment.current_title",
-    years_experience: "employment.years_experience",
-    notice_period: "employment.notice_period",
-    expected_salary: "employment.expected_salary",
-    current_salary: "employment.current_salary",
-    willing_to_relocate: "work.willing_to_relocate",
-    work_authorization: "work.authorized",
-    needs_sponsorship: "work.needs_sponsorship",
-    about_you: "text.about_you"
-  };
-
-  // core/src/understand.ts
-  var SUBJECTS = ["self", "other_person", "organization", "none"];
-  var CONFIDENCES = ["high", "medium", "low"];
-  var KEEPS = { remember: 3, sensitive: 2, this_form: 1, never: 0 };
-  function narrower(a, b) {
-    return KEEPS[a] <= KEEPS[b] ? a : b;
-  }
-  var text3 = (value, cap) => typeof value === "string" ? value.trim().slice(0, cap) : "";
-  function validateMeanings(raw, specs) {
-    const ids = new Set(specs.map((spec) => spec.id));
-    const list = raw && typeof raw === "object" && Array.isArray(raw.fields) ? raw.fields : [];
-    const meanings = {};
-    for (const item of list) {
-      const id = text3(item?.id, 120);
-      if (!ids.has(id) || meanings[id]) continue;
-      const concept = conceptById(text3(item.concept, 80))?.id ?? "other";
-      const defaults = conceptById(concept);
-      const subject = concept.startsWith("organization.") ? "organization" : SUBJECTS.includes(item.subject) ? item.subject : "self";
-      const scope = subject === "self" ? defaults.scope : narrower(defaults.scope, "this_form");
-      const confidence = CONFIDENCES.includes(item.confidence) ? item.confidence : "low";
-      const part = text3(item.part, 40);
-      const entry = item.entry;
-      meanings[id] = {
-        concept,
-        subject,
-        scope,
-        ...part ? { part } : {},
-        ...entry && typeof entry.set === "string" && Number.isInteger(entry.index) ? { entry: { set: entry.set, index: entry.index } } : {},
-        gist: text3(item.gist, 80),
-        confidence,
-        source: "model"
-      };
-    }
-    const partOf = new Map(specs.map((spec) => [spec.id, spec.part ?? ""]));
-    const theirs = /* @__PURE__ */ new Map();
-    for (const [id, meaning] of Object.entries(meanings)) {
-      if (meaning.subject !== "self" || meaning.concept === "other" || conceptById(meaning.concept)?.repeatable) continue;
-      const key = `${meaning.concept}|${partOf.get(id) || meaning.part || ""}`;
-      theirs.set(key, [...theirs.get(key) ?? [], id]);
-    }
-    for (const ids2 of theirs.values()) {
-      if (ids2.length < 2) continue;
-      for (const id of ids2) if (meanings[id].confidence === "high") meanings[id].confidence = "medium";
-    }
-    return meanings;
-  }
-  function fallbackMeanings(specs) {
-    const meanings = {};
-    for (const spec of specs) {
-      if (spec.suspectedHoneypot || spec.kind === "file") continue;
-      const key = canonicalKey(spec);
-      const concept = key && LEGACY_KEY_TO_CONCEPT[key] || "other";
-      const defaults = conceptById(concept);
-      meanings[spec.id] = {
-        concept,
-        subject: "self",
-        scope: defaults.scope,
-        gist: fieldName(spec).slice(0, 80),
-        confidence: "low",
-        source: "fallback"
-      };
-    }
-    return meanings;
-  }
-
   // core/src/notices.ts
   var WHY = {
     not_an_option: "that isn't one of its choices",
@@ -5509,6 +6381,7 @@
     title: "",
     fields: [],
     theirs: [],
+    asks: [],
     actions: [],
     progress: { filled: 0, total: 0, requiredLeft: 0, optionalLeft: 0 }
   };
@@ -5551,9 +6424,15 @@
       const session = new LongtakeSession({
         root: options.root,
         ignore: options.ignore,
-        memory: options.memory,
+        ...options.profile ? { profile: options.profile } : {},
+        ...options.services.understand ? { understand: options.services.understand } : {},
         log: (line) => this.note("app", line),
-        onChange: () => this.update({ form: session.state(), known: session.remembered() }),
+        onChange: () => this.update({ form: session.state(), known: session.known() }),
+        // Answers from last time went in after the call had opened: the agent hears about it now.
+        onPromptStale: () => {
+          this.refresh();
+          this.syncPrompt();
+        },
         // The form's questions changed under the call: new tools and a new prompt, straight away.
         onReshape: () => {
           const problems = session.toolProblems();
@@ -5567,6 +6446,7 @@
         }
       });
       this.session = session;
+      options.profile?.subscribe?.((profile) => session.profileChanged(profile));
       this.current = {
         status: "idle",
         error: null,
@@ -5606,7 +6486,7 @@
     refresh() {
       const form = this.session.state();
       for (const field of form.fields) if (field.value !== null) this.missed.delete(field.spec.id);
-      this.update({ form, known: this.session.remembered(), missed: [...this.missed.values()] });
+      this.update({ form, known: this.session.known(), missed: [...this.missed.values()] });
     }
     // ── Before the call ────────────────────────────────────────────────────────────────
     /** Remembered answers go in when the page opens, before anybody presses anything. Once. */
@@ -5614,11 +6494,11 @@
       if (!this.prepared) this.prepared = this.session.prefill().then(() => this.refresh());
       return this.prepared;
     }
-    forgetOne(key) {
-      this.session.forgetOne(key);
+    forgetOne(id) {
+      return this.session.forgetOne(id);
     }
     forgetEverything() {
-      this.session.forgetEverything();
+      return this.session.forgetEverything();
     }
     get running() {
       return !this.stopped;
@@ -5730,10 +6610,12 @@
       this.voice = null;
     }
     finish() {
+      const wasLive = !this.stopped;
       this.stopped = true;
       this.detach?.();
       this.detach = null;
       this.options.onActive?.(false);
+      if (wasLive) void this.session.finish().then(() => this.refresh(), () => void 0);
     }
     /** Everything said so far, the turn still being spoken included. */
     heard() {
@@ -5804,6 +6686,7 @@ ${text4}`.trim();
       }
       if (name === PRESS_TOOL_NAME) return (await session.press(args, heard)).result;
       if (name === LATER_TOOL_NAME) return session.setAside(args, heard).result;
+      if (name === SAVE_TOOL_NAME) return (await session.saveForNextTime(args, heard)).result;
       return { error: `Unknown tool "${name}".` };
     }
     // ── Watching the page ──────────────────────────────────────────────────────────────
@@ -5872,7 +6755,7 @@ ${text4}`.trim();
       if (prompt === this.sentPrompt) return;
       this.sentPrompt = prompt;
       this.voice.setSystemPrompt(prompt);
-      this.note("app", "form changed by hand \u2014 agent brought up to date");
+      this.note("app", "form changed without a tool call \u2014 agent brought up to date");
     }
     // ── A long answer's own audio: the clip, and the Dictation pass that uses it ─────────
     /**
@@ -6064,6 +6947,28 @@ ${text4}`.trim();
     return { ok: failures.length === 0, failures, results, checks };
   }
 
+  // tools/replay/fake-understand.ts
+  function fakeUnderstanding(overrides = {}) {
+    const calls = [];
+    const understand = async (snapshot2) => {
+      calls.push(snapshot2);
+      return {
+        fields: snapshot2.fields.map((field) => {
+          const key = canonicalKey({
+            id: field.id,
+            label: field.question,
+            kind: field.kind,
+            required: field.required,
+            ...field.section ? { section: field.section } : {}
+          });
+          const concept = key && LEGACY_KEY_TO_CONCEPT[key] || "other";
+          return { id: field.id, concept, subject: "self", gist: field.question, confidence: "high", ...overrides[field.id] };
+        })
+      };
+    };
+    return Object.assign(understand, { calls });
+  }
+
   // tools/probe.ts
   window.__longtake = {
     version: CORE_VERSION,
@@ -6086,12 +6991,16 @@ ${text4}`.trim();
     readHesitation,
     describeMarks,
     canonicalKey,
-    remember,
-    recall,
-    asSpokenValues,
-    listMemory,
-    forget,
-    forgetAll,
+    applyChanges,
+    recallFor,
+    factKeys,
+    emptyProfile,
+    memoryProfileStore,
+    migrateV1,
+    parseProfile,
+    exportProfile,
+    knownFacts,
+    groupFacts,
     ToolResultQueue,
     openingLine,
     howToAsk,
@@ -6133,6 +7042,7 @@ ${text4}`.trim();
     Conductor,
     FakeVoice,
     runScript,
+    fakeUnderstanding,
     inspect: () => {
       const read = readForm();
       window.__longtake.last = read;

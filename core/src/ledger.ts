@@ -13,6 +13,7 @@
  * Keyed by `FieldRegistry` ids, which stay stable for the whole session.
  */
 
+import type { FactKey, FactValue, Provenance } from "./profile";
 import type { FieldSpec, SpokenValue } from "./types";
 
 /** Something we put into the form, and the words it came from. */
@@ -22,6 +23,8 @@ export type LedgerEntry = {
   evidence: string;
   /** The field as it was when written — its wording survives the field being hidden. */
   spec: FieldSpec;
+  /** The saved answer it came from, when it came from last time. */
+  factId?: string;
   at: number;
 };
 
@@ -31,9 +34,28 @@ export type Pending = {
   suggestion: string;
   /** What they actually said. */
   heard: string;
-  /** Not named: they said something the form does not offer. Hedged: they were not sure. */
-  reason: "not_named" | "hedged";
+  /**
+   * Not named: they said something the form does not offer. Hedged: they were not sure. From last
+   * time: an answer from an earlier form that is not certain enough to go in unasked.
+   */
+  reason: "not_named" | "hedged" | "from_last_time";
+  /** The exact value to write on a yes, when it is not just the suggestion (a list, a yes/no). */
+  value?: SpokenValue["value"];
+  /** From last time: the saved answer, and why it waits. */
+  factId?: string;
+  why?: string;
 };
+
+/**
+ * Something to settle with the person about next time, not about this form:
+ *   - changed: they just said something different from what was saved — keep the new one?
+ *   - forget: they cleared an answer that came from last time — forget it for next time too?
+ *   - sensitive: a personal answer (health, documents) — remember it? Asked once, at the end.
+ */
+export type ProfileAsk =
+  | { kind: "changed"; factId: string; key: FactKey; gist: string; was: FactValue; now: FactValue; from: Provenance }
+  | { kind: "forget"; factId: string; was: FactValue }
+  | { kind: "sensitive"; key: FactKey; gist: string; value: FactValue; from: Provenance };
 
 export class Ledger {
   private written = new Map<string, LedgerEntry>();
@@ -43,6 +65,7 @@ export class Ledger {
   private pending = new Map<string, Pending>();
   /** Fields that already had something in them when the session opened. */
   private atOpen = new Set<string>();
+  private toSettle = new Map<string, ProfileAsk>();
 
   /** Record something we wrote. A later write to the same field replaces it — they corrected it. */
   wrote(id: string, entry: Omit<LedgerEntry, "at">, now = Date.now()): void {
@@ -93,6 +116,24 @@ export class Ledger {
 
   release(id: string): void {
     this.pending.delete(id);
+  }
+
+  /** Something to ask about next time, for this field. A newer one replaces it. */
+  ask(id: string, ask: ProfileAsk): void {
+    this.toSettle.set(id, ask);
+  }
+
+  askFor(id: string): ProfileAsk | undefined {
+    return this.toSettle.get(id);
+  }
+
+  asks(): [string, ProfileAsk][] {
+    return [...this.toSettle.entries()];
+  }
+
+  /** Asked and answered — or no longer true. */
+  settle(id: string): void {
+    this.toSettle.delete(id);
   }
 
   /** Mark what was already on the form before anybody spoke — autofill, the page's own defaults. */

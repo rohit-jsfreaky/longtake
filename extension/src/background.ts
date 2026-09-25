@@ -1,18 +1,26 @@
 /**
- * Service worker. Three small jobs, none of them about forms.
+ * Service worker. Four small jobs, none of them about forms.
  *
  * 1. The hotkey. It goes to the frame that holds the form — on a careers page that embeds
  *    Greenhouse, that is an iframe, not the page — so every frame is asked how many fields it has.
- * 2. The token. A voice session needs a single-use token minted with our API key, which only the
- *    Longtake site holds. The page cannot ask the site itself (a different origin); this worker
- *    can, with the host permission in the manifest. The key never reaches the extension.
+ * 2. The token, and the site's other server routes. A voice session needs a single-use token minted
+ *    with our API key, which only the Longtake site holds; what a form's fields mean comes from the
+ *    site's model route. The page cannot ask the site itself (a different origin); this worker can,
+ *    with the host permission in the manifest. The key never reaches the extension.
  * 3. Carrying a call across a page load. Some forms load each page afresh — Google Forms posts
  *    every page — which ends the content script mid-call. The tab is remembered as live, and the
  *    next page of the same site picks the call up again.
+ * 4. The profile's one owner. Calls on any tab and the settings page never save a profile; they
+ *    send changes here, and they are applied one at a time to what is stored at that moment
+ *    (`applyChanges`). That is what lets a settings edit survive a call that is saving answers.
  *
  * `chrome.*` still works on every version including 148+, where `browser.*` was added.
  * Docs: https://developer.chrome.com/docs/extensions/reference/api/commands
  */
+
+import { applyChanges, emptyProfile, migrateV1, PROFILE_VERSION, type Memory, type Profile, type ProfileChange } from "@longtake/core";
+
+import { PROFILE_KEY, V1_KEY } from "./profile-client";
 
 /**
  * Where the token comes from. The deployed Longtake site once it is live; the dev server until then.
@@ -26,26 +34,64 @@ const CARRY_OVER_MS = 60_000;
 /** The site's server routes a content script may reach through here, and no others. */
 const API_PATHS = new Set(["/api/understand"]);
 
-async function site() {
-  const { site: override } = await chrome.storage.local.get("site");
+type Live = { frameId: number; origin: string; at: number };
+
+async function site(): Promise<string> {
+  const { site: override } = (await chrome.storage.local.get("site")) as { site?: string };
   return (override || DEFAULT_SITE).replace(/\/+$/, "");
 }
 
+// ── The profile ─────────────────────────────────────────────────────────────────────────
+
+/** The profile as stored, moving the first memory over the first time it is read. */
+async function readProfile(): Promise<Profile> {
+  const stored = (await chrome.storage.local.get([PROFILE_KEY, V1_KEY])) as Record<string, unknown>;
+  const profile = stored[PROFILE_KEY] as Profile | undefined;
+  if (profile?.version === PROFILE_VERSION) return profile;
+  if (profile) return emptyProfile(); // a newer version wrote it: never read it with old rules
+
+  const v1 = stored[V1_KEY] as { memory?: Memory } | undefined;
+  if (!v1?.memory) return emptyProfile();
+  const moved = applyChanges(emptyProfile(), migrateV1(v1.memory)).profile;
+  await chrome.storage.local.set({ [PROFILE_KEY]: moved });
+  await chrome.storage.local.remove(V1_KEY);
+  return moved;
+}
+
+/** Changes, applied one batch at a time, each to what is stored when its turn comes. */
+let queue: Promise<unknown> = Promise.resolve();
+function applyInOrder(changes: ProfileChange[]) {
+  const run = async () => {
+    const applied = applyChanges(await readProfile(), changes);
+    // Every surface listens to this key: the new profile reaches them all from the one write.
+    if (applied.changed) await chrome.storage.local.set({ [PROFILE_KEY]: applied.profile });
+    return { profile: applied.profile, questions: applied.questions, changed: applied.changed };
+  };
+  const next = queue.then(run, run);
+  queue = next.catch(() => undefined);
+  return next;
+}
+
+chrome.runtime.onInstalled.addListener(() => void readProfile());
+
+// ── The hotkey and the icon ─────────────────────────────────────────────────────────────
+
 /** Which frame of this tab holds the most form. The top frame wins a tie. */
-async function formFrame(tabId) {
-  let frames = [];
+async function formFrame(tabId: number): Promise<number | null> {
+  let frames: { frameId: number }[] = [];
   try {
     frames = (await chrome.webNavigation.getAllFrames({ tabId })) ?? [];
   } catch {
     frames = [{ frameId: 0 }];
   }
-  let best = null;
+  let best: { frameId: number; fields: number; top: boolean } | null = null;
   for (const { frameId } of frames) {
     try {
-      const reply = await chrome.tabs.sendMessage(tabId, { type: "longtake:count" }, { frameId });
+      const reply = (await chrome.tabs.sendMessage(tabId, { type: "longtake:count" }, { frameId })) as
+        | { fields: number; top: boolean }
+        | undefined;
       if (!reply) continue;
-      const better =
-        !best || reply.fields > best.fields || (reply.fields === best.fields && reply.top && !best.top);
+      const better = !best || reply.fields > best.fields || (reply.fields === best.fields && reply.top && !best.top);
       if (better) best = { frameId, fields: reply.fields, top: reply.top };
     } catch {
       // No content script in that frame — about:blank ads, sandboxed frames. Not ours.
@@ -70,13 +116,12 @@ chrome.action.onClicked.addListener((tab) => {
 });
 
 /** Open or close Longtake in a tab. Named, so the extension's own tests can press the hotkey. */
-async function toggle(tabId) {
+async function toggle(tabId: number): Promise<void> {
   // A tab already live is toggled wherever it is running.
   const live = await liveTabs();
-  if (live[tabId]) {
-    const sent = await chrome.tabs
-      .sendMessage(tabId, { type: "longtake:toggle" }, { frameId: live[tabId].frameId })
-      .catch(() => null);
+  const running = live[tabId];
+  if (running) {
+    const sent = await chrome.tabs.sendMessage(tabId, { type: "longtake:toggle" }, { frameId: running.frameId }).catch(() => null);
     if (sent) return;
     await setLive(tabId, null); // that frame is gone; start over below
   }
@@ -100,15 +145,13 @@ async function toggle(tabId) {
 }
 
 /** Load the content script into a tab that lacks it. Returns why it could not, or null. */
-async function inject(tabId) {
+async function inject(tabId: number): Promise<"blocked" | "failed" | null> {
   try {
     await chrome.scripting.executeScript({ target: { tabId, allFrames: true }, files: ["dist/content.js"] });
     return null;
   } catch (cause) {
     // Chrome refuses outright on its own pages, the Web Store and the PDF viewer.
-    return /cannot be scripted|chrome:\/\/|extensions gallery|Cannot access|brave:\/\//i.test(String(cause))
-      ? "blocked"
-      : "failed";
+    return /cannot be scripted|chrome:\/\/|extensions gallery|Cannot access|brave:\/\//i.test(String(cause)) ? "blocked" : "failed";
   }
 }
 
@@ -116,7 +159,7 @@ async function inject(tabId) {
  * Say why Longtake did not open, where the person is looking: a popup from the icon they clicked.
  * Set for this tab only, and cleared by the popup itself, so the next click tries the page again.
  */
-async function explain(tabId, why) {
+async function explain(tabId: number, why: string): Promise<void> {
   await chrome.action.setPopup({ tabId, popup: `popup.html?why=${why}&tab=${tabId}` });
   try {
     await chrome.action.openPopup();
@@ -127,27 +170,38 @@ async function explain(tabId, why) {
     await chrome.action.setBadgeText({ tabId, text: "!" });
   }
 }
-globalThis.longtakeToggle = toggle;
+(globalThis as unknown as { longtakeToggle: typeof toggle }).longtakeToggle = toggle;
 
 /** Tabs mid-call, in session storage so a restarted worker still knows. */
-async function liveTabs() {
-  return (await chrome.storage.session.get("live")).live ?? {};
+async function liveTabs(): Promise<Record<number, Live>> {
+  return ((await chrome.storage.session.get("live")) as { live?: Record<number, Live> }).live ?? {};
 }
-async function setLive(tabId, value) {
+async function setLive(tabId: number, value: Live | null): Promise<void> {
   const live = await liveTabs();
   if (value) live[tabId] = value;
   else delete live[tabId];
   await chrome.storage.session.set({ live });
 }
 
-chrome.runtime.onMessage.addListener((message, sender, reply) => {
+// ── Messages ────────────────────────────────────────────────────────────────────────────
+
+type Message =
+  | { type: "longtake:token" }
+  | { type: "longtake:api"; path: string; body?: unknown }
+  | { type: "longtake:profile"; op: "load" }
+  | { type: "longtake:profile"; op: "apply"; changes: ProfileChange[] }
+  | { type: "longtake:settings"; tab?: string }
+  | { type: "longtake:active"; active: boolean }
+  | { type: "longtake:loaded"; top: boolean };
+
+chrome.runtime.onMessage.addListener((message: Message, sender, reply) => {
   const tabId = sender.tab?.id;
 
   if (message?.type === "longtake:token") {
     (async () => {
       try {
         const response = await fetch(`${await site()}/api/voice-token`, { cache: "no-store" });
-        const body = await response.json();
+        const body = (await response.json()) as { token?: string; error?: string };
         reply(response.ok ? { token: body.token } : { error: body.error ?? `Token request failed (${response.status})` });
       } catch (cause) {
         reply({ error: `Could not reach the Longtake site for a voice token. ${String(cause)}` });
@@ -177,6 +231,19 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
       }
     })();
     return true; // answered asynchronously
+  }
+
+  if (message?.type === "longtake:profile") {
+    // Only the extension's own pages and its content scripts can reach this; both are ours.
+    (async () => {
+      try {
+        if (message.op === "load") reply({ profile: await readProfile() });
+        else reply(await applyInOrder(Array.isArray(message.changes) ? message.changes : []));
+      } catch (cause) {
+        reply({ error: String(cause) });
+      }
+    })();
+    return true;
   }
 
   if (message?.type === "longtake:settings") {
@@ -212,6 +279,7 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
       await chrome.tabs.sendMessage(tabId, { type: "longtake:resume" }, { frameId }).catch(() => {});
     })();
   }
+  return;
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => void setLive(tabId, null));

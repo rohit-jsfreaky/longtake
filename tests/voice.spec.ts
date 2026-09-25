@@ -321,8 +321,7 @@ test.describe("picking up after a drop", () => {
     );
     const line = await page.evaluate(async () => {
       const L = window.__longtake;
-      let mem = {} as never;
-      const s = new L.LongtakeSession({ root: () => document, ignore: "", memory: { load: () => mem, save: (m) => { mem = m as never; } } });
+      const s = new L.LongtakeSession({ root: () => document, ignore: "" });
       await s.open();
       return s.resumeGreeting();
     });

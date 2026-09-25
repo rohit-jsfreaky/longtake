@@ -17,6 +17,21 @@ import { resolve } from "node:path";
  */
 export const PROBE = resolve(process.cwd(), "web/public/probe.js");
 
+/**
+ * Answers somebody said out loud on an earlier form, as the profile changes that kept them — keyed
+ * by concept ("contact.email": ["rohit@example.com", "rohit at example dot com"]). Applied in the
+ * page with `applyChanges`, they make a returning person.
+ */
+export function saidBefore(answers: Record<string, [value: string | string[] | boolean, evidence: string]>): unknown[] {
+  return Object.entries(answers).map(([concept, [value, evidence]]) => ({
+    type: "observe",
+    key: { concept },
+    gist: concept,
+    value,
+    from: { value, evidence, source: "spoken", host: "earlier.example", url: "https://earlier.example/apply", askedAs: concept, formTitle: "", at: Date.now() },
+  }));
+}
+
 export type TestFieldSpec = {
   id: string;
   selector?: string;

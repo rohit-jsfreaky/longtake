@@ -56,12 +56,10 @@ async function run(page: Page, surface: Surface, script: Script) {
     async ([which, s]) => {
       const L = window.__longtake;
       const fake = new L.FakeVoice();
-      let mem = {} as never;
       const dictations: string[] = [];
       const conductor = new L.Conductor({
         root: () => document,
         ignore: "[data-longtake-ignore]",
-        memory: { load: () => mem, save: (m) => { mem = m as never; } },
         logFrames: which === "site",
         services: {
           getToken: async () => "token",
@@ -142,11 +140,9 @@ test.describe("what the conductor does around the tools", () => {
     const views = await page.evaluate(async () => {
       const L = window.__longtake;
       const fake = new L.FakeVoice();
-      let mem = {} as never;
       const conductor = new L.Conductor({
         root: () => document,
         ignore: "[data-longtake-ignore]",
-        memory: { load: () => mem, save: (m) => { mem = m as never; } },
         services: { getToken: async () => "t", workletUrl: "", startVoice: fake.start },
       });
       await conductor.start();
@@ -167,11 +163,9 @@ test.describe("what the conductor does around the tools", () => {
     await page.evaluate(async () => {
       const L = window.__longtake;
       const fake = new L.FakeVoice();
-      let mem = {} as never;
       const conductor = new L.Conductor({
         root: () => document,
         ignore: "[data-longtake-ignore]",
-        memory: { load: () => mem, save: (m) => { mem = m as never; } },
         services: { getToken: async () => "t", workletUrl: "", startVoice: fake.start },
       });
       await conductor.start();

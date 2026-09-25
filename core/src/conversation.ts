@@ -29,6 +29,7 @@
 
 import { stillMissing, stillOptional } from "./binder";
 import { canonicalKey } from "./memory";
+import { phoneFields } from "./phones";
 import { fieldName, type FieldSpec, type SpokenValue } from "./types";
 import { realChoices, type WriteOutcome } from "./writer";
 
@@ -93,11 +94,14 @@ export function openingLine(
   {
     filled = [],
     remembered = false,
+    toConfirm = [],
   }: {
     /** Fields that already have an answer in them when the call opens. */
     filled?: Iterable<string>;
     /** Whether those answers came from an earlier form, rather than being typed by the person. */
     remembered?: boolean;
+    /** Questions with an answer from last time that waits for their yes. Asked first. */
+    toConfirm?: string[];
   } = {},
 ): string {
   const fields = answerable(specs);
@@ -152,6 +156,13 @@ export function openingLine(
       } — give ${alreadyIn.length === 1 ? "it" : "them"} a quick look.`
     : "";
 
+  // Answers from last time that wait for a yes are the first thing to settle — so the line ends on
+  // that question, not on an invitation to talk that the next turn would have to take back.
+  if (toConfirm.length > 0) {
+    const named = toConfirm.slice(0, 3);
+    const more = toConfirm.length > named.length ? ` and ${toConfirm.length - named.length} more` : "";
+    return `${intro}${kept} From last time I also have ${spokenList(named)}${more} — they're on screen. Still right?`;
+  }
   if (toSay.length > 0) {
     return `${intro}${kept} Easy ones first: ${spokenList(toSay)}. Say them all at once if you like.`;
   }
@@ -272,34 +283,8 @@ function addressFields(specs: FieldSpec[]): Set<string> {
   return grouped;
 }
 
-/** Options that are dialling codes: "India (+91)", "+1 United States". */
-const DIAL_CODE = /\+\d{1,4}\b/;
-
-/**
- * A phone number split across a country-code picker and a number box — one question to a person.
- *
- * Paired when a tel field shares its heading with a dropdown whose options are mostly dialling
- * codes, or one labelled as a code. People say "+91 98765 43210" in one breath.
- */
-export function phoneFields(specs: FieldSpec[]): Map<string, string> {
-  const pairs = new Map<string, string>();
-  for (const tel of specs.filter((spec) => spec.kind === "tel")) {
-    const code = specs.find(
-      (spec) =>
-        spec !== tel &&
-        (spec.kind === "select") &&
-        (spec.section ?? "") === (tel.section ?? "") &&
-        (/country code|dial(ling)? code|^code$/i.test(spec.label) ||
-          ((spec.options?.length ?? 0) > 0 &&
-            spec.options!.filter((o) => DIAL_CODE.test(o.label)).length >= spec.options!.length / 2)),
-    );
-    if (code) {
-      pairs.set(tel.id, code.id);
-      pairs.set(code.id, tel.id);
-    }
-  }
-  return pairs;
-}
+// The phone number's pieces are structure, shared with the fill and the profile: phones.ts.
+export { phoneFields };
 
 /** The question a field asks, with the form's required marker taken off. */
 function questionOf(spec: FieldSpec): string {

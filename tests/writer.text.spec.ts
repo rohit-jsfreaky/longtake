@@ -31,6 +31,16 @@ test.describe("plain text fields", () => {
     });
   }
 
+  // Greenhouse's phone box keeps digits only: "98765 43210" becomes "9876543210". The page took
+  // the answer; calling that a refusal held a returning person's phone back for a yes.
+  test("a page that formats what it was given has taken the answer, and what it shows is what went in", async ({ page }) => {
+    await load(page, `<label for="f">Phone</label><input id="f" type="tel" oninput="this.value = this.value.replace(/\\D/g, '')">`);
+    const [outcome] = await readThenWrite(page, SPOKE("phone", "98765 43210"));
+    expect(outcome).toMatchObject({ status: "written", wrote: "9876543210" });
+    const [other] = await readThenWrite(page, SPOKE("phone", "nine eight"));
+    expect(other!.status).toBe("rejected-by-page");
+  });
+
   test("writes into a textarea", async ({ page }) => {
     await load(page, `<label for="f">Cover letter</label><textarea id="f"></textarea>`);
     const [outcome] = await readThenWrite(page, SPOKE("cover_letter", "I build things."));

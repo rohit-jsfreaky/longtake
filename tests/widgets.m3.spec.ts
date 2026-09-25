@@ -240,8 +240,7 @@ test.describe("a phone number split from its country code", () => {
     await load(page, PHONE);
     return page.evaluate(async (v) => {
       const L = window.__longtake;
-      let mem = {};
-      const s = new L.LongtakeSession({ root: () => document, ignore: "[data-longtake-ignore]", memory: { load: () => mem, save: (m) => { mem = m; } } });
+      const s = new L.LongtakeSession({ root: () => document, ignore: "[data-longtake-ignore]" });
       await s.open();
       const facts = L.nextMove(s.state(), { optionalOffered: false });
       await s.fill({ phone: { value: v, evidence: `my number is ${v}` } }, `my number is ${v}`);
@@ -266,8 +265,7 @@ test.describe("a phone number split from its country code", () => {
     await load(page, PHONE.replace('<input id="ph" type="tel">', '<input id="ph" type="tel" required>'));
     const next = await page.evaluate(async () => {
       const L = window.__longtake;
-      let mem = {};
-      const s = new L.LongtakeSession({ root: () => document, ignore: "[data-longtake-ignore]", memory: { load: () => mem, save: (m) => { mem = m; } } });
+      const s = new L.LongtakeSession({ root: () => document, ignore: "[data-longtake-ignore]" });
       await s.open();
       return L.doNext(L.nextMove(s.state(), { optionalOffered: false }));
     });
@@ -294,8 +292,7 @@ test.describe("validation errors the form shows", () => {
   async function session(page: Page) {
     await page.evaluate(async () => {
       const L = window.__longtake;
-      let mem = {};
-      const s = new L.LongtakeSession({ root: () => document, ignore: "[data-longtake-ignore]", memory: { load: () => mem, save: (m) => { mem = m; } } });
+      const s = new L.LongtakeSession({ root: () => document, ignore: "[data-longtake-ignore]" });
       await s.open();
       (window as unknown as { __s: typeof s }).__s = s;
     });

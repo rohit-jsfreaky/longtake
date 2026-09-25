@@ -17,7 +17,7 @@
 
 import type { Pending } from "./ledger";
 import type { FieldSpec, SpokenValue } from "./types";
-import { MEANS_NO, MEANS_YES, matchOption, optionNamedIn } from "./writer";
+import { MEANS_NO, MEANS_YES, matchOption, optionNamedIn } from "./choices";
 
 export type GateVerdict = { write: true } | { write: false; pending: Pending };
 

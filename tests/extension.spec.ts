@@ -219,11 +219,12 @@ test.describe("the extension on someone else's page", () => {
     }
   });
 
-  test("the settings page shows saved answers, edits and removes them, and the chosen voice is used", async () => {
+  test("the settings page moves the first memory over, shows where each answer came from, edits, removes and imports — and the chosen voice is used", async () => {
     const before = agent.sockets.length;
     const { context, worker } = await launch();
     try {
       const id = new URL(worker.url()).host;
+      // Saved by the first version of the memory: moved over the first time anything reads it.
       await worker.evaluate(() =>
         chrome.storage.local.set({
           "longtake.memory.v1": {
@@ -238,18 +239,39 @@ test.describe("the extension on someone else's page", () => {
       const settings = await context.newPage();
       await settings.goto(`chrome-extension://${id}/options.html`);
       await expect(settings.locator(".row")).toHaveCount(2);
-      await expect(settings.getByLabel("Email")).toHaveValue("rohit@example.com");
+      await expect(settings.getByRole("heading", { name: "Contact" })).toBeVisible();
+      await expect(settings.getByRole("heading", { name: "Address" })).toBeVisible();
+      await expect(settings.getByLabel("email", { exact: true })).toHaveValue("rohit@example.com");
+      await expect(settings.locator(".row", { has: settings.getByLabel("email", { exact: true }) })).toContainText("job-boards.greenhouse.io");
+      const moved = (await worker.evaluate(async () => chrome.storage.local.get(null))) as Record<string, unknown>;
+      expect(moved["longtake.memory.v1"]).toBeUndefined();
 
-      // Edit one, remove the other.
-      await settings.getByLabel("Email").fill("rohit.k@example.com");
-      await settings.locator(".row", { has: settings.getByLabel("Email") }).getByRole("button", { name: "Save" }).click();
-      await settings.locator(".row", { has: settings.getByLabel("City") }).getByRole("button", { name: "Remove" }).click();
+      // Edit one: it keeps its history. Remove the other.
+      await settings.getByLabel("email", { exact: true }).fill("rohit.k@example.com");
+      await settings.locator(".row", { has: settings.getByLabel("email", { exact: true }) }).getByRole("button", { name: "Save" }).click();
+      await expect(settings.locator(".row", { has: settings.getByLabel("email", { exact: true }) })).toContainText("Edited by you");
+      await expect(settings.getByText("History (2)")).toBeVisible();
+      await settings.locator(".row", { has: settings.getByLabel("city", { exact: true }) }).getByRole("button", { name: "Remove" }).click();
       await expect(settings.locator(".row")).toHaveCount(1);
-      const stored = (await worker.evaluate(async () => (await chrome.storage.local.get("longtake.memory.v1"))["longtake.memory.v1"])) as {
-        memory: Record<string, { value: string }>;
+      const stored = (await worker.evaluate(async () => (await chrome.storage.local.get("longtake.profile.v2"))["longtake.profile.v2"])) as {
+        facts: Record<string, { value: string; history: { source: string }[] }>;
       };
-      expect(Object.keys(stored.memory)).toEqual(["email"]);
-      expect(stored.memory.email.value).toBe("rohit.k@example.com");
+      expect(Object.keys(stored.facts)).toEqual(["contact.email"]);
+      expect(stored.facts["contact.email"]!.value).toBe("rohit.k@example.com");
+      expect(stored.facts["contact.email"]!.history.map((h) => h.source)).toEqual(["migrated", "edited"]);
+
+      // A file of answers: previewed first, then brought in.
+      const file = JSON.stringify({
+        longtake: "profile",
+        version: 2,
+        facts: { "links.github": { concept: "links.github", value: "github.com/rohitk", updatedAt: 5, history: [] } },
+        answers: {},
+      });
+      await settings.locator("#import-file").setInputFiles({ name: "profile.json", mimeType: "application/json", buffer: Buffer.from(file) });
+      await expect(settings.locator("#import-preview")).toContainText("1 answer in this file · 1 new");
+      await settings.getByRole("button", { name: "Bring them in" }).click();
+      await expect(settings.locator(".row")).toHaveCount(2);
+      await expect(settings.getByLabel("GitHub", { exact: false })).toHaveValue("github.com/rohitk");
 
       // Choose a voice; every voice has a sample to play.
       await settings.getByRole("tab", { name: "Voice" }).click();
@@ -259,7 +281,7 @@ test.describe("the extension on someone else's page", () => {
       const sample = await settings.evaluate(async () => (await fetch("voices/vera.wav")).headers.get("content-type"));
       expect(sample).toContain("audio");
 
-      // The next call speaks in it, and prefills the edited answer.
+      // The next call speaks in it, and puts the edited answer in — their own edit goes in unasked.
       const page = await context.newPage();
       await page.goto(`http://localhost:${port}/form`);
       await page.waitForTimeout(500);
@@ -273,6 +295,59 @@ test.describe("the extension on someone else's page", () => {
       const opening = agent.received[before]![0] as unknown as { session: { output: { voice: string } } };
       expect(opening.session.output.voice).toBe("vera");
       await expect(page.locator("#email")).toHaveValue("rohit.k@example.com");
+    } finally {
+      await context.close();
+    }
+  });
+
+  // The settings race, fixed at its root: an edit on the settings page while a call on another tab
+  // saves new answers. Both were whole-map writes once, and the slower one undid the other.
+  test("an edit on the settings page during a call survives the call's own new answers", async () => {
+    const before = agent.sockets.length;
+    const { context, worker } = await launch();
+    try {
+      const id = new URL(worker.url()).host;
+      const page = await context.newPage();
+      await page.goto(`http://localhost:${port}/form`);
+      await page.waitForTimeout(500);
+      await worker.evaluate(async () => {
+        const [tab] = await chrome.tabs.query({ url: "http://localhost/*" });
+        await (globalThis as unknown as { longtakeToggle: (id: number) => Promise<void> }).longtakeToggle(tab!.id!);
+      });
+      await page.waitForTimeout(300);
+      await page.keyboard.press("Enter");
+      await expect.poll(() => agent.received[before]?.[0]?.type ?? null, { timeout: 20_000 }).toBe("session.update");
+      serve(before, { type: "session.ready", session_id: "sess_race" });
+
+      // First answer: the email, kept for next time.
+      serve(before, { type: "transcript.user", text: "my email is rohit at example dot com" });
+      serve(before, { type: "tool.call", call_id: "r1", name: "fill_fields", arguments: { email: { value: "rohit@example.com", evidence: "rohit at example dot com" } } });
+      await expect(page.locator("#email")).toHaveValue("rohit@example.com");
+      const settings = await context.newPage();
+      await settings.goto(`chrome-extension://${id}/options.html`);
+      await expect(settings.getByLabel("email", { exact: true })).toHaveValue("rohit@example.com");
+
+      // The person corrects it in settings, mid-call…
+      await settings.getByLabel("email", { exact: true }).fill("work@example.com");
+      await settings.locator(".row", { has: settings.getByLabel("email", { exact: true }) }).getByRole("button", { name: "Save" }).click();
+      // …while the call saves their name.
+      serve(before, { type: "transcript.user", text: "and I'm Rohit Kashyap" });
+      serve(before, {
+        type: "tool.call",
+        call_id: "r2",
+        name: "fill_fields",
+        arguments: { first_name: { value: "Rohit", evidence: "Rohit Kashyap" }, last_name: { value: "Kashyap", evidence: "Rohit Kashyap" } },
+      });
+      await expect(page.locator("#last")).toHaveValue("Kashyap");
+      await expect(settings.locator(".row")).toHaveCount(3); // the call's answers appear here as they are said
+
+      const facts = (await worker.evaluate(async () => (await chrome.storage.local.get("longtake.profile.v2"))["longtake.profile.v2"])) as {
+        facts: Record<string, { value: string }>;
+      };
+      expect(facts.facts["contact.email"]!.value).toBe("work@example.com");
+      expect(facts.facts["identity.first_name"]!.value).toBe("Rohit");
+      expect(facts.facts["identity.last_name"]!.value).toBe("Kashyap");
+      expect(agent.understood()).toBeGreaterThan(0);
     } finally {
       await context.close();
     }

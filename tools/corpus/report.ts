@@ -89,11 +89,19 @@ const MEANING: Metric[] = [
   { key: "dangerous", label: "Someone else's read as theirs", better: "lower", gate: true, value: (c) => c.dangerous ?? 0 },
 ];
 
+const RETURNING: Metric[] = [
+  { key: "putIn", label: "Known, put in", better: "higher", value: (c) => ratio(c.putIn, c.known) },
+  { key: "offered", label: "Known, put in or offered", better: "higher", value: (c) => ratio(c.putIn! + c.waiting!, c.known) },
+  { key: "askedAgain", label: "Known, asked again", better: "lower", gate: true, value: (c) => c.askedAgain ?? 0 },
+  { key: "wrongRecall", label: "Wrong from last time", better: "lower", gate: true, value: (c) => c.wrong ?? 0 },
+];
+
 export const SCORERS: Scorer[] = [
   { name: "read", title: "reading", size: (t) => `${t.fields ?? 0} fields`, metrics: READ },
   { name: "fill", title: "filling", size: (t) => `${t.cases ?? 0} answers`, metrics: FILL },
   { name: "talk", title: "talking", size: (t) => `${t.checks ?? 0} checks`, metrics: TALK },
   { name: "meaning", title: "meaning", size: (t) => `${t.fields ?? 0} fields`, metrics: MEANING },
+  { name: "returning", title: "a returning person", size: (t) => `${t.known ?? 0} known answers`, metrics: RETURNING },
 ];
 
 /** Deterministic reads and writes: any move is a real move. Raise per metric here only if one turns out noisy. */

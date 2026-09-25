@@ -23,38 +23,59 @@ import {
   buildFillTool,
   buildLaterTool,
   buildPressTool,
+  buildSaveTool,
   validateTool,
   type VoiceAgentTool,
 } from "./binder";
+import { conceptById } from "./concepts";
 import { openingLine, phoneFields, summarise, type FormReshape } from "./conversation";
 import { exclusively, whenSettled } from "./dom-path";
 import { checkEvidence, keepOnlyWhatWasSaid } from "./evidence";
 import { snapshot, type FormState } from "./form-state";
 import { gate } from "./gate";
 import { Ledger } from "./ledger";
-import { asSpokenValues, canonicalKey, forget, forgetAll, listMemory, recall, remember } from "./memory";
-import type { Memory, RememberedAnswer } from "./memory";
 import { systemPrompt } from "./persona";
 import { brief, doNext, nextMove, resumeLine, type Move, type Plan } from "./planner";
+import {
+  emptyProfile,
+  factId,
+  factKeys,
+  knownFacts,
+  RECALL_WHY_WORDS,
+  recallFor,
+  shownValue,
+  type KnownFact,
+  type Profile,
+  type ProfileChange,
+  type Provenance,
+} from "./profile";
+import { dialCodeOf, optionForDialCode, PHONE_NUMBER, PHONE_WHOLE, withoutDialCode } from "./phones";
+import { memoryProfileStore, type ProfileStore } from "./profile-store";
 import { harvestOptions, readForm, titleOf, waitForForm } from "./reader";
 import { FieldRegistry } from "./reconcile";
 import { fieldName, type FieldSpec, type FormRead, type SpokenValue } from "./types";
+import { fallbackMeanings, snapshotOf, structureKey, validateMeanings, type FormSnapshot, type Meanings } from "./understand";
 import { clearValues, writeValues, type ClearOutcome, type WriteOutcome } from "./writer";
-
-/** Where remembered answers are kept — localStorage on the web, chrome.storage in the extension. */
-export type MemoryStore = { load(): Memory; save(memory: Memory): void };
 
 export type SessionOptions = {
   /** The part of the page the form is in. */
   root: () => Document | Element;
   /** Anything inside these is not the person's form (our own widget, dev overlays). */
   ignore: string;
-  memory: MemoryStore;
+  /** What is known about the person, and its one owner. Held in memory for this page when absent. */
+  profile?: ProfileStore;
+  /**
+   * What each field means, from the model — `/api/understand` on the site, relayed by the
+   * extension's worker. Absent, failing or slow: the offline reading, which puts nothing in unasked.
+   */
+  understand?: (snapshot: FormSnapshot) => Promise<unknown>;
   log?: (line: string) => void;
   /** The form's set of questions changed: the agent needs new tools and a new prompt, now. */
   onReshape?: () => void;
   /** Something about the form may have changed — for the UI to redraw from `state()`. */
   onChange?: () => void;
+  /** The brief changed with no tool call to carry it — answers from last time arrived late. */
+  onPromptStale?: () => void;
 };
 
 /** What a fill or clear did, for the UI — alongside what the agent is told. */
@@ -67,11 +88,28 @@ export type Done<Result> = {
 
 const CHOICE_KINDS = new Set(["select", "radio", "multiselect", "checkbox"]);
 
+/**
+ * How long answers from last time wait for the form to be understood before the call opens. Past
+ * this the call starts anyway, and they go in the moment the meanings arrive.
+ */
+const UNDERSTAND_WAIT_MS = 4000;
+
+type Learned = "spoken" | "confirmed";
+
 export class LongtakeSession {
   readonly ledger = new Ledger();
   private registry = new FieldRegistry();
   private current: FormRead | null = null;
-  private memory: Memory = {};
+  private readonly store: ProfileStore;
+  private profile: Profile = emptyProfile();
+  /** What each field means: the offline reading until the model's arrives, then the model's. */
+  private meanings: Meanings = {};
+  private understanding: Promise<void> | null = null;
+  /** Answers given before the model said what their fields mean — learned once it has. */
+  private unlearned: { value: SpokenValue; how: Learned }[] = [];
+  private recalled = false;
+  /** This call, for the profile's history: a correction within one call replaces, it does not ask. */
+  private readonly call = Math.random().toString(36).slice(2, 10);
   private plan: Plan = { optionalOffered: false };
   private title = "";
   private chain: Promise<unknown> = Promise.resolve();
@@ -79,7 +117,9 @@ export class LongtakeSession {
   private writing = false;
   private movedWhileWriting = false;
 
-  constructor(private readonly options: SessionOptions) {}
+  constructor(private readonly options: SessionOptions) {
+    this.store = options.profile ?? memoryProfileStore();
+  }
 
   // ── Reading ──────────────────────────────────────────────────────────────────────
 
@@ -90,7 +130,7 @@ export class LongtakeSession {
   /** The form as it is right now. The only answer to "what is filled" anywhere in the product. */
   state(): FormState {
     if (!this.current) {
-      return { title: "", fields: [], theirs: [], actions: [], progress: { filled: 0, total: 0, requiredLeft: 0, optionalLeft: 0 } };
+      return { title: "", fields: [], theirs: [], actions: [], asks: [], progress: { filled: 0, total: 0, requiredLeft: 0, optionalLeft: 0 } };
     }
     return snapshot(this.current, this.ledger, this.title, this.buttons());
   }
@@ -110,7 +150,7 @@ export class LongtakeSession {
   tools(): VoiceAgentTool[] {
     const specs = this.current?.specs ?? [];
     const press = this.current ? buildPressTool(this.buttons().actions) : null;
-    const always = [buildFillTool(specs), buildConfirmTool(specs), buildClearTool(specs), buildLaterTool(specs)];
+    const always = [buildFillTool(specs), buildConfirmTool(specs), buildClearTool(specs), buildLaterTool(specs), buildSaveTool(specs)];
     return press ? [...always, press] : always;
   }
 
@@ -149,7 +189,8 @@ export class LongtakeSession {
       };
     }
 
-    const claim: SpokenValue = { fieldId: id, value: pending.suggestion, evidence: `${pending.heard} — ${evidence}` };
+    const recalled = pending.reason === "from_last_time";
+    const claim: SpokenValue = { fieldId: id, value: pending.value ?? pending.suggestion, evidence: `${pending.heard} — ${evidence}` };
     this.writing = true;
     this.movedWhileWriting = false;
     let results: WriteOutcome[];
@@ -158,7 +199,9 @@ export class LongtakeSession {
     } finally {
       this.writing = false;
     }
-    this.record(results, [claim], read, "spoken");
+    // An answer from last time, now confirmed: from last time on the page, and trusted next time.
+    await this.record(results, [claim], read, recalled ? "memory" : "spoken", recalled && pending.factId ? { [id]: pending.factId } : {});
+    if (recalled) await this.learn([{ ...claim, value: pending.value ?? pending.suggestion }], read, "confirmed");
     const reshaped =
       (results[0]?.status === "written" && CHOICE_KINDS.has(spec.kind)) || this.movedWhileWriting ? await this.pageChanged() : null;
     const result = this.report(results, [claim], reshaped, { waiting_for_yes: [] });
@@ -267,6 +310,7 @@ export class LongtakeSession {
       {
         filled: state.fields.filter((f) => f.value !== null).map((f) => f.spec.id),
         remembered: state.fields.some((f) => f.source === "memory"),
+        toConfirm: state.fields.filter((f) => f.pending?.reason === "from_last_time").map((f) => fieldName(f.spec)),
       },
     );
   }
@@ -276,8 +320,15 @@ export class LongtakeSession {
     return resumeLine(this.state(), this.move());
   }
 
-  remembered(): RememberedAnswer[] {
-    return listMemory(this.memory);
+  /** Everything known about the person, newest first — for a surface to show and let them change. */
+  known(): KnownFact[] {
+    return knownFacts(this.profile);
+  }
+
+  /** The profile changed somewhere else — a settings page, another tab. */
+  profileChanged(profile: Profile): void {
+    this.profile = profile;
+    this.options.onChange?.();
   }
 
   // ── Opening ──────────────────────────────────────────────────────────────────────
@@ -300,25 +351,130 @@ export class LongtakeSession {
    */
   prefill(): Promise<unknown> {
     this.prefilled = (async () => {
-      this.memory = this.options.memory.load();
-      if (Object.keys(this.memory).length === 0) return 0;
+      this.profile = await this.store.load().catch(() => emptyProfile());
+      if (Object.keys(this.profile.facts).length === 0) return 0;
 
       await waitForForm();
       const read = await harvestOptions(this.registry.adopt(this.readNow()).read);
       this.current = read;
       this.title = titleOf(read, this.scope());
 
-      const recalled = recall(this.memory, read.specs);
-      if (recalled.length === 0) return 0;
-
-      const values = asSpokenValues(recalled);
-      const results = await writeValues(read.specs, read.handles, values);
-      this.record(results, values, read, "memory");
-      this.options.log?.(`brought ${results.filter((r) => r.status === "written").length} answer(s) from an earlier form`);
-      this.options.onChange?.();
-      return results.length;
+      // What the form's questions mean decides what may go in — waited for, but not for long.
+      const understood = this.understandForm(read);
+      await Promise.race([understood, new Promise((done) => setTimeout(done, UNDERSTAND_WAIT_MS))]);
+      return this.recall(read);
     })();
     return this.prefilled;
+  }
+
+  /**
+   * Answers from last time, for fields still empty and untouched: the sure ones go in, the rest wait
+   * for a yes with their reason. Runs at open, and again when the form's meanings arrive late.
+   */
+  private async recall(read: FormRead): Promise<number> {
+    this.recalled = true;
+    const state = this.state();
+    const free = new Set(
+      state.fields
+        // An answer from last time already waiting for a yes may go in now: the model arrived and is sure.
+        .filter((f) => f.value === null && (!f.pending || f.pending.reason === "from_last_time") && !f.declined && !this.ledger.entry(f.spec.id))
+        .map((f) => f.spec.id),
+    );
+    const found = recallFor(read.specs, this.meanings, this.profile).filter((r) => free.has(r.fieldId));
+    if (found.length === 0) return 0;
+
+    const sure = found.filter((r) => r.sure);
+    const values: SpokenValue[] = sure.map((r) => ({ fieldId: r.fieldId, value: r.value, evidence: r.evidence }));
+    this.writing = true;
+    let results: WriteOutcome[] = [];
+    try {
+      results = values.length > 0 ? await writeValues(read.specs, read.handles, values) : [];
+    } finally {
+      this.writing = false;
+    }
+    await this.record(results, values, read, "memory", Object.fromEntries(sure.map((r) => [r.fieldId, r.factId])));
+    const wentIn = results.filter((r) => r.status === "written").map((r) => r.fieldId);
+    if (wentIn.length > 0) {
+      const ids = sure.filter((r) => wentIn.includes(r.fieldId)).map((r) => r.factId);
+      void this.store.apply([{ type: "used", ids }]).catch(() => undefined);
+    }
+
+    // The rest wait for a yes. So does a sure one the page would not take as it was.
+    const refused = new Set(results.filter((r) => r.status !== "written").map((r) => r.fieldId));
+    for (const r of found.filter((r) => !r.sure || refused.has(r.fieldId))) {
+      this.ledger.hold(r.fieldId, {
+        reason: "from_last_time",
+        suggestion: shownValue(r.value),
+        value: r.value,
+        heard: r.evidence,
+        factId: r.factId,
+        why: RECALL_WHY_WORDS[r.why ?? "closest_choice"],
+      });
+    }
+    this.options.log?.(`from last time: ${wentIn.length} in, ${found.length - wentIn.length} waiting for a yes`);
+    this.options.onChange?.();
+    return wentIn.length;
+  }
+
+  // ── What the form means ──────────────────────────────────────────────────────────
+
+  /**
+   * Ask what each field means — once per form structure, and cached on the device. A field already
+   * understood keeps its meaning; a field the form grew gets its own. A late answer upgrades the
+   * call: answers from last time go in, and what was said before it arrived is learned.
+   */
+  private understandForm(read: FormRead): Promise<void> {
+    for (const [id, meaning] of Object.entries(fallbackMeanings(read.specs))) {
+      if (!this.meanings[id]) this.meanings[id] = meaning;
+    }
+    const ask = this.options.understand;
+    if (!ask) return Promise.resolve();
+
+    const run = async () => {
+      const unknown = read.specs.filter((spec) => this.meanings[spec.id]?.source !== "model");
+      if (unknown.length === 0) return;
+      const scope = this.scope();
+      const doc = "ownerDocument" in scope && scope.ownerDocument ? scope.ownerDocument : (scope as Document);
+      const snapshot = snapshotOf(read.specs, { host: doc.location?.host ?? "", title: this.title });
+      if (snapshot.fields.length === 0) return;
+      // No hash outside a secure context (a plain-http page): then there is simply no cache.
+      const key = await structureKey(snapshot).catch(() => null);
+      let meanings = key ? await this.store.meanings?.get(key).catch(() => null) : null;
+      if (!meanings) {
+        meanings = validateMeanings(await ask(snapshot), read.specs);
+        if (key && Object.keys(meanings).length > 0) await this.store.meanings?.put(key, meanings).catch(() => undefined);
+      }
+      await this.adopt(meanings);
+    };
+    const next = (this.understanding ?? Promise.resolve()).then(run).catch((cause: unknown) => {
+      this.options.log?.(`could not understand the form: ${cause instanceof Error ? cause.message : String(cause)}`);
+    });
+    this.understanding = next;
+    return next;
+  }
+
+  private async adopt(meanings: Meanings): Promise<void> {
+    const present = new Set(this.current?.specs.map((spec) => spec.id));
+    let fresh = 0;
+    for (const [id, meaning] of Object.entries(meanings)) {
+      if (!present.has(id) || this.meanings[id]?.source === "model") continue;
+      this.meanings[id] = meaning;
+      fresh++;
+    }
+    if (fresh === 0 || !this.current) return;
+    this.options.log?.(`understood ${fresh} field(s)`);
+
+    const waiting = this.unlearned;
+    this.unlearned = [];
+    for (const how of ["spoken", "confirmed"] as const) {
+      const values = waiting.filter((w) => w.how === how).map((w) => w.value);
+      if (values.length > 0) await this.learn(values, this.current, how);
+    }
+    // Late for the opening: what last time can offer goes in now, and the agent is told.
+    if (this.recalled && Object.keys(this.profile.facts).length > 0) {
+      const wentIn = await this.recall(this.current);
+      if (wentIn > 0 || this.state().fields.some((f) => f.pending?.reason === "from_last_time")) this.options.onPromptStale?.();
+    }
   }
 
   /** Read the form, completely, before the conversation starts. */
@@ -332,6 +488,8 @@ export class LongtakeSession {
     this.current = read;
     this.title = titleOf(read, this.scope());
     this.plan = { optionalOffered: false };
+    // Meanings for what was said on this form, and for a form that grew. Never waited for here.
+    void this.understandForm(read);
 
     // Anything already in the form that we did not put there was there before we arrived.
     this.ledger.markAtOpen(
@@ -345,21 +503,120 @@ export class LongtakeSession {
 
   // ── Filling ──────────────────────────────────────────────────────────────────────
 
-  /** Write down what went in, for the ledger and for memory. */
-  private record(results: WriteOutcome[], values: SpokenValue[], read: FormRead, source: "spoken" | "memory"): void {
+  /** Write down what went in, for the ledger — and learn what was said, for next time. */
+  private async record(
+    results: WriteOutcome[],
+    values: SpokenValue[],
+    read: FormRead,
+    source: "spoken" | "memory",
+    facts: Record<string, string> = {},
+    wholePhones: Map<string, string> = new Map(),
+  ): Promise<void> {
     const byId = new Map(read.specs.map((spec) => [spec.id, spec]));
-    const kept: SpokenValue[] = [];
+    const said: SpokenValue[] = [];
     for (const result of results) {
       if (result.status !== "written") continue;
       const spec = byId.get(result.fieldId);
-      const said = values.find((v) => v.fieldId === result.fieldId);
-      if (!spec || !said) continue;
-      this.ledger.wrote(result.fieldId, { source, value: result.wrote, evidence: said.evidence, spec });
-      kept.push({ ...said, value: result.wrote });
+      const claim = values.find((v) => v.fieldId === result.fieldId);
+      if (!spec || !claim) continue;
+      this.ledger.wrote(result.fieldId, {
+        source,
+        value: result.wrote,
+        evidence: claim.evidence,
+        spec,
+        ...(facts[result.fieldId] ? { factId: facts[result.fieldId] } : {}),
+      });
+      // What they said is kept as they said it, not as this form shaped it: "India", not "India (+91)";
+      // a phone number whole, not the part left in this form's number box.
+      const whole = wholePhones.get(result.fieldId);
+      said.push(whole ? { ...claim, value: whole } : claim);
     }
-    if (source === "spoken" && kept.length > 0) {
-      this.memory = remember(this.memory, read.specs, kept, read.url);
-      this.options.memory.save(this.memory);
+    if (source === "spoken" && said.length > 0) await this.learn(said, read, "spoken");
+  }
+
+  /** Where an answer was given, for its history. */
+  private provenance(value: SpokenValue, read: FormRead, how: Learned | "typed"): Provenance {
+    const spec = read.specs.find((s) => s.id === value.fieldId);
+    let host = "";
+    try {
+      host = new URL(read.url).host;
+    } catch {
+      // a page with no address
+    }
+    return {
+      value: value.value,
+      evidence: value.evidence,
+      source: how,
+      host,
+      url: read.url,
+      askedAs: spec ? fieldName(spec).slice(0, 300) : value.fieldId,
+      formTitle: this.title.slice(0, 200),
+      at: Date.now(),
+      session: this.call,
+      field: value.fieldId,
+    };
+  }
+
+  /**
+   * Keep what they said for next time — only their own answers, to questions that are asked the
+   * same way everywhere, on a meaning the model named with at least some confidence. Something
+   * already known, said differently, is not overwritten: it becomes a question for them. A
+   * personal answer is kept only if they say so, asked once at the end.
+   */
+  private async learn(values: SpokenValue[], read: FormRead, how: Learned | "typed"): Promise<void> {
+    const keys = factKeys(read.specs, this.meanings);
+    const changes: ProfileChange[] = [];
+    const personal: { id: string; change: Extract<ProfileChange, { type: "observe" }> }[] = [];
+    for (const value of values) {
+      const meaning = this.meanings[value.fieldId];
+      if (!meaning || meaning.source !== "model") {
+        if (how !== "typed" && this.options.understand) this.unlearned.push({ value, how });
+        continue;
+      }
+      let key = keys.get(value.fieldId);
+      // A number box given the whole number, code and all: the whole phone is what is known now.
+      if (key?.concept === PHONE_NUMBER && typeof value.value === "string" && dialCodeOf(value.value)) key = { concept: PHONE_WHOLE };
+      const concept = key ? conceptById(key.concept) : undefined;
+      if (!key || !concept || meaning.confidence === "low") continue;
+      if (concept.scope !== "remember" && concept.scope !== "sensitive") continue;
+      const change = {
+        type: "observe" as const,
+        key,
+        gist: meaning.gist || concept.say,
+        value: value.value,
+        from: this.provenance(value, read, how),
+      };
+      if (concept.scope === "sensitive" && !this.profile.settings.rememberSensitive) {
+        personal.push({ id: value.fieldId, change });
+        continue;
+      }
+      changes.push(change);
+    }
+
+    if (how !== "typed") {
+      for (const { id, change } of personal) {
+        this.ledger.ask(id, { kind: "sensitive", key: change.key, gist: change.gist, value: change.value, from: change.from });
+      }
+    }
+    if (changes.length === 0) return;
+
+    try {
+      const applied = await this.store.apply(changes);
+      this.profile = applied.profile;
+      const asked = new Set<string>();
+      for (const question of applied.questions) {
+        const field = question.from.field;
+        if (!field || how === "typed") continue;
+        asked.add(field);
+        this.ledger.ask(field, { kind: "changed", factId: question.id, key: question.key, gist: question.gist, was: question.was, now: question.now, from: question.from });
+      }
+      // Said again, the same as what was saved: nothing left to ask about that box.
+      for (const change of changes) {
+        const field = change.type === "observe" ? change.from.field : undefined;
+        if (field && !asked.has(field) && this.ledger.askFor(field)?.kind === "changed") this.ledger.settle(field);
+      }
+    } catch (cause) {
+      this.options.log?.(`could not keep answers for next time: ${cause instanceof Error ? cause.message : String(cause)}`);
     }
   }
 
@@ -379,7 +636,8 @@ export class LongtakeSession {
     // Every quote is checked against what was actually said, then every choice against the gate.
     const { spoken, unsupported } = keepOnlyWhatWasSaid(heard, claimed);
     const byId = new Map(read.specs.map((spec) => [spec.id, spec]));
-    const toWrite: SpokenValue[] = [...this.splitPhones(spoken, read.specs)];
+    const phones = this.splitPhones(spoken, read.specs);
+    const toWrite: SpokenValue[] = [...phones.extra];
     const held: { field: string; question: string; suggestion: string; they_said: string }[] = [];
     for (const claim of spoken) {
       const spec = byId.get(claim.fieldId);
@@ -405,7 +663,7 @@ export class LongtakeSession {
     } finally {
       this.writing = false;
     }
-    this.record(results, toWrite, read, "spoken");
+    await this.record(results, toWrite, read, "spoken", {}, phones.whole);
 
     const invented: WriteOutcome[] = unsupported.map((item) => ({
       fieldId: item.fieldId,
@@ -433,25 +691,28 @@ export class LongtakeSession {
    *
    * Mutates the claims it is given (strips the code from the number); returns the extra claims.
    */
-  private splitPhones(spoken: SpokenValue[], specs: FieldSpec[]): SpokenValue[] {
+  private splitPhones(spoken: SpokenValue[], specs: FieldSpec[]): { extra: SpokenValue[]; whole: Map<string, string> } {
     const pairs = phoneFields(specs);
     const byId = new Map(specs.map((spec) => [spec.id, spec]));
     const extra: SpokenValue[] = [];
+    // The number as they said it, code and all — what is kept for next time, whatever this form splits.
+    const whole = new Map<string, string>();
 
     for (const claim of spoken) {
       const codeId = pairs.get(claim.fieldId);
       if (byId.get(claim.fieldId)?.kind !== "tel" || !codeId) continue;
       if (spoken.some((c) => c.fieldId === codeId)) continue; // the agent already filled the picker
 
-      const said = /^\s*\+\s*(\d{1,4})\b/.exec(String(claim.value)) ?? /\+\s*(\d{1,4})\b/.exec(claim.evidence);
-      if (!said) continue;
-      claim.value = String(claim.value).replace(/^\s*\+\s*\d{1,4}[\s.-]*/, "");
+      const value = String(claim.value);
+      const code = dialCodeOf(value) ?? /\+\s*(\d{1,4})\b/.exec(claim.evidence)?.[1];
+      if (!code) continue;
+      claim.value = withoutDialCode(value);
+      whole.set(claim.fieldId, `+${code} ${claim.value}`);
 
-      const code = new RegExp(`\\+\\s*${said[1]}\\b`);
-      const matches = (byId.get(codeId)!.options ?? []).filter((o) => code.test(o.label));
-      if (matches.length === 1) extra.push({ fieldId: codeId, value: matches[0]!.label, evidence: claim.evidence });
+      const option = optionForDialCode(byId.get(codeId)!, code);
+      if (option) extra.push({ fieldId: codeId, value: option, evidence: claim.evidence });
     }
-    return extra;
+    return { extra, whole };
   }
 
   /** The `clear_fields` tool. */
@@ -482,14 +743,26 @@ export class LongtakeSession {
     }
 
     const cleared = results.filter((r) => r.status === "cleared").map((r) => r.fieldId);
+    const keys = factKeys(read.specs, this.meanings);
+    const undo: ProfileChange[] = [];
+    const fromLastTime: { field: string; question: string }[] = [];
     for (const id of cleared) {
+      const entry = this.ledger.entry(id);
       this.ledger.decline(id);
-      // Out of memory too, or the next form brings back the answer they just asked to remove.
-      const spec = byId.get(id);
-      const key = spec ? canonicalKey(spec) : null;
-      if (key && this.memory[key]) this.memory = forget(this.memory, key);
+      if (this.ledger.askFor(id)?.kind !== "forget") this.ledger.settle(id);
+      if (entry?.source === "memory" && entry.factId) {
+        // From last time: whether it goes from next time too is theirs to say, not a side effect.
+        this.ledger.ask(id, { kind: "forget", factId: entry.factId, was: this.profile.facts[entry.factId]?.value ?? entry.value });
+        fromLastTime.push({ field: id, question: question(id) });
+      } else if (entry?.source === "spoken") {
+        // Said in this call, then taken back: it was never really their answer.
+        const key = keys.get(id);
+        if (key) undo.push({ type: "unobserve", id: factId(key), session: this.call, field: id });
+      }
     }
-    if (cleared.length > 0) this.options.memory.save(this.memory);
+    if (undo.length > 0) {
+      await this.store.apply(undo).then((applied) => void (this.profile = applied.profile)).catch(() => undefined);
+    }
 
     const reshaped =
       cleared.some((id) => CHOICE_KINDS.has(byId.get(id)?.kind ?? "")) || this.movedWhileWriting
@@ -503,6 +776,7 @@ export class LongtakeSession {
       not_cleared: results
         .filter((r): r is Extract<ClearOutcome, { status: "cannot-clear" }> => r.status === "cannot-clear")
         .map((r) => ({ field: r.fieldId, question: question(r.fieldId), why: r.reason })),
+      ...(fromLastTime.length > 0 ? { was_from_last_time: fromLastTime } : {}),
       progress: state.progress,
       ...(reshaped ? { form_changed: this.changeFacts(reshaped) } : {}),
       do_next: doNext(move),
@@ -512,13 +786,82 @@ export class LongtakeSession {
     return { result, outcomes: [], spoken: [] };
   }
 
+  /**
+   * The `save_for_next_time` tool: their reply to a question about next time. A yes keeps the new
+   * answer, forgets the cleared one, or remembers the personal one; a no leaves what was saved as
+   * it was. Needs their words, like everything else. Nothing on the page changes.
+   */
+  async saveForNextTime(args: Record<string, unknown>, heard: string): Promise<Done<Record<string, unknown>>> {
+    const read = this.current;
+    if (!read) return { result: { error: "The form has not been read yet." }, outcomes: [], spoken: [] };
+    const fields = Array.isArray(args.fields) ? args.fields.map(String) : [];
+    const agreed = args.agreed === true;
+    const evidence = typeof args.evidence === "string" ? args.evidence : "";
+    if (!checkEvidence(heard, evidence).ok) {
+      return { result: { saved: [], why: "quote_not_found", submitted: false }, outcomes: [], spoken: [] };
+    }
+
+    const byId = new Map(read.specs.map((spec) => [spec.id, spec]));
+    const changes: ProfileChange[] = [];
+    const settled: string[] = [];
+    const nothingAsked: string[] = [];
+    for (const id of fields) {
+      const ask = this.ledger.askFor(id);
+      if (!ask) {
+        nothingAsked.push(id);
+        continue;
+      }
+      if (agreed) {
+        if (ask.kind === "changed") changes.push({ type: "replace", id: ask.factId, value: ask.now, from: { ...ask.from, evidence: `${ask.from.evidence} — ${evidence}` }, key: ask.key, gist: ask.gist });
+        if (ask.kind === "forget") changes.push({ type: "delete", id: ask.factId });
+        if (ask.kind === "sensitive") changes.push({ type: "observe", key: ask.key, gist: ask.gist, value: ask.value, from: ask.from, allowSensitive: true });
+      }
+      this.ledger.settle(id);
+      settled.push(id);
+    }
+    if (changes.length > 0) {
+      try {
+        this.profile = (await this.store.apply(changes)).profile;
+      } catch (cause) {
+        this.options.log?.(`could not save for next time: ${cause instanceof Error ? cause.message : String(cause)}`);
+      }
+    }
+
+    const name = (id: string) => { const spec = byId.get(id); return spec ? fieldName(spec) : id; };
+    const state = this.state();
+    const result = {
+      ...(agreed ? { kept_for_next_time: settled.map(name) } : { left_as_before: settled.map(name) }),
+      ...(nothingAsked.length > 0 ? { nothing_to_settle: nothingAsked.map(name) } : {}),
+      progress: state.progress,
+      do_next: doNext(this.move()),
+      submitted: false,
+    };
+    this.options.onChange?.();
+    return { result, outcomes: [], spoken: [] };
+  }
+
+  /**
+   * The call is over. What they typed by hand into their own answers is kept — but only ever offered
+   * back for a yes, since nobody heard them say it.
+   */
+  async finish(): Promise<void> {
+    const read = this.current;
+    if (!read) return;
+    const typed = this.state()
+      .fields.filter((f) => f.source === "typed" && f.value !== null)
+      .map((f) => ({ fieldId: f.spec.id, value: f.value as SpokenValue["value"], evidence: "" }));
+    const keys = factKeys(read.specs, this.meanings);
+    const fresh = typed.filter((t) => { const key = keys.get(t.fieldId); return key && !this.profile.facts[factId(key)]; });
+    if (fresh.length > 0) await this.learn(fresh, read, "typed");
+  }
+
   /** Replace an answer with a better-shaped version of the same words (the Dictation pass). */
   async rewrite(fieldId: string, value: string, evidence: string): Promise<void> {
     const read = this.current;
     if (!read) return;
     const values = [{ fieldId, value, evidence }];
     const results = await writeValues(read.specs, read.handles, values);
-    this.record(results, values, read, "spoken");
+    await this.record(results, values, read, "spoken");
     this.options.onChange?.();
   }
 
@@ -630,6 +973,7 @@ export class LongtakeSession {
           }];
         });
 
+      if (change.appeared.length > 0) void this.understandForm(read);
       this.options.log?.(`form changed: +${change.appeared.length} −${change.disappeared.length}, restored ${restored.length}`);
       this.options.onReshape?.();
       this.options.onChange?.();
@@ -641,18 +985,21 @@ export class LongtakeSession {
     return next;
   }
 
-  // ── Memory ───────────────────────────────────────────────────────────────────────
+  // ── What is known about them ─────────────────────────────────────────────────────
 
-  forgetOne(key: string): void {
-    this.memory = forget(this.memory, key);
-    this.options.memory.save(this.memory);
+  async forgetOne(id: string): Promise<void> {
+    this.profile = (await this.store.apply([{ type: "delete", id }])).profile;
     this.options.onChange?.();
   }
 
-  forgetEverything(): void {
-    this.memory = forgetAll();
-    this.options.memory.save(this.memory);
+  async forgetEverything(): Promise<void> {
+    this.profile = (await this.store.apply([{ type: "deleteAll" }])).profile;
     this.options.onChange?.();
+  }
+
+  /** What each field means, as far as is known now — for tests and the review panel. */
+  meaningOf(id: string) {
+    return this.meanings[id];
   }
 
   /** Specs as they are now — for callers that still need the raw field list. */

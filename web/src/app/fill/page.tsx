@@ -208,18 +208,30 @@ export default function FillPage() {
               </p>
             )}
             {known.map((answer) => (
-              <div key={answer.key} className="mb-1 flex items-start gap-2">
+              <div key={answer.id} className="mb-1 flex items-start gap-2">
                 <button
-                  onClick={() => forgetOne(answer.key)}
+                  onClick={() => forgetOne(answer.id)}
                   title="Forget this"
                   className="mt-0.5 shrink-0 rounded border border-neutral-300 px-1 text-[10px] leading-4 hover:bg-neutral-100 dark:border-neutral-700 dark:hover:bg-neutral-800"
                 >
                   ✕
                 </button>
                 <span className="min-w-0">
-                  <span className="font-medium">{answer.key}</span>{" "}
+                  <span className="font-medium">{answer.say}</span>{" "}
                   <span className="text-neutral-600 dark:text-neutral-400">
-                    {String(answer.value)}
+                    {answer.value}
+                  </span>
+                  {/* Where it came from — their words, or their own hand — so a saved answer is
+                      never a mystery. */}
+                  <span className="block truncate text-[10px] text-neutral-400">
+                    {answer.source === "spoken" || answer.source === "confirmed"
+                      ? `you said “${answer.evidence.length > 60 ? `${answer.evidence.slice(0, 60)}…` : answer.evidence}”`
+                      : answer.source === "edited"
+                        ? "edited by you"
+                        : answer.source === "typed"
+                          ? "typed by you"
+                          : "kept from before"}
+                    {answer.host && ` · ${answer.host}`}
                   </span>
                 </span>
               </div>

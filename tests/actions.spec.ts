@@ -110,12 +110,10 @@ async function session(page: Page, body: string) {
   await load(page, body);
   await page.evaluate(async () => {
     const L = window.__longtake;
-    let mem = {} as never;
     const reshapes: number[] = [];
     const s = new L.LongtakeSession({
       root: () => document,
       ignore: "[data-longtake-ignore]",
-      memory: { load: () => mem, save: (m) => { mem = m as never; } },
       onReshape: () => reshapes.push(1),
     });
     await s.open();

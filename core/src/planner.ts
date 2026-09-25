@@ -16,22 +16,39 @@
 
 import { factsOf, inAskingOrder, type FieldFacts } from "./conversation";
 import { isOpen, type FieldState, type FormState } from "./form-state";
+import { shownValue } from "./profile";
+import { fieldName } from "./types";
 
 export type Move =
   /** An answer is waiting for their yes. Always first: nothing else makes sense until it is settled. */
   | { kind: "confirm"; field: FieldFacts; suggestion: string; heard: string; reason: "not_named" | "hedged" }
+  /** Answers from last time that wait for a yes — a few at once, since one yes can settle them all. */
+  | { kind: "confirm_recalled"; fields: { field: FieldFacts; suggestion: string; why?: string }[] }
   /** The form rejected something that went in. Before anything new — it is a mistake on the page now. */
   | { kind: "resolve"; field: FieldFacts; problem: string; value: string }
+  /** What to keep for next time: an answer that changed, or one they cleared. Straight after it happened. */
+  | { kind: "update_profile"; asks: ProfileQuestionFacts[] }
   /** Ask for the next required field — or group of fields that is one question to a person. */
   | { kind: "ask"; fields: FieldFacts[] }
   /** The required part is done. Offer the optional part, once. */
   | { kind: "offer_optional"; fields: FieldFacts[] }
   /** The offer has been made: go through these if they wanted them, move on if not. */
-  | { kind: "optional"; fields: FieldFacts[]; next?: string; submit?: string }
+  | { kind: "optional"; fields: FieldFacts[]; next?: string; submit?: string; keep?: KeepFacts }
   /** This page is done and the form has another. Ask, and press Next only on their yes. */
-  | { kind: "next_page"; label: string }
+  | { kind: "next_page"; label: string; keep?: KeepFacts }
   /** Nothing left that is ours to do. */
-  | { kind: "handover"; theirs: string[]; submit?: string };
+  | { kind: "handover"; theirs: string[]; submit?: string; keep?: KeepFacts };
+
+/** One thing to settle about next time. */
+export type ProfileQuestionFacts = { field: string; question: string; kind: "changed" | "forget"; was: string; now?: string };
+
+/** Personal answers given on this form, to offer keeping — once, before handing over. */
+export type KeepFacts = { fields: string[]; questions: string[] };
+
+/** How many "from last time" answers are put to them in one breath. */
+const RECALLED_AT_ONCE = 4;
+/** How many "keep it for next time?" questions at once. */
+const UPDATES_AT_ONCE = 3;
 
 /**
  * How many questions are asked in one breath.
@@ -71,8 +88,8 @@ export type Plan = { optionalOffered: boolean };
 export function nextMove(state: FormState, plan: Plan): Move {
   const specs = state.fields.map((f) => f.spec);
 
-  const waiting = state.fields.find((f) => f.pending);
-  if (waiting?.pending) {
+  const waiting = state.fields.find((f) => f.pending && f.pending.reason !== "from_last_time");
+  if (waiting?.pending && waiting.pending.reason !== "from_last_time") {
     return {
       kind: "confirm",
       field: factsOf(waiting.spec, specs),
@@ -82,11 +99,37 @@ export function nextMove(state: FormState, plan: Plan): Move {
     };
   }
 
+  const recalled = state.fields.filter((f) => f.pending?.reason === "from_last_time").slice(0, RECALLED_AT_ONCE);
+  if (recalled.length > 0) {
+    return {
+      kind: "confirm_recalled",
+      fields: recalled.map((f) => ({
+        field: factsOf(f.spec, specs),
+        suggestion: f.pending!.suggestion,
+        ...(f.pending!.why ? { why: f.pending!.why } : {}),
+      })),
+    };
+  }
+
   // A value the form says is wrong, only once something is in it — an empty required field's
   // "this field is required" is just the ordinary next question, asked in its turn.
   const wrong = state.fields.find((f) => f.error && f.value !== null);
   if (wrong?.error) {
     return { kind: "resolve", field: factsOf(wrong.spec, specs), problem: wrong.error, value: shown(wrong.value) };
+  }
+
+  const updates = state.asks.filter((a) => a.ask.kind !== "sensitive").slice(0, UPDATES_AT_ONCE);
+  if (updates.length > 0) {
+    return {
+      kind: "update_profile",
+      asks: updates.map(({ spec, ask }) => ({
+        field: spec.id,
+        question: fieldName(spec),
+        kind: ask.kind === "changed" ? ("changed" as const) : ("forget" as const),
+        was: ask.kind === "sensitive" ? "" : shownValue(ask.was),
+        ...(ask.kind === "changed" ? { now: shownValue(ask.now) } : {}),
+      })),
+    };
   }
 
   const open = state.fields.filter(isOpen);
@@ -117,18 +160,23 @@ export function nextMove(state: FormState, plan: Plan): Move {
     factsOf(spec, specs),
   );
   const next = state.actions.find((a) => a.kind === "next");
+  // Personal answers (health, documents) are kept only if they say so — asked once, on the way out.
+  const personal = state.asks.filter((a) => a.ask.kind === "sensitive");
+  const keep: { keep?: KeepFacts } = personal.length
+    ? { keep: { fields: personal.map((a) => a.spec.id), questions: personal.map((a) => fieldName(a.spec)) } }
+    : {};
   if (optional.length > 0) {
     if (!plan.optionalOffered) return { kind: "offer_optional", fields: optional };
-    if (next) return { kind: "optional", fields: optional, next: next.label };
+    if (next) return { kind: "optional", fields: optional, next: next.label, ...keep };
     return state.submitLabel
-      ? { kind: "optional", fields: optional, submit: state.submitLabel }
-      : { kind: "optional", fields: optional };
+      ? { kind: "optional", fields: optional, submit: state.submitLabel, ...keep }
+      : { kind: "optional", fields: optional, ...keep };
   }
-  if (next) return { kind: "next_page", label: next.label };
+  if (next) return { kind: "next_page", label: next.label, ...keep };
 
   return state.submitLabel
-    ? { kind: "handover", theirs: state.theirs, submit: state.submitLabel }
-    : { kind: "handover", theirs: state.theirs };
+    ? { kind: "handover", theirs: state.theirs, submit: state.submitLabel, ...keep }
+    : { kind: "handover", theirs: state.theirs, ...keep };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════════════
@@ -172,6 +220,12 @@ function askFor(fields: FieldFacts[]): string {
   return now.length > 1 ? `these together, in one question: ${now.map(describe).join("; ")}` : describe(now[0]!);
 }
 
+/** Before moving on: once, whether to keep the personal answers they gave for next time. */
+function keepFirst(keep: KeepFacts | undefined): string {
+  if (!keep) return "";
+  return `First, once: ask whether to remember their answers to ${keep.questions.join(", ")} for next time — they stay on this device — and call save_for_next_time for ${keep.fields.join(", ")} with agreed true or false. Then: `;
+}
+
 /** The instruction for the next move. What to do, never the words to say. */
 export function doNext(move: Move): string {
   switch (move.kind) {
@@ -179,6 +233,20 @@ export function doNext(move: Move): string {
       return move.reason === "hedged"
         ? `They weren't sure for "${move.field.question}" (they said: "${move.heard}"). Ask which it is before anything goes in.`
         : `"${move.field.question}" is waiting for their yes: they said "${move.heard}", and the closest the form offers is "${move.suggestion}". Ask if that's right, then call confirm_answer for ${move.field.field} with agreed true or false — you judge their reply, in whatever words. If not, offer the other choices.`;
+    case "confirm_recalled": {
+      const list = move.fields.map((f) => `${f.field.question}: "${f.suggestion}"`).join("; ");
+      return `From their last form, ready to go in on their yes: ${list}. Say them briefly and ask if they are still right. For each, call confirm_answer with agreed true if they accept it, in any words, or false if not; if they give a new answer, fill it with fill_fields instead.`;
+    }
+    case "update_profile": {
+      const each = move.asks
+        .map((a) =>
+          a.kind === "changed"
+            ? `"${a.question}" was "${a.was}" last time and is "${a.now}" now — keep the new one for next time?`
+            : `they cleared "${a.question}", which came from last time — forget it for next time too?`,
+        )
+        .join(" ");
+      return `Before the next question, one thing about next time: ${each} Ask in a few words, then call save_for_next_time for ${move.asks.map((a) => a.field).join(", ")} with agreed true or false — you judge their reply.`;
+    }
     case "resolve":
       return `The form won't accept "${move.value}" for "${move.field.question}" — it says: "${move.problem}". Tell them in a few words and ask for it again.`;
     case "ask": {
@@ -197,16 +265,16 @@ export function doNext(move: Move): string {
     case "offer_optional":
       return `Every required field is in. Say so, and ask if they want to do the ${move.fields.length} optional ones or hear what they are: ${move.fields.map((f) => f.question).join("; ")}.`;
     case "optional":
-      return move.next
+      return keepFirst(move.keep) + (move.next
         ? `If they wanted the optional ones, ask for ${askFor(move.fields)}. If they didn't, ask if they're ready for the next page, and press "${move.next}" with press_form_button only on their yes.`
-        : `If they wanted the optional ones, ask for ${askFor(move.fields)}. If they didn't, hand over: everything they told you is in, and they should ${move.submit ? `look it over and press "${move.submit}" themselves` : "look it over and send it themselves"}.`;
+        : `If they wanted the optional ones, ask for ${askFor(move.fields)}. If they didn't, hand over: everything they told you is in, and they should ${move.submit ? `look it over and press "${move.submit}" themselves` : "look it over and send it themselves"}.`);
     case "next_page":
-      return `Everything needed on this page is in. Ask if they're ready for the next page, and press "${move.label}" with press_form_button only on their yes.`;
+      return keepFirst(move.keep) + `Everything needed on this page is in. Ask if they're ready for the next page, and press "${move.label}" with press_form_button only on their yes.`;
     case "handover": {
       const send = move.submit ? `look it over and press "${move.submit}" themselves` : "look it over and send it themselves";
-      return move.theirs.length > 0
+      return keepFirst(move.keep) + (move.theirs.length > 0
         ? `Nothing left for you. Say everything they told you is in, that ${move.theirs.join(" and ")} is theirs to do by hand, and that they should ${send}.`
-        : `Nothing left for you. Say everything they told you is in, and that they should ${send}.`;
+        : `Nothing left for you. Say everything they told you is in, and that they should ${send}.`);
     }
   }
 }
@@ -256,7 +324,11 @@ export function brief(state: FormState, move: Move): string {
 
   const waiting = state.fields.filter((f) => f.pending);
   for (const f of waiting) {
-    lines.push(`Waiting for their yes: ${factsOf(f.spec, specs).question} → "${f.pending!.suggestion}" (they said "${f.pending!.heard}")`);
+    lines.push(
+      f.pending!.reason === "from_last_time"
+        ? `Waiting for their yes: ${factsOf(f.spec, specs).question} → "${f.pending!.suggestion}" (from their last form)`
+        : `Waiting for their yes: ${factsOf(f.spec, specs).question} → "${f.pending!.suggestion}" (they said "${f.pending!.heard}")`,
+    );
   }
 
   const problems = state.fields.filter((f) => f.error && f.value !== null);
@@ -290,6 +362,12 @@ export function resumeLine(state: FormState, move: Move): string {
       return move.reason === "hedged"
         ? `${where}. For ${move.field.question}, which was it?`
         : `${where}. For ${move.field.question}, is ${move.suggestion} right?`;
+    case "confirm_recalled":
+      return `${where}. From last time I have ${move.fields.map((f) => f.field.question).join(", ")} — still right?`;
+    case "update_profile": {
+      const [first] = move.asks;
+      return `${where}. Quick one for next time: ${first!.kind === "changed" ? `keep the new ${first!.question}?` : `forget ${first!.question} for next time too?`}`;
+    }
     case "resolve":
       return `${where}. The form won't take ${move.value} for ${move.field.question} — can you say it again?`;
     case "ask": {

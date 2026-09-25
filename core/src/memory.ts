@@ -1,36 +1,22 @@
 /**
- * Answers you have already given, offered to the next form that asks.
+ * The first memory: 22 answers under regex keys. What is left of it has two jobs.
  *
- * You tell Longtake about yourself once. The second form arrives filled in. That is the whole
- * feature, and it is the reason somebody would install this rather than admire it.
+ * 1. `canonicalKey` is the OFFLINE reading of what a field means. The model names meanings now
+ *    (`understand.ts`); when it cannot be reached, `fallbackMeanings` reads what these keys can,
+ *    at low confidence, so nothing is ever put in unasked on the strength of a regex. The opening
+ *    line and the asking order still use it to name the easy questions.
+ * 2. `Memory` is the shape the first memory saved, so `migrateV1` (profile.ts) can move it over.
  *
- * ## Why it does not break the rule
+ * Everything a person is remembered by now lives in `profile.ts`.
  *
- * Rule 2 says never fill a field the person did not speak to. Memory does not break it: every
- * remembered answer carries **the words they originally said**, and that evidence travels with
- * the value onto the new form. A recalled answer is not a guess, it is a quote from an earlier
- * conversation. Nothing is ever invented, only re-offered.
+ * ## The dangerous part is the matching
  *
- * ## The dangerous part is the matching, not the storing
- *
- * Field ids are meaningless across sites — `first_name` here, `question_69292246` there — so
- * answers are keyed by what they *mean*. Which means a sloppy match writes your legal name into
- * "Preferred name", your current employer into "Previous employer", or the university you
- * attended into "Where did your parents study".
- *
- * So every key carries **exclusions**, and an ambiguous label matches nothing. Filling the next
- * form with almost-right answers is worse than leaving it empty, because a person skimming a
- * pre-filled form trusts it.
- *
- * ## Where it lives
- *
- * Nowhere but the person's own browser. This file is pure and holds no storage of its own; the
- * web app keeps it in `localStorage` and the extension in `chrome.storage`. It is never sent
- * anywhere, and there is no account. That is not a feature we are being modest about — it is the
- * only version of this that anybody should accept.
+ * Field ids are meaningless across sites, so a key is a guess at what a label MEANS — and a sloppy
+ * guess writes your legal name into "Preferred name". So every key carries exclusions, and an
+ * ambiguous label matches nothing.
  */
 
-import type { FieldSpec, SpokenValue } from "./types";
+import type { FieldSpec } from "./types";
 
 export type RememberedAnswer = {
   /** What this answer *is*, independent of any one form's naming. */
@@ -172,116 +158,4 @@ export function canonicalKey(spec: FieldSpec): string | null {
 
   // Two keys claiming the same label means we do not actually know which it is.
   return hits.length === 1 ? hits[0]!.key : null;
-}
-
-/**
- * Add what was just filled in to what we already knew.
- *
- * Only answers with evidence are kept, for the same reason nothing without evidence is ever
- * written: an answer we cannot attribute is an answer we should not repeat on the next form.
- */
-export function remember(
-  memory: Memory,
-  specs: FieldSpec[],
-  values: SpokenValue[],
-  sourceUrl = "",
-  now = Date.now(),
-): Memory {
-  const byId = new Map(specs.map((spec) => [spec.id, spec]));
-  const next: Memory = { ...memory };
-
-  for (const spoken of values) {
-    const spec = byId.get(spoken.fieldId);
-    if (!spec) continue;
-    if (!spoken.evidence || spoken.evidence.trim() === "") continue;
-    if (spec.suspectedHoneypot) continue;
-
-    const key = canonicalKey(spec);
-    if (!key) continue;
-
-    next[key] = {
-      key,
-      value: spoken.value,
-      evidence: spoken.evidence,
-      askedAs: spec.label || spec.id,
-      savedAt: now,
-      sourceUrl,
-    };
-  }
-
-  return next;
-}
-
-/** One field on a new form, matched to something already known. */
-export type Recalled = {
-  fieldId: string;
-  key: string;
-  value: string | string[] | boolean;
-  /** The words they used the first time. This is what makes it a quote and not a guess. */
-  evidence: string;
-  /** How the earlier form worded it, so the person can see why this was offered. */
-  previouslyAskedAs: string;
-};
-
-/**
- * What can be offered to the form now on screen.
- *
- * Returns matches only — it writes nothing. The caller decides whether to fill them in or show
- * them first, and `writer.ts` still applies every one of its own rules afterwards, including
- * refusing a dropdown value that does not match one of that form's real options.
- */
-export function recall(memory: Memory, specs: FieldSpec[]): Recalled[] {
-  const found: Recalled[] = [];
-
-  for (const spec of specs) {
-    if (spec.suspectedHoneypot) continue;
-    if (spec.kind === "file") continue;
-
-    const key = canonicalKey(spec);
-    if (!key) continue;
-
-    const known = memory[key];
-    if (!known) continue;
-
-    found.push({
-      fieldId: spec.id,
-      key,
-      value: known.value,
-      evidence: known.evidence,
-      previouslyAskedAs: known.askedAs,
-    });
-  }
-
-  return found;
-}
-
-/**
- * Turn recalled answers into something `writer.ts` will accept.
- *
- * The evidence carried across is the original quote, unchanged. A person clicking into the field
- * later hears the recording that produced it, on whichever form they are now looking at.
- */
-export function asSpokenValues(recalled: Recalled[]): SpokenValue[] {
-  return recalled.map((item) => ({
-    fieldId: item.fieldId,
-    value: item.value,
-    evidence: item.evidence,
-  }));
-}
-
-/** Everything known, newest first — for showing a person exactly what is being kept. */
-export function listMemory(memory: Memory): RememberedAnswer[] {
-  return Object.values(memory).sort((a, b) => b.savedAt - a.savedAt);
-}
-
-/** Forget one answer. */
-export function forget(memory: Memory, key: string): Memory {
-  const next = { ...memory };
-  delete next[key];
-  return next;
-}
-
-/** Forget everything. Always one click away, and it really is everything. */
-export function forgetAll(): Memory {
-  return {};
 }

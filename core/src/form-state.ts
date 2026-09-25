@@ -16,7 +16,7 @@
 
 import type { ActionsRead, FormAction } from "./actions";
 import { readError } from "./errors";
-import type { Ledger, Pending } from "./ledger";
+import type { Ledger, Pending, ProfileAsk } from "./ledger";
 import type { FieldSpec, FormRead } from "./types";
 import { readValue, type FieldValue } from "./writer";
 
@@ -54,6 +54,8 @@ export type FormState = {
   actions: FormAction[];
   /** The form's own submit button, by its words. Theirs to press, always. */
   submitLabel?: string;
+  /** What to settle about next time: a changed answer, a cleared one, a personal one. */
+  asks: { spec: FieldSpec; ask: ProfileAsk }[];
   progress: {
     filled: number;
     total: number;
@@ -110,10 +112,17 @@ export function snapshot(read: FormRead, ledger: Ledger, title = "", buttons?: A
     .map((skipped) => skipped.label)
     .filter(Boolean);
 
+  const bySpec = new Map(read.specs.map((spec) => [spec.id, spec]));
+  const asks = ledger.asks().flatMap(([id, ask]) => {
+    const spec = bySpec.get(id) ?? ledger.entry(id)?.spec;
+    return spec ? [{ spec, ask }] : [];
+  });
+
   return {
     title,
     fields,
     theirs,
+    asks,
     actions: buttons?.actions ?? [],
     ...(buttons?.submitLabel ? { submitLabel: buttons.submitLabel } : {}),
     progress: {

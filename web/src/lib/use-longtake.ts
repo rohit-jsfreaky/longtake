@@ -19,15 +19,16 @@ import {
   type DictationConfig,
   type DictationResult,
   type FormState,
+  type FormSnapshot,
   type Hesitation,
+  type KnownFact,
   type LogEntry,
-  type RememberedAnswer,
   type ShapedAnswer,
   type StartProblem,
   type WriteOutcome,
 } from "@longtake/core";
 
-import { loadMemory, saveMemory } from "@/lib/memory-store";
+import { siteProfileStore } from "@/lib/profile-store";
 import { siteToken } from "@/lib/voice-session";
 
 export type LogLine = LogEntry;
@@ -73,6 +74,21 @@ async function dictate(config: DictationConfig, audio: string): Promise<Dictatio
   return payload as DictationResult;
 }
 
+/**
+ * What each field means, from our own route — the model is reached from the server, with the key
+ * that never leaves it. A failure here only means nothing from last time goes in unasked.
+ */
+async function understand(snapshot: FormSnapshot): Promise<unknown> {
+  const response = await fetch("/api/understand", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(snapshot),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload.error ?? `understanding failed (${response.status})`);
+  return payload;
+}
+
 export type UseLongtake = {
   status: Status;
   live: boolean;
@@ -101,13 +117,14 @@ export type UseLongtake = {
   partial: string;
   shaped: Record<string, ShapedAnswer>;
   hesitations: Record<string, Hesitation>;
-  known: RememberedAnswer[];
+  /** Everything known about the person, newest first. */
+  known: KnownFact[];
   /** Answers that came from an earlier form. */
   fromMemory: { fieldId: string; question: string }[];
   log: LogLine[];
   start: () => Promise<void>;
   stop: () => Promise<void>;
-  forgetOne: (key: string) => void;
+  forgetOne: (id: string) => void;
   forgetEverything: () => void;
 };
 
@@ -136,9 +153,9 @@ export function useLongtake({
     conductorRef.current ??= new Conductor({
       root: () => root?.() ?? document,
       ignore,
-      memory: { load: loadMemory, save: saveMemory },
+      profile: siteProfileStore(),
       logFrames: true,
-      services: { getToken: siteToken, workletUrl: "/pcm-processor.js", voice: chooseVoice(), dictate },
+      services: { getToken: siteToken, workletUrl: "/pcm-processor.js", voice: chooseVoice(), dictate, understand },
     });
     return conductorRef.current;
   }, [ignore, root]);
@@ -179,8 +196,8 @@ export function useLongtake({
 
   const start = useCallback(() => conductor().start(), [conductor]);
   const stop = useCallback(() => conductor().stop(), [conductor]);
-  const forgetOne = useCallback((key: string) => conductor().forgetOne(key), [conductor]);
-  const forgetEverything = useCallback(() => conductor().forgetEverything(), [conductor]);
+  const forgetOne = useCallback((id: string) => void conductor().forgetOne(id), [conductor]);
+  const forgetEverything = useCallback(() => void conductor().forgetEverything(), [conductor]);
 
   // ── What the page draws — all of it derived from the one view ─────────────────────────
 
@@ -236,6 +253,7 @@ const EMPTY_FORM: FormState = {
   title: "",
   fields: [],
   theirs: [],
+  asks: [],
   actions: [],
   progress: { filled: 0, total: 0, requiredLeft: 0, optionalLeft: 0 },
 };

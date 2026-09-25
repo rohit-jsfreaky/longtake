@@ -204,6 +204,19 @@ export function conceptList(): string {
 }
 
 /**
+ * Concepts close enough that one may be OFFERED for the other — never put in unasked. A form that
+ * asks "where are you based" gets the city they gave another form, for a yes.
+ */
+export const RELATED_CONCEPTS: Record<string, string[]> = {
+  "address.current_location": ["address.city"],
+  "address.city": ["address.current_location"],
+  "address.country_of_residence": ["address.country"],
+  "address.country": ["address.country_of_residence"],
+  "links.website": ["links.portfolio"],
+  "links.portfolio": ["links.website"],
+};
+
+/**
  * The old memory keys (`memory.ts`), by concept — for moving saved answers over, and for the
  * offline reading when the model cannot be reached.
  */

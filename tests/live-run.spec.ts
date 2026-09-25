@@ -15,7 +15,7 @@
 
 import { expect, test, type Page } from "@playwright/test";
 
-import { load } from "./helpers";
+import { load, saidBefore } from "./helpers";
 
 /** Greenhouse's phone Country picker, as it behaves live: search by typing, show only the code. */
 const PHONE_COUNTRY = `
@@ -48,20 +48,20 @@ const PHONE_COUNTRY = `
 
 type S = InstanceType<typeof window.__longtake.LongtakeSession>;
 
-async function session(page: Page, body: string, memory: Record<string, unknown> = {}) {
+async function session(page: Page, body: string, before: unknown[] = []) {
   await load(page, body);
-  await page.evaluate(async (stored) => {
+  await page.evaluate(async (changes) => {
     const L = window.__longtake;
-    let mem = stored as never;
     const s = new L.LongtakeSession({
       root: () => document,
       ignore: "[data-longtake-ignore]",
-      memory: { load: () => mem, save: (m) => { mem = m as never; } },
+      profile: L.memoryProfileStore(L.applyChanges(L.emptyProfile(), changes as never).profile),
+      understand: L.fakeUnderstanding(),
     });
     await s.prefill();
     await s.open();
     (window as unknown as { __s: S }).__s = s;
-  }, memory);
+  }, before);
 }
 
 test.describe("1 · India into Greenhouse's phone Country picker", () => {
@@ -165,12 +165,15 @@ test.describe("2 · 'skip this, do the rest first'", () => {
 
 test.describe("3 · the opening line names what memory put in", () => {
   test("name and email in, optional Preferred First Name empty: both are named", async ({ page }) => {
-    const memory = {
-      first_name: { key: "first_name", value: "Rohit", evidence: "I'm Rohit Kashyap", askedAs: "First Name", savedAt: 1, sourceUrl: "" },
-      last_name: { key: "last_name", value: "Kashyap", evidence: "I'm Rohit Kashyap", askedAs: "Last Name", savedAt: 1, sourceUrl: "" },
-      email: { key: "email", value: "rohit@example.com", evidence: "rohit@example.com", askedAs: "Email", savedAt: 1, sourceUrl: "" },
-    };
-    await session(page, FORM, memory);
+    await session(
+      page,
+      FORM,
+      saidBefore({
+        "identity.first_name": ["Rohit", "I'm Rohit Kashyap"],
+        "identity.last_name": ["Kashyap", "I'm Rohit Kashyap"],
+        "contact.email": ["rohit@example.com", "rohit@example.com"],
+      }),
+    );
     const r = await page.evaluate(() => {
       const s = (window as unknown as { __s: S }).__s;
       return { greeting: s.greeting(), filled: s.state().progress.filled };

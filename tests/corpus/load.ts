@@ -57,6 +57,7 @@ declare global {
     __corpusFind?: (locator: Locator) => Located;
     __corpusConductor?: InstanceType<Window["__longtake"]["Conductor"]>;
     __corpusFake?: InstanceType<Window["__longtake"]["FakeVoice"]>;
+    __corpusProfile?: ReturnType<Window["__longtake"]["memoryProfileStore"]>;
   }
 }
 
@@ -242,7 +243,7 @@ export function saveResult(scorer: string, id: string, result: object): void {
 export async function startSession(page: Page): Promise<void> {
   await page.evaluate(async () => {
     const core = window.__longtake;
-    const session = new core.LongtakeSession({ root: () => document, ignore: "", memory: { load: () => ({}), save: () => {} } });
+    const session = new core.LongtakeSession({ root: () => document, ignore: "" });
     await session.open();
     window.__corpusSession = session;
     core.last = session.read!;
@@ -252,25 +253,51 @@ export async function startSession(page: Page): Promise<void> {
 /**
  * The whole product on the page — the conductor the site and the extension both run — with a
  * FakeVoice where the microphone and the agent would be. `core.last` is its read, for the join.
+ *
+ * `profile`: what the person is already known by (a returning person). `understood`: the model's
+ * answer for what this form's fields mean, already keyed by today's spec ids (`recordedMeanings`);
+ * without it, the offline reading.
  */
-export async function startConductor(page: Page): Promise<void> {
-  await page.evaluate(async () => {
+export async function startConductor(page: Page, options: { profile?: unknown; understood?: unknown } = {}): Promise<void> {
+  await page.evaluate(async ({ profile, understood }) => {
     const core = window.__longtake;
     const fake = new core.FakeVoice();
-    let memory = {} as never;
+    const store = core.memoryProfileStore((profile as never) ?? core.emptyProfile());
     const conductor = new core.Conductor({
       root: () => document,
       ignore: "[data-longtake-ignore]",
-      memory: { load: () => memory, save: (next) => { memory = next as never; } },
       logFrames: false,
-      services: { getToken: async () => "token", workletUrl: "", startVoice: fake.start },
+      profile: store,
+      services: {
+        getToken: async () => "token",
+        workletUrl: "",
+        startVoice: fake.start,
+        ...(understood ? { understand: async () => understood } : {}),
+      },
     });
     await conductor.start();
     await new Promise((ready) => setTimeout(ready, 20)); // session.ready arrives on the next tick
     window.__corpusConductor = conductor;
     window.__corpusFake = fake;
+    window.__corpusProfile = store;
     core.last = conductor.session.read!;
-  });
+  }, options);
+}
+
+/**
+ * The model's recorded answer for this form (`understand.cassette.json`, kept by truth key), keyed
+ * by the spec ids a read of the page gives today — ready to hand to `startConductor`. Null when the
+ * form has no recording.
+ */
+export async function recordedMeanings(page: Page, form: CorpusForm, locators: Locator[][]): Promise<{ fields: Record<string, unknown>[] } | null> {
+  const path = join(form.dir, "understand.cassette.json");
+  if (!existsSync(path)) return null;
+  const cassette = JSON.parse(readFileSync(path, "utf8")) as { fields: (Record<string, unknown> & { key: string })[] };
+  await readLikeTheProduct(page);
+  const joined = await joinTruth(page, locators);
+  const fields = form.truth!.pages[0]!.fields;
+  const idOf = new Map(fields.map((field, i) => [field.key, joined.best[i]]));
+  return { fields: cassette.fields.flatMap(({ key, ...rest }) => (idOf.get(key) ? [{ ...rest, id: idOf.get(key)! }] : [])) };
 }
 
 /**

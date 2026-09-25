@@ -340,6 +340,40 @@ export function buildLaterTool(specs: FieldSpec[]): VoiceAgentTool {
   };
 }
 
+export const SAVE_TOOL_NAME = "save_for_next_time";
+
+/**
+ * Their answer to a question about NEXT time, not this form: keep the phone number they just gave
+ * in place of the saved one? Forget an answer they cleared? Remember a personal one? The agent
+ * judges their reply, in whatever words; code checks the quote and does the rest. Nothing on the
+ * page changes.
+ */
+export function buildSaveTool(specs: FieldSpec[]): VoiceAgentTool {
+  const ids = specs.filter((spec) => !spec.suspectedHoneypot && spec.kind !== "file").map((spec) => spec.id);
+  return {
+    type: "function",
+    name: SAVE_TOOL_NAME,
+    description:
+      "Only after DO NEXT had you ask about next time (keep a new answer, forget a cleared one, remember a personal one): report their reply. agreed: true if they said yes in any words or language, false if not. Changes nothing on this form.",
+    parameters: {
+      type: "object",
+      properties: {
+        fields: {
+          type: "array",
+          description: "The fields you asked about.",
+          items: ids.length > 0 ? { type: "string", enum: ids } : { type: "string" },
+        },
+        agreed: { type: "boolean", description: "Did they say yes?" },
+        evidence: { type: "string", description: "Their reply, quoted exactly." },
+      },
+      required: ["fields", "agreed", "evidence"],
+      additionalProperties: false,
+    },
+    execution_mode: EXECUTION_MODE,
+    timeout_seconds: TIMEOUT_SECONDS,
+  };
+}
+
 export const PRESS_TOOL_NAME = "press_form_button";
 
 /**

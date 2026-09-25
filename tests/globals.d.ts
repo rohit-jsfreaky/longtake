@@ -19,12 +19,16 @@ import type {
   readHesitation,
   describeMarks,
   canonicalKey,
-  remember,
-  recall,
-  asSpokenValues,
-  listMemory,
-  forget,
-  forgetAll,
+  applyChanges,
+  recallFor,
+  factKeys,
+  emptyProfile,
+  memoryProfileStore,
+  migrateV1,
+  parseProfile,
+  exportProfile,
+  knownFacts,
+  groupFacts,
   ToolResultQueue,
   openingLine,
   howToAsk,
@@ -67,6 +71,7 @@ import type {
 } from "@longtake/core";
 import type { FakeVoice } from "../tools/replay/fake-voice";
 import type { runScript } from "../tools/replay/run-script";
+import type { fakeUnderstanding } from "../tools/replay/fake-understand";
 
 declare global {
   interface Window {
@@ -91,12 +96,17 @@ declare global {
       readHesitation: typeof readHesitation;
       describeMarks: typeof describeMarks;
       canonicalKey: typeof canonicalKey;
-      remember: typeof remember;
-      recall: typeof recall;
-      asSpokenValues: typeof asSpokenValues;
-      listMemory: typeof listMemory;
-      forget: typeof forget;
-      forgetAll: typeof forgetAll;
+      applyChanges: typeof applyChanges;
+      recallFor: typeof recallFor;
+      factKeys: typeof factKeys;
+      emptyProfile: typeof emptyProfile;
+      memoryProfileStore: typeof memoryProfileStore;
+      migrateV1: typeof migrateV1;
+      parseProfile: typeof parseProfile;
+      exportProfile: typeof exportProfile;
+      knownFacts: typeof knownFacts;
+      groupFacts: typeof groupFacts;
+      fakeUnderstanding: typeof fakeUnderstanding;
       ToolResultQueue: typeof ToolResultQueue;
       openingLine: typeof openingLine;
       howToAsk: typeof howToAsk;

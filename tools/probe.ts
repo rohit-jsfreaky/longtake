@@ -25,12 +25,16 @@ import {
   readHesitation,
   describeMarks,
   canonicalKey,
-  remember,
-  recall,
-  asSpokenValues,
-  listMemory,
-  forget,
-  forgetAll,
+  applyChanges,
+  recallFor,
+  factKeys,
+  emptyProfile,
+  memoryProfileStore,
+  migrateV1,
+  parseProfile,
+  exportProfile,
+  knownFacts,
+  groupFacts,
   ToolResultQueue,
   openingLine,
   howToAsk,
@@ -74,6 +78,7 @@ import {
 } from "@longtake/core";
 import { FakeVoice } from "./replay/fake-voice";
 import { runScript } from "./replay/run-script";
+import { fakeUnderstanding } from "./replay/fake-understand";
 
 declare global {
   interface Window {
@@ -98,12 +103,17 @@ declare global {
       readHesitation: typeof readHesitation;
       describeMarks: typeof describeMarks;
       canonicalKey: typeof canonicalKey;
-      remember: typeof remember;
-      recall: typeof recall;
-      asSpokenValues: typeof asSpokenValues;
-      listMemory: typeof listMemory;
-      forget: typeof forget;
-      forgetAll: typeof forgetAll;
+      applyChanges: typeof applyChanges;
+      recallFor: typeof recallFor;
+      factKeys: typeof factKeys;
+      emptyProfile: typeof emptyProfile;
+      memoryProfileStore: typeof memoryProfileStore;
+      migrateV1: typeof migrateV1;
+      parseProfile: typeof parseProfile;
+      exportProfile: typeof exportProfile;
+      knownFacts: typeof knownFacts;
+      groupFacts: typeof groupFacts;
+      fakeUnderstanding: typeof fakeUnderstanding;
       ToolResultQueue: typeof ToolResultQueue;
       openingLine: typeof openingLine;
       howToAsk: typeof howToAsk;
@@ -176,12 +186,16 @@ window.__longtake = {
   readHesitation,
   describeMarks,
   canonicalKey,
-  remember,
-  recall,
-  asSpokenValues,
-  listMemory,
-  forget,
-  forgetAll,
+  applyChanges,
+  recallFor,
+  factKeys,
+  emptyProfile,
+  memoryProfileStore,
+  migrateV1,
+  parseProfile,
+  exportProfile,
+  knownFacts,
+  groupFacts,
   ToolResultQueue,
   openingLine,
   howToAsk,
@@ -223,6 +237,7 @@ window.__longtake = {
   Conductor,
   FakeVoice,
   runScript,
+  fakeUnderstanding,
   inspect: () => {
     const read = readForm();
     window.__longtake.last = read;

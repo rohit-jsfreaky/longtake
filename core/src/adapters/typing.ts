@@ -127,6 +127,12 @@ export function asFieldShape(value: string, spec: FieldSpec): string {
 }
 
 /** Everything else is text of some shape: assigned the way the framework keeps it, left, read back. */
+/** The same letters and digits in the same order, whatever the spacing, punctuation or case. */
+function sameCharacters(a: string, b: string): boolean {
+  const flat = (v: string) => v.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+  return flat(a) !== "" && flat(a) === flat(b);
+}
+
 export const text: WidgetAdapter = {
   name: "text",
   matches: () => true,
@@ -139,8 +145,10 @@ export const text: WidgetAdapter = {
     leave(el);
 
     const found = readBack(el);
-    return found === value
-      ? { fieldId: spec.id, status: "written", wrote: value }
+    // A page that formats what it was given — "98765 43210" kept as "9876543210", a postcode
+    // upper-cased — took the answer. Only a different answer, or none, is the page refusing it.
+    return found === value || sameCharacters(found, value)
+      ? { fieldId: spec.id, status: "written", wrote: found }
       : { fieldId: spec.id, status: "rejected-by-page", wrote: value, found };
   },
   read: readTyped,
