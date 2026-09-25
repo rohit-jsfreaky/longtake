@@ -161,3 +161,24 @@ test("the form's title is the heading the page's own title names, not the neares
   });
   expect(title).toBe("Software Engineer, Backend");
 });
+
+// Google Forms: every question is a `role="heading"` its input is labelled by. On the landing
+// page's copy (whose <title> is ours) the agent opened with "Right, this is First Name".
+test("a question's own heading is never the form's title", async ({ page }) => {
+  await load(
+    page,
+    `<div role="heading" aria-level="1">Volunteer Registration &amp; Interest Form</div>
+     <div role="list">
+       <div role="listitem"><div role="heading" aria-level="3" id="q1">First Name</div>
+         <input aria-labelledby="q1"></div>
+       <div role="listitem"><div role="heading" aria-level="3" id="q2">Last Name</div>
+         <input aria-labelledby="q2"></div>
+     </div>`,
+    "<title>Longtake — the whole form, in one take</title>",
+  );
+  const title = await page.evaluate(() => {
+    const L = window.__longtake;
+    return L.titleOf(L.readForm());
+  });
+  expect(title).toBe("Volunteer Registration & Interest Form");
+});

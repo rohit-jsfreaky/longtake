@@ -24,7 +24,8 @@
     "corpus": "npm run build:probe && playwright test --project corpus",
     "corpus:review": "npm run corpus:build --silent && node .probe/corpus.mjs review",
     "corpus:drift": "npm run corpus:build --silent && node .probe/corpus.mjs drift",
-    "probe:reply": "esbuild tools/reply-probe.ts --bundle --format=esm --platform=node --outfile=.probe/reply-probe.mjs && node .probe/reply-probe.mjs"
+    "probe:reply": "esbuild tools/reply-probe.ts --bundle --format=esm --platform=node --outfile=.probe/reply-probe.mjs && node .probe/reply-probe.mjs",
+    "probe:barge": "esbuild tools/barge-probe.ts --bundle --format=esm --platform=node --outfile=.probe/barge-probe.mjs && node .probe/barge-probe.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.63.0",

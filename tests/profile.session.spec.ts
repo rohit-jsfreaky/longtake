@@ -173,6 +173,18 @@ test.describe("next time is theirs to decide", () => {
     expect(v.asks).toEqual([]);
   });
 
+  // Live: hours per week, read (unsure) as years of experience — "was 3 years before, keep 40?".
+  test("a meaning the model is not sure of never asks 'was X before?', and changes nothing", async ({ page }) => {
+    await start(page, KNOWN, { current_city: { confidence: "medium" } });
+    await open(page);
+    await tool(page, "clear", { fields: ["current_city"], evidence: "city hata do" }, "city hata do");
+    await tool(page, "fill", { current_city: { value: "Bengaluru", evidence: "ab Bengaluru mein hoon" } }, "city hata do. ab Bengaluru mein hoon");
+    const v = await view(page);
+    expect(v.fields.current_city).toMatchObject({ value: "Bengaluru", source: "spoken" });
+    expect(v.asks.filter(([, kind]) => kind === "changed")).toEqual([]);
+    expect((await facts(page))["address.city"]!.value).toBe("Kolkata");
+  });
+
   test("a no leaves what was saved as it was", async ({ page }) => {
     await start(page, saidBefore({ "address.city": ["Kolkata", "Kolkata mein"] }));
     await open(page);

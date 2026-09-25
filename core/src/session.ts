@@ -628,6 +628,12 @@ export class LongtakeSession {
       for (const question of applied.questions) {
         const field = question.from.field;
         if (!field || how === "typed") continue;
+        // "Was X before — keep this for next time?" says two questions mean the same thing, so only
+        // on a meaning the model is sure of. Live, it read "How many hours per week can you
+        // volunteer?" as years of experience, not sure of it, and the agent asked: "hours you can
+        // volunteer was 3 years before, but I've put 40 — keep that 40?". Unsure, nothing changes
+        // either way: what was saved stays, and nobody is asked about it.
+        if (this.meanings[field]?.confidence !== "high") continue;
         asked.add(field);
         this.ledger.ask(field, { kind: "changed", factId: question.id, key: question.key, gist: question.gist, was: question.was, now: question.now, from: question.from });
       }

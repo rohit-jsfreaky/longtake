@@ -11,6 +11,7 @@
  * worklet are passed in, not fetched from our own paths.
  */
 
+import { levelOf, LocalSpeech } from "./barge";
 import { ReplyRequestQueue, ToolResultQueue } from "./dispatch";
 import { nextReconnect, RESUME_REFUSED, type Drop } from "./reconnect";
 import type { TimelinePoint } from "./clip";
@@ -169,6 +170,11 @@ export type VoiceSessionOptions = {
   onToolCallStarted?: (callId: string, name: string) => void;
   /** Fired the moment the person starts speaking a turn. */
   onSpeechStart?: () => void;
+  /**
+   * The person started (true) or stopped (false) talking, as heard here from the microphone's level
+   * — before the server says anything (barge.ts). Over the agent, its voice is lowered at once.
+   */
+  onLocalSpeech?: (speaking: boolean) => void;
   onError?: (message: string) => void;
   onClosed?: () => void;
   /** The line dropped; trying again. The microphone stays open and what is said meanwhile is kept. */
@@ -256,6 +262,7 @@ export async function startVoiceSession(options: VoiceSessionOptions): Promise<V
     onReply,
     onToolCallStarted,
     onSpeechStart,
+    onLocalSpeech,
     onError,
     onClosed,
     onReconnecting,
@@ -332,6 +339,13 @@ export async function startVoiceSession(options: VoiceSessionOptions): Promise<V
   // 2 — Playback queue, with the flush that makes barge-in feel instant.
   let nextStartTime = 0;
   const liveSources = new Set<AudioBufferSourceNode>();
+  /** Everything the agent says goes through this, so its voice can be lowered when they speak over it. */
+  const outputGain = audioCtx.createGain();
+  outputGain.connect(audioCtx.destination);
+  /** When the agent last became audible — the echo canceller's settling time is counted from here. */
+  let playingSince = 0;
+  /** When its audio last ran out. A gap shorter than a moment is the network, not a new reply. */
+  let quietSince = -Infinity;
 
   function playReplyAudio(base64: string) {
     const raw = atob(base64);
@@ -345,10 +359,19 @@ export async function startVoiceSession(options: VoiceSessionOptions): Promise<V
 
     const src = audioCtx.createBufferSource();
     src.buffer = buffer;
-    src.connect(audioCtx.destination);
+    src.connect(outputGain);
     const startAt = Math.max(audioCtx.currentTime, nextStartTime);
     src.start(startAt);
-    src.onended = () => liveSources.delete(src);
+    src.onended = () => {
+      liveSources.delete(src);
+      if (liveSources.size === 0) quietSince = performance.now();
+    };
+    const now = performance.now();
+    if (liveSources.size === 0 && now - quietSince > 500) {
+      // A new stretch of the agent's voice — starting at full voice unless they are still talking.
+      playingSince = now;
+      if (!localSpeech.isSpeaking) fullVoice();
+    }
     liveSources.add(src);
     nextStartTime = startAt + buffer.duration;
   }
@@ -365,6 +388,61 @@ export async function startVoiceSession(options: VoiceSessionOptions): Promise<V
     }
     liveSources.clear();
     nextStartTime = audioCtx.currentTime;
+    fullVoice();
+  }
+
+  // 2b — Hearing them over the agent. The server's barge-in is semantic: it waits to understand
+  // what they said before it stops the agent — 1.5 s for "wait, stop", over 3 s for "uh, my gender
+  // is…" (RESEARCH.md §9i) — and until then it talks on at full voice, as if it had not heard. So
+  // the moment the microphone hears them over it, its voice drops; the server still decides whether
+  // that was an interruption (flushPlayback) or an "mm-hm" (the voice comes back when they stop).
+  const DUCKED = 0.15;
+  const LEVEL_FRAME = TARGET_SAMPLE_RATE / 50; // 20 ms
+  const localSpeech = new LocalSpeech();
+  const levelBlock = new Int16Array(LEVEL_FRAME);
+  let levelFill = 0;
+  let ducked = false;
+
+  function lowerVoice() {
+    if (ducked) return;
+    ducked = true;
+    const t = audioCtx.currentTime;
+    outputGain.gain.cancelScheduledValues(t);
+    outputGain.gain.setTargetAtTime(DUCKED, t, 0.03);
+  }
+
+  function fullVoice(slowly = false) {
+    if (!ducked) return;
+    ducked = false;
+    const t = audioCtx.currentTime;
+    outputGain.gain.cancelScheduledValues(t);
+    if (slowly) outputGain.gain.setTargetAtTime(1, t, 0.15);
+    else outputGain.gain.setValueAtTime(1, t);
+  }
+
+  function listenForThem(incoming: Int16Array) {
+    let at = 0;
+    while (at < incoming.length) {
+      const take = Math.min(LEVEL_FRAME - levelFill, incoming.length - at);
+      levelBlock.set(incoming.subarray(at, at + take), levelFill);
+      levelFill += take;
+      at += take;
+      if (levelFill < LEVEL_FRAME) continue;
+      levelFill = 0;
+      const now = performance.now();
+      const agentFor = liveSources.size > 0 ? now - playingSince : -1;
+      const change = localSpeech.frame(levelOf(levelBlock), now, agentFor);
+      if (change === "start") {
+        const over = liveSources.size > 0;
+        if (over) lowerVoice();
+        onEvent?.("in", { type: "longtake.heard_them", over_the_agent: over });
+        onLocalSpeech?.(true);
+      } else if (change === "end") {
+        fullVoice(true);
+        onEvent?.("in", { type: "longtake.they_stopped" });
+        onLocalSpeech?.(false);
+      }
+    }
   }
 
   // 3 — The socket, which may be replaced: `ws` is whichever connection is current.
@@ -455,6 +533,7 @@ export async function startVoiceSession(options: VoiceSessionOptions): Promise<V
 
   worklet.port.onmessage = (event: MessageEvent<ArrayBuffer>) => {
     const incoming = new Int16Array(event.data);
+    listenForThem(incoming);
 
     if (turnSamples < MAX_TURN_SAMPLES) {
       turnAudio.push(incoming);

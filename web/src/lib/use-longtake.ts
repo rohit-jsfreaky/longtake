@@ -130,6 +130,8 @@ export type UseLongtake = {
   turns: { who: "you" | "agent"; text: string }[];
   /** The running text of the turn in progress. Replace, never append. */
   partial: string;
+  /** They are talking right now, as the microphone hears it — before their words come back. */
+  hearing: boolean;
   shaped: Record<string, ShapedAnswer>;
   hesitations: Record<string, Hesitation>;
   /** Everything known about the person, newest first. */
@@ -247,6 +249,7 @@ export function useLongtake({
     needsYou: view?.missed ?? [],
     turns: view?.turns ?? [],
     partial: view?.partial ?? "",
+    hearing: view?.hearing ?? false,
     shaped: view?.shaped ?? {},
     hesitations: view?.hesitations ?? {},
     known: view?.known ?? [],

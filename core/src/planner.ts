@@ -30,8 +30,8 @@ export type Move =
   | { kind: "update_profile"; asks: ProfileQuestionFacts[] }
   /** Ask for the next required field — or group of fields that is one question to a person. */
   | { kind: "ask"; fields: FieldFacts[] }
-  /** The required part is done. Offer the optional part, once. */
-  | { kind: "offer_optional"; fields: FieldFacts[] }
+  /** The required part is done. Offer the optional part, once — and, if another page follows, that. */
+  | { kind: "offer_optional"; fields: FieldFacts[]; next?: string }
   /** The offer has been made: go through these if they wanted them, move on if not. */
   | { kind: "optional"; fields: FieldFacts[]; next?: string; submit?: string; keep?: KeepFacts }
   /** This page is done and the form has another. Ask, and press Next only on their yes. */
@@ -174,7 +174,7 @@ export function nextMove(state: FormState, plan: Plan): Move {
     ? { keep: { fields: personal.map((a) => a.spec.id), questions: personal.map((a) => fieldName(a.spec)) } }
     : {};
   if (optional.length > 0) {
-    if (!plan.optionalOffered) return { kind: "offer_optional", fields: optional };
+    if (!plan.optionalOffered) return next ? { kind: "offer_optional", fields: optional, next: next.label } : { kind: "offer_optional", fields: optional };
     if (next) return { kind: "optional", fields: optional, next: next.label, ...keep };
     return state.submitLabel
       ? { kind: "optional", fields: optional, submit: state.submitLabel, ...keep }
@@ -285,14 +285,19 @@ export function doNext(move: Move): string {
       }
       return `Ask for ${describe(move.fields[0]!)}.`;
     }
+    // With a page still to come, "or are we done?" is the wrong other half of the question: live, the
+    // agent offered the optional ones that way, heard "we're done", and told them to submit a form
+    // with a whole page left. The other half is the next page, and it is said.
     case "offer_optional":
-      return `Every required field is in. Say so, and ask if they want to do the ${move.fields.length} optional ones or hear what they are: ${move.fields.map((f) => f.question).join("; ")}.`;
+      return move.next
+        ? `Every required field on this page is in. Say so, and ask if they want the ${move.fields.length} optional ones here or to go on to the next page — there is another page after this one. Optional: ${move.fields.map((f) => f.question).join("; ")}. ${NOT_LAST}`
+        : `Every required field is in. Say so, and ask if they want to do the ${move.fields.length} optional ones or hear what they are: ${move.fields.map((f) => f.question).join("; ")}.`;
     case "optional":
       return keepFirst(move.keep) + (move.next
-        ? `If they wanted the optional ones, ask for ${askFor(move.fields)}. If they didn't, ask if they're ready for the next page, and press "${move.next}" with press_form_button only on their yes.`
+        ? `If they wanted the optional ones, ask for ${askFor(move.fields)}. If they didn't — or they say they're done — this page is done: ask if they're ready for the next page, and press "${move.next}" with press_form_button only on their yes. ${NOT_LAST}`
         : `If they wanted the optional ones, ask for ${askFor(move.fields)}. If they didn't, hand over: everything they told you is in, and they should ${move.submit ? `look it over and press "${move.submit}" themselves` : "look it over and send it themselves"}.`);
     case "next_page":
-      return keepFirst(move.keep) + `Everything needed on this page is in. Ask if they're ready for the next page, and press "${move.label}" with press_form_button only on their yes.`;
+      return keepFirst(move.keep) + `Everything needed on this page is in. Ask if they're ready for the next page, and press "${move.label}" with press_form_button only on their yes. ${NOT_LAST}`;
     case "handover": {
       const look = move.review ? lookFirst(move.review) : "look it over";
       const send = move.submit ? `${look} and press "${move.submit}" themselves` : `${look} and send it themselves`;
@@ -309,6 +314,9 @@ export function doNext(move: Move): string {
  * Compact, because it is read on every turn: answered fields as one line each, empty ones with
  * what they accept, and the one thing to do next.
  */
+/** Said wherever a page is not the last: the one sentence that stops "you can submit it now". */
+const NOT_LAST = "It is not the last page: never say the form is finished or tell them to submit.";
+
 export function brief(state: FormState, move: Move): string {
   const { progress } = state;
   const specs = state.fields.map((f) => f.spec);
@@ -368,6 +376,8 @@ export function brief(state: FormState, move: Move): string {
   if (state.actions.length > 0) {
     lines.push(`Buttons you can press when they ask: ${state.actions.map((a) => `"${a.label}"`).join(", ")}`);
   }
+  const onward = state.actions.find((a) => a.kind === "next");
+  if (onward) lines.push(`This is not the last page: "${onward.label}" leads to more questions.`);
   if (state.submitLabel) lines.push(`"${state.submitLabel}" sends the form — only they press it, never you.`);
 
   lines.push("", `DO NEXT: ${doNext(move)}`);
@@ -413,7 +423,9 @@ export function resumeLine(state: FormState, move: Move): string {
       return `${where}. Next up: ${what}.`;
     }
     case "offer_optional":
-      return `${where} — all the required ones. Want to do the ${move.fields.length} optional ones too?`;
+      return move.next
+        ? `${where} — all the required ones on this page. Want the ${move.fields.length} optional ones, or on to the next page?`
+        : `${where} — all the required ones. Want to do the ${move.fields.length} optional ones too?`;
     case "optional":
       return `${where}. Shall we carry on with the optional ones?`;
     case "next_page":

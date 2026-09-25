@@ -1051,10 +1051,23 @@ export function titleOf(read: FormRead, root: Document | Element = document): st
   )[0];
 
   if (firstField) {
+    // A question's own heading is not the form's name. Google Forms makes every question a
+    // `role="heading"` its input is labelled by, so the nearest heading above the first field was
+    // that field's question: on the landing page's copy — whose <title> is ours, not the form's —
+    // the agent opened with "Right, this is First Name".
+    const questions = new Set(read.specs.map((spec) => cleanLabel(spec.label).toLowerCase()).filter(Boolean));
+    const labelling = new Set<Element>();
+    for (const handle of read.handles.values()) {
+      for (const id of (handle.getAttribute("aria-labelledby") ?? "").split(/\s+/).filter(Boolean)) {
+        const by = handle.ownerDocument.getElementById(id);
+        if (by) labelling.add(by);
+      }
+    }
     const above = deepQueryAll(root, "h1,h2,h3,h4,h5,h6,[role='heading']")
       .filter(isVisible)
       .filter((heading) => heading.compareDocumentPosition(firstField) & FOLLOWING)
-      .filter((heading) => cleanLabel(textOf(heading)) !== "");
+      .filter((heading) => cleanLabel(textOf(heading)) !== "")
+      .filter((heading) => !labelling.has(heading) && !questions.has(cleanLabel(textOf(heading)).toLowerCase()));
     // The page's own title names the form ("Job Application for Software Engineer, Backend at
     // Glean"): the heading it contains is the form's name — not the nearest "Apply for this job",
     // "Personal information", or a question's own heading. Else the nearest heading, as a site's
@@ -1323,7 +1336,12 @@ async function harvestAll(read: FormRead, settleMs: number): Promise<FormRead> {
  * pressing Start on a long application left the page — or the box it scrolls in — at the last
  * dropdown, with the focus in it: on the landing page's demo the form jumped to "Disability status"
  * before a word was said. So every box that scrolls around a widget, and the window, is noted
- * before the first press and returned after the last, and the focus goes back where it was.
+ * before the first press and returned after the last.
+ *
+ * The focus is let go of, never put back. Each press moves it on, so only the last widget still
+ * has it; that one is blurred, as every other was. Putting it back on what had it before was
+ * tried: a field that does something when focused — a search box that opens its list — did it,
+ * and on a Workable page the read that followed never finished.
  */
 function holdPlace(doc: Document, widgets: HTMLElement[]): () => void {
   const view = doc.defaultView;
@@ -1335,11 +1353,12 @@ function holdPlace(doc: Document, widgets: HTMLElement[]): () => void {
     }
   }
   const page: [number, number] = [view?.scrollX ?? 0, view?.scrollY ?? 0];
-  const focused = doc.activeElement as HTMLElement | null;
+  const focused = doc.activeElement;
   return () => {
     for (const [el, [left, top]] of scrolled) if (el.isConnected && (el.scrollLeft !== left || el.scrollTop !== top)) el.scrollTo({ left, top, behavior: "instant" });
     if (view && (view.scrollX !== page[0] || view.scrollY !== page[1])) view.scrollTo({ left: page[0], top: page[1], behavior: "instant" });
-    if (focused && focused !== doc.body && focused.isConnected && doc.activeElement !== focused) focused.focus?.({ preventScroll: true });
+    const now = doc.activeElement as HTMLElement | null;
+    if (now && now !== focused && widgets.some((widget) => widget === now || widget.contains(now))) now.blur();
   };
 }
 

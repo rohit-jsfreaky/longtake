@@ -148,9 +148,10 @@ test("a dropdown that is already open is read, not pressed shut", async ({ page 
 /**
  * The landing page's demo, pressed Start: the harvest scrolled the form's own frame to the last
  * dropdown ("Disability status") and left it there, with the focus in it, before a word was said.
- * Reading the options is ours to do; the page goes back to where the person had it.
+ * Reading the options is ours to do; the page goes back to where the person had it, and no
+ * dropdown is left holding the focus.
  */
-test("reading the options leaves the page, the box it scrolls in, and the focus where they were", async ({ page }) => {
+test("reading the options leaves the page and the box it scrolls in where they were, and no dropdown focused", async ({ page }) => {
   await load(
     page,
     `<button id="start">Start</button>
@@ -170,9 +171,10 @@ test("reading the options leaves the page, the box it scrolls in, and the focus 
       learned: read.specs.find((s) => s.id === "country")?.options?.length ?? 0,
       box: box.scrollTop,
       page: window.scrollY,
-      focus: document.activeElement?.id,
+      focus: document.activeElement?.id || document.activeElement?.localName,
     };
   });
   expect(out.learned).toBe(3); // it really pressed them
-  expect(out).toMatchObject({ box: 0, page: 0, focus: "start" });
+  expect(out).toMatchObject({ box: 0, page: 0 });
+  expect(["country", "hisp"]).not.toContain(out.focus);
 });

@@ -62,6 +62,11 @@ export type ConductorView = {
   turns: Turn[];
   /** The running text of the turn in progress. Replace, never append. */
   partial: string;
+  /**
+   * They are talking, as the microphone hears it — before any words come back. Over the agent, the
+   * server can take seconds to decide it was interrupted; this says "heard you" at once.
+   */
+  hearing: boolean;
   shaped: Record<string, ShapedAnswer>;
   hesitations: Record<string, Hesitation>;
   /** Everything known about the person, newest first. */
@@ -219,6 +224,7 @@ export class Conductor {
       missed: [],
       turns: [],
       partial: "",
+      hearing: false,
       shaped: {},
       hesitations: {},
       known: [],
@@ -396,6 +402,9 @@ export class Conductor {
           this.note("agent", text);
           this.update({ turns: [...this.current.turns, { who: "agent", text }] });
         },
+        onLocalSpeech: (speaking) => {
+          if (this.current.hearing !== speaking) this.update({ hearing: speaking });
+        },
         onSpeechStart: () => {
           const now = Date.now();
           this.pauseBeforeAnswer = this.askedAt ? (now - this.askedAt) / 1000 : undefined;
@@ -430,7 +439,7 @@ export class Conductor {
   async stop(): Promise<void> {
     if (this.stopped) return;
     this.finish();
-    this.update({ status: "stopped", partial: "" });
+    this.update({ status: "stopped", partial: "", hearing: false });
     await this.voice?.stop();
     this.voice = null;
   }

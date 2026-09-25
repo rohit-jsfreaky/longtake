@@ -1816,7 +1816,15 @@
       (a, b) => a.compareDocumentPosition(b) & FOLLOWING ? -1 : 1
     )[0];
     if (firstField) {
-      const above = deepQueryAll(root, "h1,h2,h3,h4,h5,h6,[role='heading']").filter(isVisible).filter((heading) => heading.compareDocumentPosition(firstField) & FOLLOWING).filter((heading) => cleanLabel(textOf(heading)) !== "");
+      const questions = new Set(read.specs.map((spec) => cleanLabel(spec.label).toLowerCase()).filter(Boolean));
+      const labelling = /* @__PURE__ */ new Set();
+      for (const handle of read.handles.values()) {
+        for (const id of (handle.getAttribute("aria-labelledby") ?? "").split(/\s+/).filter(Boolean)) {
+          const by = handle.ownerDocument.getElementById(id);
+          if (by) labelling.add(by);
+        }
+      }
+      const above = deepQueryAll(root, "h1,h2,h3,h4,h5,h6,[role='heading']").filter(isVisible).filter((heading) => heading.compareDocumentPosition(firstField) & FOLLOWING).filter((heading) => cleanLabel(textOf(heading)) !== "").filter((heading) => !labelling.has(heading) && !questions.has(cleanLabel(textOf(heading)).toLowerCase()));
       const flat2 = (text5) => text5.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
       const pageTitle = flat2(ownerDocumentOf(root).title ?? "");
       const named = above.filter((heading) => {
@@ -1955,7 +1963,8 @@
     return () => {
       for (const [el, [left, top]] of scrolled) if (el.isConnected && (el.scrollLeft !== left || el.scrollTop !== top)) el.scrollTo({ left, top, behavior: "instant" });
       if (view && (view.scrollX !== page[0] || view.scrollY !== page[1])) view.scrollTo({ left: page[0], top: page[1], behavior: "instant" });
-      if (focused && focused !== doc.body && focused.isConnected && doc.activeElement !== focused) focused.focus?.({ preventScroll: true });
+      const now = doc.activeElement;
+      if (now && now !== focused && widgets.some((widget) => widget === now || widget.contains(now))) now.blur();
     };
   }
   function waitForForm(root = document, timeoutMs = 5e3) {
@@ -4882,7 +4891,7 @@
     const personal = state.asks.filter((a) => a.ask.kind === "sensitive");
     const keep = personal.length ? { keep: { fields: personal.map((a) => a.spec.id), questions: personal.map((a) => fieldName(a.spec)) } } : {};
     if (optional.length > 0) {
-      if (!plan.optionalOffered) return { kind: "offer_optional", fields: optional };
+      if (!plan.optionalOffered) return next ? { kind: "offer_optional", fields: optional, next: next.label } : { kind: "offer_optional", fields: optional };
       if (next) return { kind: "optional", fields: optional, next: next.label, ...keep };
       return state.submitLabel ? { kind: "optional", fields: optional, submit: state.submitLabel, ...keep } : { kind: "optional", fields: optional, ...keep };
     }
@@ -4966,12 +4975,15 @@
         }
         return `Ask for ${describe2(move2.fields[0])}.`;
       }
+      // With a page still to come, "or are we done?" is the wrong other half of the question: live, the
+      // agent offered the optional ones that way, heard "we're done", and told them to submit a form
+      // with a whole page left. The other half is the next page, and it is said.
       case "offer_optional":
-        return `Every required field is in. Say so, and ask if they want to do the ${move2.fields.length} optional ones or hear what they are: ${move2.fields.map((f) => f.question).join("; ")}.`;
+        return move2.next ? `Every required field on this page is in. Say so, and ask if they want the ${move2.fields.length} optional ones here or to go on to the next page \u2014 there is another page after this one. Optional: ${move2.fields.map((f) => f.question).join("; ")}. ${NOT_LAST}` : `Every required field is in. Say so, and ask if they want to do the ${move2.fields.length} optional ones or hear what they are: ${move2.fields.map((f) => f.question).join("; ")}.`;
       case "optional":
-        return keepFirst(move2.keep) + (move2.next ? `If they wanted the optional ones, ask for ${askFor(move2.fields)}. If they didn't, ask if they're ready for the next page, and press "${move2.next}" with press_form_button only on their yes.` : `If they wanted the optional ones, ask for ${askFor(move2.fields)}. If they didn't, hand over: everything they told you is in, and they should ${move2.submit ? `look it over and press "${move2.submit}" themselves` : "look it over and send it themselves"}.`);
+        return keepFirst(move2.keep) + (move2.next ? `If they wanted the optional ones, ask for ${askFor(move2.fields)}. If they didn't \u2014 or they say they're done \u2014 this page is done: ask if they're ready for the next page, and press "${move2.next}" with press_form_button only on their yes. ${NOT_LAST}` : `If they wanted the optional ones, ask for ${askFor(move2.fields)}. If they didn't, hand over: everything they told you is in, and they should ${move2.submit ? `look it over and press "${move2.submit}" themselves` : "look it over and send it themselves"}.`);
       case "next_page":
-        return keepFirst(move2.keep) + `Everything needed on this page is in. Ask if they're ready for the next page, and press "${move2.label}" with press_form_button only on their yes.`;
+        return keepFirst(move2.keep) + `Everything needed on this page is in. Ask if they're ready for the next page, and press "${move2.label}" with press_form_button only on their yes. ${NOT_LAST}`;
       case "handover": {
         const look = move2.review ? lookFirst(move2.review) : "look it over";
         const send = move2.submit ? `${look} and press "${move2.submit}" themselves` : `${look} and send it themselves`;
@@ -4979,6 +4991,7 @@
       }
     }
   }
+  var NOT_LAST = "It is not the last page: never say the form is finished or tell them to submit.";
   function brief(state, move2) {
     const { progress } = state;
     const specs = state.fields.map((f) => f.spec);
@@ -5027,6 +5040,8 @@
     if (state.actions.length > 0) {
       lines.push(`Buttons you can press when they ask: ${state.actions.map((a) => `"${a.label}"`).join(", ")}`);
     }
+    const onward = state.actions.find((a) => a.kind === "next");
+    if (onward) lines.push(`This is not the last page: "${onward.label}" leads to more questions.`);
     if (state.submitLabel) lines.push(`"${state.submitLabel}" sends the form \u2014 only they press it, never you.`);
     lines.push("", `DO NEXT: ${doNext(move2)}`);
     return lines.join("\n");
@@ -5051,7 +5066,7 @@
         return `${where}. Next up: ${what}.`;
       }
       case "offer_optional":
-        return `${where} \u2014 all the required ones. Want to do the ${move2.fields.length} optional ones too?`;
+        return move2.next ? `${where} \u2014 all the required ones on this page. Want the ${move2.fields.length} optional ones, or on to the next page?` : `${where} \u2014 all the required ones. Want to do the ${move2.fields.length} optional ones too?`;
       case "optional":
         return `${where}. Shall we carry on with the optional ones?`;
       case "next_page":
@@ -5724,6 +5739,7 @@
         for (const question of applied.questions) {
           const field = question.from.field;
           if (!field || how === "typed") continue;
+          if (this.meanings[field]?.confidence !== "high") continue;
           asked.add(field);
           this.ledger.ask(field, { kind: "changed", factId: question.id, key: question.key, gist: question.gist, was: question.was, now: question.now, from: question.from });
         }
@@ -6180,6 +6196,77 @@
   }
   var RESUME_REFUSED = /* @__PURE__ */ new Set(["session_not_found", "session_forbidden", "session_expired"]);
 
+  // core/src/barge.ts
+  var DEFAULTS = {
+    floorMin: -45,
+    margin: 12,
+    marginWhileAgent: 20,
+    startMs: 160,
+    endMs: 600,
+    settleMs: 300,
+    roomMs: 3e3,
+    calibrateMs: 500
+  };
+  function levelOf(samples) {
+    if (samples.length === 0) return -100;
+    let sum = 0;
+    for (let i = 0; i < samples.length; i++) sum += samples[i] * samples[i];
+    const rms = Math.sqrt(sum / samples.length) / 32768;
+    return rms > 0 ? 20 * Math.log10(rms) : -100;
+  }
+  var UNHEARD_ROOM = -55;
+  var LocalSpeech = class {
+    constructor(options = {}) {
+      /** Recent levels of the room — frames in which neither of them was talking — with their times. */
+      this.room = [];
+      this.heardRoomFor = 0;
+      this.speaking = false;
+      /** When the level first went over the bar in this run of loud frames, and when it last was. */
+      this.loudSince = -1;
+      this.lastLoud = -Infinity;
+      this.o = { ...DEFAULTS, ...options };
+    }
+    get isSpeaking() {
+      return this.speaking;
+    }
+    /**
+     * One frame of the microphone. `agentFor` is how long the agent has been audible (ms), or -1
+     * when it is not. Returns "start" or "end" when that changes, else null.
+     */
+    frame(db, now, agentFor) {
+      const agent = agentFor >= 0;
+      if (!agent && !this.speaking) {
+        this.room.push([now, db]);
+        this.heardRoomFor += 20;
+        while (this.room.length > 0 && now - this.room[0][0] > this.o.roomMs) this.room.shift();
+      }
+      const calibrated = this.heardRoomFor >= this.o.calibrateMs;
+      if (!calibrated && !agent) return null;
+      if (agent && agentFor < this.o.settleMs && !this.speaking) {
+        this.loudSince = -1;
+        return null;
+      }
+      const floor = calibrated ? Math.min(...this.room.map(([, level]) => level)) : UNHEARD_ROOM;
+      const bar = Math.max(this.o.floorMin, floor + (agent ? this.o.marginWhileAgent : this.o.margin));
+      const loud = db >= bar;
+      if (loud) {
+        if (this.loudSince < 0 || now - this.lastLoud > 80) this.loudSince = now;
+        this.lastLoud = now;
+        if (!this.speaking && now - this.loudSince >= this.o.startMs) {
+          this.speaking = true;
+          return "start";
+        }
+        return null;
+      }
+      if (this.speaking && now - this.lastLoud >= this.o.endMs) {
+        this.speaking = false;
+        this.loudSince = -1;
+        return "end";
+      }
+      return null;
+    }
+  };
+
   // core/src/voice.ts
   var WS_URL = "wss://agents.assemblyai.com/v1/ws";
   var TARGET_SAMPLE_RATE = 24e3;
@@ -6256,6 +6343,7 @@
       onReply,
       onToolCallStarted,
       onSpeechStart,
+      onLocalSpeech,
       onError,
       onClosed,
       onReconnecting,
@@ -6316,6 +6404,10 @@
     const { audioCtx, stream, source, worklet } = audio;
     let nextStartTime = 0;
     const liveSources = /* @__PURE__ */ new Set();
+    const outputGain = audioCtx.createGain();
+    outputGain.connect(audioCtx.destination);
+    let playingSince = 0;
+    let quietSince = -Infinity;
     function playReplyAudio(base64) {
       const raw = atob(base64);
       const pcm16 = new Int16Array(raw.length / 2);
@@ -6327,10 +6419,18 @@
       for (let i = 0; i < pcm16.length; i++) channel[i] = pcm16[i] / 32768;
       const src = audioCtx.createBufferSource();
       src.buffer = buffer;
-      src.connect(audioCtx.destination);
+      src.connect(outputGain);
       const startAt = Math.max(audioCtx.currentTime, nextStartTime);
       src.start(startAt);
-      src.onended = () => liveSources.delete(src);
+      src.onended = () => {
+        liveSources.delete(src);
+        if (liveSources.size === 0) quietSince = performance.now();
+      };
+      const now = performance.now();
+      if (liveSources.size === 0 && now - quietSince > 500) {
+        playingSince = now;
+        if (!localSpeech.isSpeaking) fullVoice();
+      }
       liveSources.add(src);
       nextStartTime = startAt + buffer.duration;
     }
@@ -6345,6 +6445,52 @@
       }
       liveSources.clear();
       nextStartTime = audioCtx.currentTime;
+      fullVoice();
+    }
+    const DUCKED = 0.15;
+    const LEVEL_FRAME = TARGET_SAMPLE_RATE / 50;
+    const localSpeech = new LocalSpeech();
+    const levelBlock = new Int16Array(LEVEL_FRAME);
+    let levelFill = 0;
+    let ducked = false;
+    function lowerVoice() {
+      if (ducked) return;
+      ducked = true;
+      const t = audioCtx.currentTime;
+      outputGain.gain.cancelScheduledValues(t);
+      outputGain.gain.setTargetAtTime(DUCKED, t, 0.03);
+    }
+    function fullVoice(slowly = false) {
+      if (!ducked) return;
+      ducked = false;
+      const t = audioCtx.currentTime;
+      outputGain.gain.cancelScheduledValues(t);
+      if (slowly) outputGain.gain.setTargetAtTime(1, t, 0.15);
+      else outputGain.gain.setValueAtTime(1, t);
+    }
+    function listenForThem(incoming) {
+      let at = 0;
+      while (at < incoming.length) {
+        const take = Math.min(LEVEL_FRAME - levelFill, incoming.length - at);
+        levelBlock.set(incoming.subarray(at, at + take), levelFill);
+        levelFill += take;
+        at += take;
+        if (levelFill < LEVEL_FRAME) continue;
+        levelFill = 0;
+        const now = performance.now();
+        const agentFor = liveSources.size > 0 ? now - playingSince : -1;
+        const change = localSpeech.frame(levelOf(levelBlock), now, agentFor);
+        if (change === "start") {
+          const over = liveSources.size > 0;
+          if (over) lowerVoice();
+          onEvent?.("in", { type: "longtake.heard_them", over_the_agent: over });
+          onLocalSpeech?.(true);
+        } else if (change === "end") {
+          fullVoice(true);
+          onEvent?.("in", { type: "longtake.they_stopped" });
+          onLocalSpeech?.(false);
+        }
+      }
     }
     let ws = null;
     let ready = false;
@@ -6404,6 +6550,7 @@
     };
     worklet.port.onmessage = (event) => {
       const incoming = new Int16Array(event.data);
+      listenForThem(incoming);
       if (turnSamples < MAX_TURN_SAMPLES) {
         turnAudio.push(incoming);
         turnSamples += incoming.length;
@@ -7129,6 +7276,7 @@
         missed: [],
         turns: [],
         partial: "",
+        hearing: false,
         shaped: {},
         hesitations: {},
         known: [],
@@ -7279,6 +7427,9 @@
             this.note("agent", text4);
             this.update({ turns: [...this.current.turns, { who: "agent", text: text4 }] });
           },
+          onLocalSpeech: (speaking) => {
+            if (this.current.hearing !== speaking) this.update({ hearing: speaking });
+          },
           onSpeechStart: () => {
             const now = Date.now();
             this.pauseBeforeAnswer = this.askedAt ? (now - this.askedAt) / 1e3 : void 0;
@@ -7312,7 +7463,7 @@
     async stop() {
       if (this.stopped) return;
       this.finish();
-      this.update({ status: "stopped", partial: "" });
+      this.update({ status: "stopped", partial: "", hearing: false });
       await this.voice?.stop();
       this.voice = null;
     }

@@ -103,6 +103,7 @@ export function Stage() {
     fromMemory,
     turns,
     partial,
+    hearing,
     start,
     stop,
     forgetEverything,
@@ -268,7 +269,7 @@ export function Stage() {
               >
                 {showing === "review" ? (
                   <StageReview groups={review} focus={focus} />
-                ) : turns.length === 0 && !partial ? (
+                ) : turns.length === 0 && !partial && !hearing ? (
                   <p className="text-dim">
                     Your words appear here as you speak. It tells you what the form needs, fills
                     what you say, and asks before it guesses.
@@ -285,6 +286,9 @@ export function Stage() {
                       </p>
                     ))}
                     {partial && <p className="text-dim">{partial}</p>}
+                    {/* Over the agent, their words can take seconds to come back (the server
+                        waits to understand before it interrupts); this says it heard them now. */}
+                    {hearing && !partial && <p className="text-dim">Hearing you…</p>}
                   </>
                 )}
               </div>

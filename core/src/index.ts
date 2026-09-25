@@ -35,6 +35,7 @@ export * from "./understand";
 export * from "./profile";
 export * from "./profile-store";
 export * from "./trust";
+export * from "./barge";
 export * from "./overlay";
 export * from "./review";
 export * from "./notices";

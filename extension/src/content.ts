@@ -96,6 +96,7 @@ function toPanel(view: ConductorView): PanelView {
     state,
     progress: `${form.progress.filled} of ${form.progress.total} in · ${form.progress.requiredLeft} required left`,
     ...(lastHeard ? { heard: lastHeard } : {}),
+    hearing: view.hearing,
     ...(lastSaid ? { said: lastSaid } : {}),
     review: view.review,
     notices: [
@@ -114,6 +115,9 @@ async function begin(): Promise<void> {
   conductor ??= new Conductor({
     root: () => document,
     ignore: IGNORE,
+    // Every frame in "Copy log", with its time: a live problem is otherwise known only by what the
+    // agent said about it. Kept to the last 400 lines.
+    logFrames: true,
     profile: profileClient,
     services: {
       getToken: async () => {
