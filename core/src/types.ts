@@ -112,6 +112,11 @@ export type FieldSpec = {
    * Show a field to a person or the model through `fieldName`, which carries both.
    */
   part?: string;
+  /**
+   * The help the page gives for this field — a format, an example ("Format: (000) 000-0000.").
+   * From the accessible description; told to the agent so an answer arrives in the shape asked.
+   */
+  description?: string;
 };
 
 /** What to call a field to a person or the model: its question, and the piece it takes, if any. */

@@ -35,6 +35,7 @@ import {
   uniqueSelector,
   whenSettled,
 } from "./dom-path";
+import { accessibleDescription, accessibleName } from "./accname";
 import { DATE_MASK } from "./shapes";
 import type {
   FieldHandles,
@@ -384,7 +385,11 @@ function ownLabelOf(el: Element): { text: string; from: Element[] } {
     node = node.parentElement;
   }
 
-  return { text: "", from: [] };
+  // 8. The standard's own answer, when none of the above found words. Not first: measured on the
+  //    corpus, the W3C accessible name matched the question on 240 of 315 fields and these rules on
+  //    305 — it strings on hints, screen-reader text and "(required)" (see RESEARCH.md).
+  const standard = accessibleName(el);
+  return { text: standard, from: [] };
 }
 
 /** A trigger for a menu — `aria-haspopup="menu"`, or `"true"`, which ARIA defines as the same. */
@@ -448,6 +453,19 @@ function groupRequired(el: Element, question: string): boolean {
 function choicesSayRequired(el: Element): boolean {
   return el.getAttribute("role") === "radiogroup" && el.querySelector("[role='radio'][aria-required='true'], input[type='radio'][required]") !== null;
 }
+
+/**
+ * The help the page gives for a field — its format, an example: "Format: (000) 000-0000." From the
+ * accessible description (`aria-describedby` and its kin), never the question again, and short:
+ * it rides along to the agent with every field.
+ */
+function describe(el: Element, label: string): string {
+  const text = accessibleDescription(el);
+  if (!text || comparableText(text) === comparableText(label)) return "";
+  return text.length > 160 ? `${text.slice(0, 157)}…` : text;
+}
+
+const comparableText = (text: string) => text.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
 
 /** A label that names a piece of an answer rather than the question. */
 const PART_ONLY = /^(date|time|day|month|year|hour|minute|dd|mm|yyyy|hh)$/i;
@@ -886,6 +904,9 @@ export function readForm(
     const options = optionsOf(el);
     if (options) spec.options = options;
 
+    const description = describe(el, label);
+    if (description) spec.description = description;
+
     const maxLength = (el as HTMLInputElement).maxLength;
     if (maxLength && maxLength > 0) spec.maxLength = maxLength;
 
@@ -976,8 +997,7 @@ function placeInSections(
   // DOM, so its order is not the order a person reads the page in.
   const byPosition = (a: Element, b: Element) => (a.compareDocumentPosition(b) & FOLLOWING ? -1 : 1);
 
-  const fields = [...handles.values()].sort(byPosition);
-  const first = fields[0];
+  const first = [...handles.values()].sort(byPosition)[0];
   if (!first) return;
 
   // A heading above the very first field is the form's TITLE, not a section of it — the job
@@ -993,7 +1013,28 @@ function placeInSections(
     .filter(isVisible)
     .filter((heading) => !isTitle(heading))
     .sort(byPosition);
-  if (headings.length === 0) return;
+
+  /**
+   * With no heading over it, a named group holding several fields gives them its name: Jotform's
+   * "Business Address" names a group of Street, City, State and Zip boxes, and without it a form
+   * asking for two addresses — the business's and the person's — asked "Street Address" twice
+   * with nothing to tell them apart. A heading still wins: it is the wider context ("Alternate
+   * Designated Representative"), the one that says whose answer it is.
+   */
+  // A group named by one of its own fields' questions is that question's group — Greenhouse's
+  // "Phone" holds the number and its country code — not a section: named so, the code picker and
+  // the number fell into different sections and were no longer paired.
+  const groupName = (el: Element): string => {
+    const group = el.parentElement?.closest("fieldset, [role='group']");
+    if (!group) return "";
+    const inside = specs.filter((spec) => {
+      const field = handles.get(spec.id);
+      return field !== undefined && group.contains(field);
+    });
+    if (inside.length < 2) return "";
+    const name = cleanLabel(containerName(group));
+    return inside.some((spec) => spec.label === name) ? "" : name;
+  };
 
   const sectionOf = (el: Element, label: string): string => {
     let found = "";
@@ -1009,6 +1050,7 @@ function placeInSections(
 
       if (governs) found = cleanLabel(textOf(heading));
     }
+    if (!found) found = groupName(el);
     // A radio group's legend is its own question, not the section it lives in.
     return found && found !== label ? found : "";
   };

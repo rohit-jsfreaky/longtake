@@ -67,6 +67,10 @@ import {
   matchOption,
   Conductor,
   CORE_VERSION,
+  accessibleName,
+  accessibleDescription,
+  fallbackMeanings,
+  validateMeanings,
 } from "@longtake/core";
 import { FakeVoice } from "./replay/fake-voice";
 import { runScript } from "./replay/run-script";
@@ -134,6 +138,10 @@ declare global {
       nextReconnect: typeof nextReconnect;
       resumeLine: typeof resumeLine;
       matchOption: typeof matchOption;
+      accessibleName: typeof accessibleName;
+      accessibleDescription: typeof accessibleDescription;
+      fallbackMeanings: typeof fallbackMeanings;
+      validateMeanings: typeof validateMeanings;
       Conductor: typeof Conductor;
       FakeVoice: typeof FakeVoice;
       runScript: typeof runScript;
@@ -208,6 +216,10 @@ window.__longtake = {
   nextReconnect,
   resumeLine,
   matchOption,
+  accessibleName,
+  accessibleDescription,
+  fallbackMeanings,
+  validateMeanings,
   Conductor,
   FakeVoice,
   runScript,

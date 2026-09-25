@@ -173,6 +173,7 @@ function fieldSchema(spec: FieldSpec): JsonSchema {
   if (spec.section) parts.push(`(in the "${spec.section}" section)`);
   if (spec.required) parts.push("(the form marks this required)");
   if (spec.longForm) parts.push("(a long answer — several sentences are welcome)");
+  if (spec.description) parts.push(`(the form adds: "${spec.description}")`);
 
   return {
     type: "object",

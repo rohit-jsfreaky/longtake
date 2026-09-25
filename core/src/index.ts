@@ -1,5 +1,6 @@
 /**
- * `core/` is plain TypeScript with no framework and no dependencies, so that the exact same
+ * `core/` is plain TypeScript with no framework — its one dependency is `dom-accessibility-api`,
+ * the W3C accname algorithm, framework-free itself — so that the exact same
  * files run in two places: the Next.js page on Vercel (the submission) and the Chrome
  * extension content script (the real product). Anything that needs React, Next or a bundler
  * belongs in `web/`, not here.
@@ -7,6 +8,7 @@
 
 export * from "./types";
 export * from "./dom-path";
+export * from "./accname";
 export * from "./reader";
 export * from "./writer";
 export * from "./binder";
@@ -28,6 +30,8 @@ export * from "./errors";
 export * from "./actions";
 export * from "./reconnect";
 export * from "./voice";
+export * from "./concepts";
+export * from "./understand";
 export * from "./notices";
 export * from "./conductor";
 

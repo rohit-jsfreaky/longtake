@@ -57,7 +57,7 @@
         return parts.join(" > ");
       }
       if (tag === "html" || tag === "body" || !parent) break;
-      const siblings = Array.from(parent.children).filter((c) => c.tagName === walker.tagName);
+      const siblings = Array.from(parent.children).filter((c2) => c2.tagName === walker.tagName);
       const index = siblings.indexOf(walker) + 1;
       parts.unshift(siblings.length > 1 ? `${tag}:nth-of-type(${index})` : tag);
       const built = parts.join(" > ");
@@ -313,6 +313,898 @@
     });
   }
 
+  // node_modules/dom-accessibility-api/dist/polyfills/array.from.mjs
+  var toStr = Object.prototype.toString;
+  function isCallable(fn) {
+    return typeof fn === "function" || toStr.call(fn) === "[object Function]";
+  }
+  function toInteger(value) {
+    var number = Number(value);
+    if (isNaN(number)) {
+      return 0;
+    }
+    if (number === 0 || !isFinite(number)) {
+      return number;
+    }
+    return (number > 0 ? 1 : -1) * Math.floor(Math.abs(number));
+  }
+  var maxSafeInteger = Math.pow(2, 53) - 1;
+  function toLength(value) {
+    var len = toInteger(value);
+    return Math.min(Math.max(len, 0), maxSafeInteger);
+  }
+  function arrayFrom(arrayLike, mapFn) {
+    var C = Array;
+    var items = Object(arrayLike);
+    if (arrayLike == null) {
+      throw new TypeError("Array.from requires an array-like object - not null or undefined");
+    }
+    if (typeof mapFn !== "undefined") {
+      if (!isCallable(mapFn)) {
+        throw new TypeError("Array.from: when provided, the second argument must be a function");
+      }
+    }
+    var len = toLength(items.length);
+    var A = isCallable(C) ? Object(new C(len)) : new Array(len);
+    var k = 0;
+    var kValue;
+    while (k < len) {
+      kValue = items[k];
+      if (mapFn) {
+        A[k] = mapFn(kValue, k);
+      } else {
+        A[k] = kValue;
+      }
+      k += 1;
+    }
+    A.length = len;
+    return A;
+  }
+
+  // node_modules/dom-accessibility-api/dist/polyfills/SetLike.mjs
+  function _typeof(o) {
+    "@babel/helpers - typeof";
+    return _typeof = "function" == typeof Symbol && "symbol" == typeof Symbol.iterator ? function(o2) {
+      return typeof o2;
+    } : function(o2) {
+      return o2 && "function" == typeof Symbol && o2.constructor === Symbol && o2 !== Symbol.prototype ? "symbol" : typeof o2;
+    }, _typeof(o);
+  }
+  function _classCallCheck(instance, Constructor) {
+    if (!(instance instanceof Constructor)) {
+      throw new TypeError("Cannot call a class as a function");
+    }
+  }
+  function _defineProperties(target, props) {
+    for (var i = 0; i < props.length; i++) {
+      var descriptor = props[i];
+      descriptor.enumerable = descriptor.enumerable || false;
+      descriptor.configurable = true;
+      if ("value" in descriptor) descriptor.writable = true;
+      Object.defineProperty(target, _toPropertyKey(descriptor.key), descriptor);
+    }
+  }
+  function _createClass(Constructor, protoProps, staticProps) {
+    if (protoProps) _defineProperties(Constructor.prototype, protoProps);
+    if (staticProps) _defineProperties(Constructor, staticProps);
+    Object.defineProperty(Constructor, "prototype", { writable: false });
+    return Constructor;
+  }
+  function _defineProperty(obj, key, value) {
+    key = _toPropertyKey(key);
+    if (key in obj) {
+      Object.defineProperty(obj, key, { value, enumerable: true, configurable: true, writable: true });
+    } else {
+      obj[key] = value;
+    }
+    return obj;
+  }
+  function _toPropertyKey(t) {
+    var i = _toPrimitive(t, "string");
+    return "symbol" == _typeof(i) ? i : i + "";
+  }
+  function _toPrimitive(t, r) {
+    if ("object" != _typeof(t) || !t) return t;
+    var e = t[Symbol.toPrimitive];
+    if (void 0 !== e) {
+      var i = e.call(t, r || "default");
+      if ("object" != _typeof(i)) return i;
+      throw new TypeError("@@toPrimitive must return a primitive value.");
+    }
+    return ("string" === r ? String : Number)(t);
+  }
+  var SetLike = /* @__PURE__ */ (function() {
+    function SetLike2() {
+      var items = arguments.length > 0 && arguments[0] !== void 0 ? arguments[0] : [];
+      _classCallCheck(this, SetLike2);
+      _defineProperty(this, "items", void 0);
+      this.items = items;
+    }
+    return _createClass(SetLike2, [{
+      key: "add",
+      value: function add(value) {
+        if (this.has(value) === false) {
+          this.items.push(value);
+        }
+        return this;
+      }
+    }, {
+      key: "clear",
+      value: function clear() {
+        this.items = [];
+      }
+    }, {
+      key: "delete",
+      value: function _delete(value) {
+        var previousLength = this.items.length;
+        this.items = this.items.filter(function(item) {
+          return item !== value;
+        });
+        return previousLength !== this.items.length;
+      }
+    }, {
+      key: "forEach",
+      value: function forEach(callbackfn) {
+        var _this = this;
+        this.items.forEach(function(item) {
+          callbackfn(item, item, _this);
+        });
+      }
+    }, {
+      key: "has",
+      value: function has(value) {
+        return this.items.indexOf(value) !== -1;
+      }
+    }, {
+      key: "size",
+      get: function get() {
+        return this.items.length;
+      }
+    }]);
+  })();
+  var SetLike_default = typeof Set === "undefined" ? Set : SetLike;
+
+  // node_modules/dom-accessibility-api/dist/getRole.mjs
+  function getLocalName(element) {
+    var _element$localName;
+    return (
+      // eslint-disable-next-line no-restricted-properties -- actual guard for environments without localName
+      (_element$localName = element.localName) !== null && _element$localName !== void 0 ? _element$localName : (
+        // eslint-disable-next-line no-restricted-properties -- required for the fallback
+        element.tagName.toLowerCase()
+      )
+    );
+  }
+  var localNameToRoleMappings = {
+    article: "article",
+    aside: "complementary",
+    button: "button",
+    datalist: "listbox",
+    dd: "definition",
+    details: "group",
+    dialog: "dialog",
+    dt: "term",
+    fieldset: "group",
+    figure: "figure",
+    // WARNING: Only with an accessible name
+    form: "form",
+    footer: "contentinfo",
+    h1: "heading",
+    h2: "heading",
+    h3: "heading",
+    h4: "heading",
+    h5: "heading",
+    h6: "heading",
+    header: "banner",
+    hr: "separator",
+    html: "document",
+    legend: "legend",
+    li: "listitem",
+    math: "math",
+    main: "main",
+    menu: "list",
+    nav: "navigation",
+    ol: "list",
+    optgroup: "group",
+    // WARNING: Only in certain context
+    option: "option",
+    output: "status",
+    progress: "progressbar",
+    // WARNING: Only with an accessible name
+    section: "region",
+    summary: "button",
+    table: "table",
+    tbody: "rowgroup",
+    textarea: "textbox",
+    tfoot: "rowgroup",
+    // WARNING: Only in certain context
+    td: "cell",
+    th: "columnheader",
+    thead: "rowgroup",
+    tr: "row",
+    ul: "list"
+  };
+  var prohibitedAttributes = {
+    caption: /* @__PURE__ */ new Set(["aria-label", "aria-labelledby"]),
+    code: /* @__PURE__ */ new Set(["aria-label", "aria-labelledby"]),
+    deletion: /* @__PURE__ */ new Set(["aria-label", "aria-labelledby"]),
+    emphasis: /* @__PURE__ */ new Set(["aria-label", "aria-labelledby"]),
+    generic: /* @__PURE__ */ new Set(["aria-label", "aria-labelledby", "aria-roledescription"]),
+    insertion: /* @__PURE__ */ new Set(["aria-label", "aria-labelledby"]),
+    none: /* @__PURE__ */ new Set(["aria-label", "aria-labelledby"]),
+    paragraph: /* @__PURE__ */ new Set(["aria-label", "aria-labelledby"]),
+    presentation: /* @__PURE__ */ new Set(["aria-label", "aria-labelledby"]),
+    strong: /* @__PURE__ */ new Set(["aria-label", "aria-labelledby"]),
+    subscript: /* @__PURE__ */ new Set(["aria-label", "aria-labelledby"]),
+    superscript: /* @__PURE__ */ new Set(["aria-label", "aria-labelledby"])
+  };
+  function hasGlobalAriaAttributes(element, role) {
+    return [
+      "aria-atomic",
+      "aria-busy",
+      "aria-controls",
+      "aria-current",
+      "aria-description",
+      "aria-describedby",
+      "aria-details",
+      // "disabled",
+      "aria-dropeffect",
+      // "errormessage",
+      "aria-flowto",
+      "aria-grabbed",
+      // "haspopup",
+      "aria-hidden",
+      // "invalid",
+      "aria-keyshortcuts",
+      "aria-label",
+      "aria-labelledby",
+      "aria-live",
+      "aria-owns",
+      "aria-relevant",
+      "aria-roledescription"
+    ].some(function(attributeName) {
+      var _prohibitedAttributes;
+      return element.hasAttribute(attributeName) && !((_prohibitedAttributes = prohibitedAttributes[role]) !== null && _prohibitedAttributes !== void 0 && _prohibitedAttributes.has(attributeName));
+    });
+  }
+  function ignorePresentationalRole(element, implicitRole) {
+    return hasGlobalAriaAttributes(element, implicitRole);
+  }
+  function getRole(element) {
+    var explicitRole = getExplicitRole(element);
+    if (explicitRole === null || presentationRoles.indexOf(explicitRole) !== -1) {
+      var implicitRole = getImplicitRole(element);
+      if (presentationRoles.indexOf(explicitRole || "") === -1 || ignorePresentationalRole(element, implicitRole || "")) {
+        return implicitRole;
+      }
+    }
+    return explicitRole;
+  }
+  function getImplicitRole(element) {
+    var mappedByTag = localNameToRoleMappings[getLocalName(element)];
+    if (mappedByTag !== void 0) {
+      return mappedByTag;
+    }
+    switch (getLocalName(element)) {
+      case "a":
+      case "area":
+      case "link":
+        if (element.hasAttribute("href")) {
+          return "link";
+        }
+        break;
+      case "img":
+        if (element.getAttribute("alt") === "" && !ignorePresentationalRole(element, "img")) {
+          return "presentation";
+        }
+        return "img";
+      case "input": {
+        var _ref = element, type = _ref.type;
+        switch (type) {
+          case "button":
+          case "image":
+          case "reset":
+          case "submit":
+            return "button";
+          case "checkbox":
+          case "radio":
+            return type;
+          case "range":
+            return "slider";
+          case "email":
+          case "tel":
+          case "text":
+          case "url":
+            if (element.hasAttribute("list")) {
+              return "combobox";
+            }
+            return "textbox";
+          case "search":
+            if (element.hasAttribute("list")) {
+              return "combobox";
+            }
+            return "searchbox";
+          case "number":
+            return "spinbutton";
+          default:
+            return null;
+        }
+      }
+      case "select":
+        if (element.hasAttribute("multiple") || element.size > 1) {
+          return "listbox";
+        }
+        return "combobox";
+    }
+    return null;
+  }
+  function getExplicitRole(element) {
+    var role = element.getAttribute("role");
+    if (role !== null) {
+      var explicitRole = role.trim().split(" ")[0];
+      if (explicitRole.length > 0) {
+        return explicitRole;
+      }
+    }
+    return null;
+  }
+
+  // node_modules/dom-accessibility-api/dist/util.mjs
+  var presentationRoles = ["presentation", "none"];
+  function isElement(node) {
+    return node !== null && node.nodeType === node.ELEMENT_NODE;
+  }
+  function isHTMLTableCaptionElement(node) {
+    return isElement(node) && getLocalName(node) === "caption";
+  }
+  function isHTMLInputElement(node) {
+    return isElement(node) && getLocalName(node) === "input";
+  }
+  function isHTMLOptGroupElement(node) {
+    return isElement(node) && getLocalName(node) === "optgroup";
+  }
+  function isHTMLSelectElement(node) {
+    return isElement(node) && getLocalName(node) === "select";
+  }
+  function isHTMLTableElement(node) {
+    return isElement(node) && getLocalName(node) === "table";
+  }
+  function isHTMLTextAreaElement(node) {
+    return isElement(node) && getLocalName(node) === "textarea";
+  }
+  function safeWindow(node) {
+    var _ref = node.ownerDocument === null ? node : node.ownerDocument, defaultView = _ref.defaultView;
+    if (defaultView === null) {
+      throw new TypeError("no window available");
+    }
+    return defaultView;
+  }
+  function isHTMLFieldSetElement(node) {
+    return isElement(node) && getLocalName(node) === "fieldset";
+  }
+  function isHTMLLegendElement(node) {
+    return isElement(node) && getLocalName(node) === "legend";
+  }
+  function isHTMLSlotElement(node) {
+    return isElement(node) && getLocalName(node) === "slot";
+  }
+  function isSVGElement(node) {
+    return isElement(node) && node.ownerSVGElement !== void 0;
+  }
+  function isSVGSVGElement(node) {
+    return isElement(node) && getLocalName(node) === "svg";
+  }
+  function isSVGTitleElement(node) {
+    return isSVGElement(node) && getLocalName(node) === "title";
+  }
+  function queryIdRefs(node, attributeName) {
+    if (isElement(node) && node.hasAttribute(attributeName)) {
+      var ids = node.getAttribute(attributeName).split(" ");
+      var root = node.getRootNode ? node.getRootNode() : node.ownerDocument;
+      return ids.map(function(id) {
+        return root.getElementById(id);
+      }).filter(
+        function(element) {
+          return element !== null;
+        }
+        // TODO: why does this not narrow?
+      );
+    }
+    return [];
+  }
+  function hasAnyConcreteRoles(node, roles) {
+    if (isElement(node)) {
+      return roles.indexOf(getRole(node)) !== -1;
+    }
+    return false;
+  }
+
+  // node_modules/dom-accessibility-api/dist/accessible-name-and-description.mjs
+  function asFlatString(s) {
+    return s.trim().replace(/\s\s+/g, " ");
+  }
+  function isHidden(node, getComputedStyleImplementation) {
+    if (!isElement(node)) {
+      return false;
+    }
+    if (node.hasAttribute("hidden") || node.getAttribute("aria-hidden") === "true") {
+      return true;
+    }
+    var style = getComputedStyleImplementation(node);
+    return style.getPropertyValue("display") === "none" || style.getPropertyValue("visibility") === "hidden";
+  }
+  function isControl(node) {
+    return hasAnyConcreteRoles(node, ["button", "combobox", "listbox", "textbox"]) || hasAbstractRole(node, "range");
+  }
+  function hasAbstractRole(node, role) {
+    if (!isElement(node)) {
+      return false;
+    }
+    switch (role) {
+      case "range":
+        return hasAnyConcreteRoles(node, ["meter", "progressbar", "scrollbar", "slider", "spinbutton"]);
+      default:
+        throw new TypeError("No knowledge about abstract role '".concat(role, "'. This is likely a bug :("));
+    }
+  }
+  function querySelectorAllSubtree(element, selectors) {
+    var elements = arrayFrom(element.querySelectorAll(selectors));
+    queryIdRefs(element, "aria-owns").forEach(function(root) {
+      elements.push.apply(elements, arrayFrom(root.querySelectorAll(selectors)));
+    });
+    return elements;
+  }
+  function querySelectedOptions(listbox) {
+    if (isHTMLSelectElement(listbox)) {
+      return listbox.selectedOptions || querySelectorAllSubtree(listbox, "[selected]");
+    }
+    return querySelectorAllSubtree(listbox, '[aria-selected="true"]');
+  }
+  function isMarkedPresentational(node) {
+    return hasAnyConcreteRoles(node, presentationRoles);
+  }
+  function isNativeHostLanguageTextAlternativeElement(node) {
+    return isHTMLTableCaptionElement(node);
+  }
+  function allowsNameFromContent(node) {
+    return hasAnyConcreteRoles(node, ["button", "cell", "checkbox", "columnheader", "gridcell", "heading", "label", "legend", "link", "menuitem", "menuitemcheckbox", "menuitemradio", "option", "radio", "row", "rowheader", "switch", "tab", "tooltip", "treeitem"]);
+  }
+  function isDescendantOfNativeHostLanguageTextAlternativeElement(node) {
+    return false;
+  }
+  function getValueOfTextbox(element) {
+    if (isHTMLInputElement(element) || isHTMLTextAreaElement(element)) {
+      return element.value;
+    }
+    return element.textContent || "";
+  }
+  function getTextualContent(declaration) {
+    var content = declaration.getPropertyValue("content");
+    if (/^["'].*["']$/.test(content)) {
+      return content.slice(1, -1);
+    }
+    return "";
+  }
+  function isLabelableElement(element) {
+    var localName = getLocalName(element);
+    return localName === "button" || localName === "input" && element.getAttribute("type") !== "hidden" || localName === "meter" || localName === "output" || localName === "progress" || localName === "select" || localName === "textarea";
+  }
+  function findLabelableElement(element) {
+    if (isLabelableElement(element)) {
+      return element;
+    }
+    var labelableElement = null;
+    element.childNodes.forEach(function(childNode) {
+      if (labelableElement === null && isElement(childNode)) {
+        var descendantLabelableElement = findLabelableElement(childNode);
+        if (descendantLabelableElement !== null) {
+          labelableElement = descendantLabelableElement;
+        }
+      }
+    });
+    return labelableElement;
+  }
+  function getControlOfLabel(label) {
+    if (label.control !== void 0) {
+      return label.control;
+    }
+    var htmlFor = label.getAttribute("for");
+    if (htmlFor !== null) {
+      return label.ownerDocument.getElementById(htmlFor);
+    }
+    return findLabelableElement(label);
+  }
+  function getLabels(element) {
+    var labelsProperty = element.labels;
+    if (labelsProperty === null) {
+      return labelsProperty;
+    }
+    if (labelsProperty !== void 0) {
+      return arrayFrom(labelsProperty);
+    }
+    if (!isLabelableElement(element)) {
+      return null;
+    }
+    var document2 = element.ownerDocument;
+    return arrayFrom(document2.querySelectorAll("label")).filter(function(label) {
+      return getControlOfLabel(label) === element;
+    });
+  }
+  function getSlotContents(slot) {
+    var assignedNodes = slot.assignedNodes();
+    if (assignedNodes.length === 0) {
+      return arrayFrom(slot.childNodes);
+    }
+    return assignedNodes;
+  }
+  function computeTextAlternative(root) {
+    var options = arguments.length > 1 && arguments[1] !== void 0 ? arguments[1] : {};
+    var consultedNodes = new SetLike_default();
+    var computedStyles = typeof Map === "undefined" ? void 0 : /* @__PURE__ */ new Map();
+    var window2 = safeWindow(root);
+    var _options$compute = options.compute, compute = _options$compute === void 0 ? "name" : _options$compute, _options$computedStyl = options.computedStyleSupportsPseudoElements, computedStyleSupportsPseudoElements = _options$computedStyl === void 0 ? options.getComputedStyle !== void 0 : _options$computedStyl, _options$getComputedS = options.getComputedStyle, uncachedGetComputedStyle = _options$getComputedS === void 0 ? window2.getComputedStyle.bind(window2) : _options$getComputedS, _options$hidden = options.hidden, hidden = _options$hidden === void 0 ? false : _options$hidden;
+    var getComputedStyle = function getComputedStyle2(el, pseudoElement) {
+      if (pseudoElement !== void 0) {
+        throw new Error("use uncachedGetComputedStyle directly for pseudo elements");
+      }
+      if (computedStyles === void 0) {
+        return uncachedGetComputedStyle(el);
+      }
+      var cachedStyles = computedStyles.get(el);
+      if (cachedStyles) {
+        return cachedStyles;
+      }
+      var style = uncachedGetComputedStyle(el, pseudoElement);
+      computedStyles.set(el, style);
+      return style;
+    };
+    function computeMiscTextAlternative(node, context) {
+      var accumulatedText = "";
+      if (isElement(node) && computedStyleSupportsPseudoElements) {
+        var pseudoBefore = uncachedGetComputedStyle(node, "::before");
+        var beforeContent = getTextualContent(pseudoBefore);
+        accumulatedText = "".concat(beforeContent, " ").concat(accumulatedText);
+      }
+      var childNodes = isHTMLSlotElement(node) ? getSlotContents(node) : arrayFrom(node.childNodes).concat(queryIdRefs(node, "aria-owns"));
+      childNodes.forEach(function(child) {
+        var result = computeTextAlternative2(child, {
+          isEmbeddedInLabel: context.isEmbeddedInLabel,
+          isReferenced: false,
+          recursion: true
+        });
+        var display = isElement(child) ? getComputedStyle(child).getPropertyValue("display") : "inline";
+        var separator = display !== "inline" ? " " : "";
+        accumulatedText += "".concat(separator).concat(result).concat(separator);
+      });
+      if (isElement(node) && computedStyleSupportsPseudoElements) {
+        var pseudoAfter = uncachedGetComputedStyle(node, "::after");
+        var afterContent = getTextualContent(pseudoAfter);
+        accumulatedText = "".concat(accumulatedText, " ").concat(afterContent);
+      }
+      return accumulatedText.trim();
+    }
+    function useAttribute(element, attributeName) {
+      var attribute = element.getAttributeNode(attributeName);
+      if (attribute !== null && !consultedNodes.has(attribute) && attribute.value.trim() !== "") {
+        consultedNodes.add(attribute);
+        return attribute.value;
+      }
+      return null;
+    }
+    function computeTooltipAttributeValue(node) {
+      if (!isElement(node)) {
+        return null;
+      }
+      return useAttribute(node, "title");
+    }
+    function computeElementTextAlternative(node) {
+      if (!isElement(node)) {
+        return null;
+      }
+      if (isHTMLFieldSetElement(node)) {
+        consultedNodes.add(node);
+        var children = arrayFrom(node.childNodes);
+        for (var i = 0; i < children.length; i += 1) {
+          var child = children[i];
+          if (isHTMLLegendElement(child)) {
+            return computeTextAlternative2(child, {
+              isEmbeddedInLabel: false,
+              isReferenced: false,
+              recursion: false
+            });
+          }
+        }
+      } else if (isHTMLTableElement(node)) {
+        consultedNodes.add(node);
+        var _children = arrayFrom(node.childNodes);
+        for (var _i = 0; _i < _children.length; _i += 1) {
+          var _child = _children[_i];
+          if (isHTMLTableCaptionElement(_child)) {
+            return computeTextAlternative2(_child, {
+              isEmbeddedInLabel: false,
+              isReferenced: false,
+              recursion: false
+            });
+          }
+        }
+      } else if (isSVGSVGElement(node)) {
+        consultedNodes.add(node);
+        var _children2 = arrayFrom(node.childNodes);
+        for (var _i2 = 0; _i2 < _children2.length; _i2 += 1) {
+          var _child2 = _children2[_i2];
+          if (isSVGTitleElement(_child2)) {
+            return _child2.textContent;
+          }
+        }
+        return null;
+      } else if (getLocalName(node) === "img" || getLocalName(node) === "area") {
+        var nameFromAlt = useAttribute(node, "alt");
+        if (nameFromAlt !== null) {
+          return nameFromAlt;
+        }
+      } else if (isHTMLOptGroupElement(node)) {
+        var nameFromLabel = useAttribute(node, "label");
+        if (nameFromLabel !== null) {
+          return nameFromLabel;
+        }
+      }
+      if (isHTMLInputElement(node) && (node.type === "button" || node.type === "submit" || node.type === "reset")) {
+        var nameFromValue = useAttribute(node, "value");
+        if (nameFromValue !== null) {
+          return nameFromValue;
+        }
+        if (node.type === "submit") {
+          return "Submit";
+        }
+        if (node.type === "reset") {
+          return "Reset";
+        }
+      }
+      var labels = getLabels(node);
+      if (labels !== null && labels.length !== 0) {
+        consultedNodes.add(node);
+        return arrayFrom(labels).map(function(element) {
+          return computeTextAlternative2(element, {
+            isEmbeddedInLabel: true,
+            isReferenced: false,
+            recursion: true
+          });
+        }).filter(function(label) {
+          return label.length > 0;
+        }).join(" ");
+      }
+      if (isHTMLInputElement(node) && node.type === "image") {
+        var _nameFromAlt = useAttribute(node, "alt");
+        if (_nameFromAlt !== null) {
+          return _nameFromAlt;
+        }
+        var nameFromTitle = useAttribute(node, "title");
+        if (nameFromTitle !== null) {
+          return nameFromTitle;
+        }
+        return "Submit Query";
+      }
+      if (hasAnyConcreteRoles(node, ["button"])) {
+        var nameFromSubTree = computeMiscTextAlternative(node, {
+          isEmbeddedInLabel: false,
+          isReferenced: false
+        });
+        if (nameFromSubTree !== "") {
+          return nameFromSubTree;
+        }
+      }
+      return null;
+    }
+    function computeTextAlternative2(current, context) {
+      if (consultedNodes.has(current)) {
+        return "";
+      }
+      if (!hidden && isHidden(current, getComputedStyle) && !context.isReferenced) {
+        consultedNodes.add(current);
+        return "";
+      }
+      var labelAttributeNode = isElement(current) ? current.getAttributeNode("aria-labelledby") : null;
+      var labelElements = labelAttributeNode !== null && !consultedNodes.has(labelAttributeNode) ? queryIdRefs(current, "aria-labelledby") : [];
+      if (compute === "name" && !context.isReferenced && labelElements.length > 0) {
+        consultedNodes.add(labelAttributeNode);
+        return labelElements.map(function(element) {
+          return computeTextAlternative2(element, {
+            isEmbeddedInLabel: context.isEmbeddedInLabel,
+            isReferenced: true,
+            // this isn't recursion as specified, otherwise we would skip
+            // `aria-label` in
+            // <input id="myself" aria-label="foo" aria-labelledby="myself"
+            recursion: false
+          });
+        }).join(" ");
+      }
+      var skipToStep2E = context.recursion && isControl(current) && compute === "name";
+      if (!skipToStep2E) {
+        var ariaLabel = (isElement(current) && current.getAttribute("aria-label") || "").trim();
+        if (ariaLabel !== "" && compute === "name") {
+          consultedNodes.add(current);
+          return ariaLabel;
+        }
+        if (!isMarkedPresentational(current)) {
+          var elementTextAlternative = computeElementTextAlternative(current);
+          if (elementTextAlternative !== null) {
+            consultedNodes.add(current);
+            return elementTextAlternative;
+          }
+        }
+      }
+      if (hasAnyConcreteRoles(current, ["menu"])) {
+        consultedNodes.add(current);
+        return "";
+      }
+      if (skipToStep2E || context.isEmbeddedInLabel || context.isReferenced) {
+        if (hasAnyConcreteRoles(current, ["combobox", "listbox"])) {
+          consultedNodes.add(current);
+          var selectedOptions = querySelectedOptions(current);
+          if (selectedOptions.length === 0) {
+            return isHTMLInputElement(current) ? current.value : "";
+          }
+          return arrayFrom(selectedOptions).map(function(selectedOption) {
+            return computeTextAlternative2(selectedOption, {
+              isEmbeddedInLabel: context.isEmbeddedInLabel,
+              isReferenced: false,
+              recursion: true
+            });
+          }).join(" ");
+        }
+        if (hasAbstractRole(current, "range")) {
+          consultedNodes.add(current);
+          if (current.hasAttribute("aria-valuetext")) {
+            return current.getAttribute("aria-valuetext");
+          }
+          if (current.hasAttribute("aria-valuenow")) {
+            return current.getAttribute("aria-valuenow");
+          }
+          return current.getAttribute("value") || "";
+        }
+        if (hasAnyConcreteRoles(current, ["textbox"])) {
+          consultedNodes.add(current);
+          return getValueOfTextbox(current);
+        }
+      }
+      if (allowsNameFromContent(current) || isElement(current) && context.isReferenced || isNativeHostLanguageTextAlternativeElement(current) || isDescendantOfNativeHostLanguageTextAlternativeElement(current)) {
+        var accumulatedText2F = computeMiscTextAlternative(current, {
+          isEmbeddedInLabel: context.isEmbeddedInLabel,
+          isReferenced: false
+        });
+        if (accumulatedText2F !== "") {
+          consultedNodes.add(current);
+          return accumulatedText2F;
+        }
+      }
+      if (current.nodeType === current.TEXT_NODE) {
+        consultedNodes.add(current);
+        return current.textContent || "";
+      }
+      if (context.recursion) {
+        consultedNodes.add(current);
+        return computeMiscTextAlternative(current, {
+          isEmbeddedInLabel: context.isEmbeddedInLabel,
+          isReferenced: false
+        });
+      }
+      var tooltipAttributeValue = computeTooltipAttributeValue(current);
+      if (tooltipAttributeValue !== null) {
+        consultedNodes.add(current);
+        return tooltipAttributeValue;
+      }
+      consultedNodes.add(current);
+      return "";
+    }
+    return asFlatString(computeTextAlternative2(root, {
+      isEmbeddedInLabel: false,
+      // by spec computeAccessibleDescription starts with the referenced elements as roots
+      isReferenced: compute === "description",
+      recursion: false
+    }));
+  }
+
+  // node_modules/dom-accessibility-api/dist/accessible-description.mjs
+  function _typeof2(o) {
+    "@babel/helpers - typeof";
+    return _typeof2 = "function" == typeof Symbol && "symbol" == typeof Symbol.iterator ? function(o2) {
+      return typeof o2;
+    } : function(o2) {
+      return o2 && "function" == typeof Symbol && o2.constructor === Symbol && o2 !== Symbol.prototype ? "symbol" : typeof o2;
+    }, _typeof2(o);
+  }
+  function ownKeys(e, r) {
+    var t = Object.keys(e);
+    if (Object.getOwnPropertySymbols) {
+      var o = Object.getOwnPropertySymbols(e);
+      r && (o = o.filter(function(r2) {
+        return Object.getOwnPropertyDescriptor(e, r2).enumerable;
+      })), t.push.apply(t, o);
+    }
+    return t;
+  }
+  function _objectSpread(e) {
+    for (var r = 1; r < arguments.length; r++) {
+      var t = null != arguments[r] ? arguments[r] : {};
+      r % 2 ? ownKeys(Object(t), true).forEach(function(r2) {
+        _defineProperty2(e, r2, t[r2]);
+      }) : Object.getOwnPropertyDescriptors ? Object.defineProperties(e, Object.getOwnPropertyDescriptors(t)) : ownKeys(Object(t)).forEach(function(r2) {
+        Object.defineProperty(e, r2, Object.getOwnPropertyDescriptor(t, r2));
+      });
+    }
+    return e;
+  }
+  function _defineProperty2(obj, key, value) {
+    key = _toPropertyKey2(key);
+    if (key in obj) {
+      Object.defineProperty(obj, key, { value, enumerable: true, configurable: true, writable: true });
+    } else {
+      obj[key] = value;
+    }
+    return obj;
+  }
+  function _toPropertyKey2(t) {
+    var i = _toPrimitive2(t, "string");
+    return "symbol" == _typeof2(i) ? i : i + "";
+  }
+  function _toPrimitive2(t, r) {
+    if ("object" != _typeof2(t) || !t) return t;
+    var e = t[Symbol.toPrimitive];
+    if (void 0 !== e) {
+      var i = e.call(t, r || "default");
+      if ("object" != _typeof2(i)) return i;
+      throw new TypeError("@@toPrimitive must return a primitive value.");
+    }
+    return ("string" === r ? String : Number)(t);
+  }
+  function computeAccessibleDescription(root) {
+    var options = arguments.length > 1 && arguments[1] !== void 0 ? arguments[1] : {};
+    var description = queryIdRefs(root, "aria-describedby").map(function(element) {
+      return computeTextAlternative(element, _objectSpread(_objectSpread({}, options), {}, {
+        compute: "description"
+      }));
+    }).join(" ");
+    if (description === "") {
+      var ariaDescription = root.getAttribute("aria-description");
+      description = ariaDescription === null ? "" : ariaDescription;
+    }
+    if (description === "") {
+      var title = root.getAttribute("title");
+      description = title === null ? "" : title;
+    }
+    return description;
+  }
+
+  // node_modules/dom-accessibility-api/dist/accessible-name.mjs
+  function prohibitsNaming(node) {
+    return hasAnyConcreteRoles(node, ["caption", "code", "deletion", "emphasis", "generic", "insertion", "none", "paragraph", "presentation", "strong", "subscript", "superscript"]);
+  }
+  function computeAccessibleName(root) {
+    var options = arguments.length > 1 && arguments[1] !== void 0 ? arguments[1] : {};
+    if (prohibitsNaming(root)) {
+      return "";
+    }
+    return computeTextAlternative(root, options);
+  }
+
+  // core/src/accname.ts
+  var OPTIONS = { computedStyleSupportsPseudoElements: true };
+  var flat = (text4) => text4.replace(/\s+/g, " ").trim();
+  function accessibleName(el) {
+    try {
+      return flat(computeAccessibleName(el, OPTIONS));
+    } catch {
+      return "";
+    }
+  }
+  function accessibleDescription(el) {
+    try {
+      return flat(computeAccessibleDescription(el, OPTIONS));
+    } catch {
+      return "";
+    }
+  }
+
   // core/src/shapes.ts
   var DATE_MASK = /^(mm|dd|yyyy)([/.\-\s])(mm|dd)\2(yyyy|mm|dd)$/i;
   var DIGIT_MASK = /^[\s()+\-./]*[09#](?:[\s()+\-./]*[09#])*[\s()+\-./]*$/;
@@ -384,8 +1276,8 @@
       if (widget && label.contains(widget)) continue;
       if (!shownText(node)) continue;
       if (!checkable && !(control.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_PRECEDING)) continue;
-      const text3 = tidy(node.textContent ?? "");
-      if (text3) parts.push(text3);
+      const text4 = tidy(node.textContent ?? "");
+      if (text4) parts.push(text4);
     }
     return parts.join(" ").trim() || labelTextWithoutControls(label);
   }
@@ -413,8 +1305,8 @@
         const parts = [];
         const inner = block.ownerDocument.createTreeWalker(holder, NodeFilter.SHOW_TEXT);
         for (let node = inner.nextNode(); node; node = inner.nextNode()) if (counts(node)) parts.push(tidy(node.textContent ?? ""));
-        const text3 = parts.join(" ").trim();
-        if (text3) return { text: text3.slice(0, 400), from: [holder] };
+        const text4 = parts.join(" ").trim();
+        if (text4) return { text: text4.slice(0, 400), from: [holder] };
       }
     }
     return none;
@@ -438,7 +1330,7 @@
   }
   function labelOf(el) {
     const own = ownLabelOf(el);
-    const piece = (text3) => text3 !== "" && PART_ONLY.test(cleanLabel(text3));
+    const piece = (text4) => text4 !== "" && PART_ONLY.test(cleanLabel(text4));
     if (!piece(own.text)) {
       const labels = Array.from(el.labels ?? []).map(textOf);
       const part = labels.length > 1 ? labels.find(piece) : void 0;
@@ -451,7 +1343,7 @@
   var MOST_PARTS = 4;
   function wholeQuestion(el) {
     const fieldsIn = (node) => Array.from(node.querySelectorAll(CANDIDATE_SELECTOR)).filter(isAField);
-    const whole = (text3) => text3 !== "" && !PART_ONLY.test(cleanLabel(text3));
+    const whole = (text4) => text4 !== "" && !PART_ONLY.test(cleanLabel(text4));
     const group = el.parentElement?.closest("[aria-labelledby], [aria-label], fieldset");
     if (group) {
       const boxes = fieldsIn(group).length;
@@ -478,20 +1370,20 @@
       const question = parts.filter((part) => isVisible(part) && before(part) && worded(part));
       const shown2 = parts.filter((part) => isVisible(part) && worded(part));
       const chosen = question.length > 0 ? question : shown2.length > 0 ? shown2 : parts;
-      const text3 = chosen.map(textOf).join(" ");
-      if (text3) return { text: text3, from: chosen };
+      const text4 = chosen.map(textOf).join(" ");
+      if (text4) return { text: text4, from: chosen };
     }
     const ariaLabel = tidy(el.getAttribute("aria-label") ?? "");
     if (ariaLabel) return { text: ariaLabel, from: [] };
     if (el.id) {
       const forLabel = root.querySelector(`label[for="${CSS.escape(el.id)}"]`);
-      const text3 = textOf(forLabel);
-      if (text3) return { text: text3, from: [forLabel] };
+      const text4 = textOf(forLabel);
+      if (text4) return { text: text4, from: [forLabel] };
     }
     const wrapping = el.closest("label");
     if (wrapping) {
-      const text3 = wrappingLabelText(wrapping, el);
-      if (text3) return { text: text3, from: [wrapping] };
+      const text4 = wrappingLabelText(wrapping, el);
+      if (text4) return { text: text4, from: [wrapping] };
     }
     const legend = el.closest("fieldset")?.querySelector("legend");
     const legendText = textOf(legend);
@@ -506,13 +1398,14 @@
     for (let hops = 0; node && hops < 4; hops++) {
       let sibling = node.previousElementSibling;
       while (sibling) {
-        const text3 = textOf(sibling);
-        if (text3 && text3.length <= 120) return { text: text3, from: [sibling] };
+        const text4 = textOf(sibling);
+        if (text4 && text4.length <= 120) return { text: text4, from: [sibling] };
         sibling = sibling.previousElementSibling;
       }
       node = node.parentElement;
     }
-    return { text: "", from: [] };
+    const standard = accessibleName(el);
+    return { text: standard, from: [] };
   }
   function isMenuButton(el) {
     const popup = el.getAttribute("aria-haspopup");
@@ -533,8 +1426,8 @@
     const root = container.getRootNode();
     const labelledBy = container.getAttribute("aria-labelledby");
     if (labelledBy) {
-      const text3 = labelledBy.split(/\s+/).map((id) => textOf(root.querySelector(`#${CSS.escape(id)}`) ?? container.ownerDocument?.getElementById(id))).filter(Boolean).join(" ");
-      if (text3) return text3;
+      const text4 = labelledBy.split(/\s+/).map((id) => textOf(root.querySelector(`#${CSS.escape(id)}`) ?? container.ownerDocument?.getElementById(id))).filter(Boolean).join(" ");
+      if (text4) return text4;
     }
     const ariaLabel = tidy(container.getAttribute("aria-label") ?? "");
     if (ariaLabel) return ariaLabel;
@@ -547,6 +1440,12 @@
   function choicesSayRequired(el) {
     return el.getAttribute("role") === "radiogroup" && el.querySelector("[role='radio'][aria-required='true'], input[type='radio'][required]") !== null;
   }
+  function describe(el, label) {
+    const text4 = accessibleDescription(el);
+    if (!text4 || comparableText(text4) === comparableText(label)) return "";
+    return text4.length > 160 ? `${text4.slice(0, 157)}\u2026` : text4;
+  }
+  var comparableText = (text4) => text4.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
   var PART_ONLY = /^(date|time|day|month|year|hour|minute|dd|mm|yyyy|hh)$/i;
   var STARRED = /^[\s\p{Cf}]*[*✱]|[*✱][\s\p{Cf}]*$/u;
   function starBeside(sources, control) {
@@ -705,8 +1604,8 @@
           kind: "radio",
           required: STARRED.test(question) || drawsAStar(from),
           options: toggles.map((toggle) => {
-            const text3 = tidy(toggle.textContent ?? "");
-            return { value: text3, label: text3 };
+            const text4 = tidy(toggle.textContent ?? "");
+            return { value: text4, label: text4 };
           }),
           custom: true
         };
@@ -789,6 +1688,8 @@
       if (selector) spec.selector = selector;
       const options = optionsOf(el);
       if (options) spec.options = options;
+      const description = describe(el, label);
+      if (description) spec.description = description;
       const maxLength = el.maxLength;
       if (maxLength && maxLength > 0) spec.maxLength = maxLength;
       const pattern = el.getAttribute("pattern");
@@ -823,8 +1724,8 @@
     if (firstField) {
       const above = deepQueryAll(root, "h1,h2,h3,h4,[role='heading']").filter(isVisible).filter((heading) => heading.compareDocumentPosition(firstField) & FOLLOWING);
       const nearest = above[above.length - 1];
-      const text3 = nearest ? cleanLabel(textOf(nearest)) : "";
-      if (text3) return text3.slice(0, 80);
+      const text4 = nearest ? cleanLabel(textOf(nearest)) : "";
+      if (text4) return text4.slice(0, 80);
     }
     const doc = ownerDocumentOf(root);
     return (doc.title ?? "").split(/\s[|·–-]\s/)[0].trim().slice(0, 80);
@@ -832,12 +1733,21 @@
   function placeInSections(root, specs, handles, usedIds) {
     const FOLLOWING = 4;
     const byPosition = (a, b) => a.compareDocumentPosition(b) & FOLLOWING ? -1 : 1;
-    const fields = [...handles.values()].sort(byPosition);
-    const first = fields[0];
+    const first = [...handles.values()].sort(byPosition)[0];
     if (!first) return;
     const isTitle = (heading) => heading.tagName.toLowerCase() !== "legend" && Boolean(heading.compareDocumentPosition(first) & FOLLOWING);
     const headings = deepQueryAll(root, HEADING_SELECTOR).filter(isVisible).filter((heading) => !isTitle(heading)).sort(byPosition);
-    if (headings.length === 0) return;
+    const groupName = (el) => {
+      const group = el.parentElement?.closest("fieldset, [role='group']");
+      if (!group) return "";
+      const inside = specs.filter((spec) => {
+        const field = handles.get(spec.id);
+        return field !== void 0 && group.contains(field);
+      });
+      if (inside.length < 2) return "";
+      const name = cleanLabel(containerName(group));
+      return inside.some((spec) => spec.label === name) ? "" : name;
+    };
     const sectionOf = (el, label) => {
       let found = "";
       for (const heading of headings) {
@@ -845,6 +1755,7 @@
         const governs = heading.tagName.toLowerCase() === "legend" ? Boolean(heading.parentElement?.contains(el)) : Boolean(heading.compareDocumentPosition(el) & FOLLOWING);
         if (governs) found = cleanLabel(textOf(heading));
       }
+      if (!found) found = groupName(el);
       return found && found !== label ? found : "";
     };
     for (const spec of specs) {
@@ -934,16 +1845,16 @@
   }
 
   // core/src/choices.ts
-  function normalise(text3) {
-    return text3.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  function normalise(text4) {
+    return text4.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
   }
   var MEANS_NO = /\b(no|not|false|never|decline|disagree|refuse|nahi|nahin)\b/i;
   var MEANS_YES = /\b(yes|true|agree|agreed|accept|confirm|ok|okay|sure|haan|han|ji|sahi)\b/i;
   function readAsYesOrNo(value) {
     if (typeof value === "boolean") return value;
-    const text3 = String(value);
-    if (MEANS_NO.test(text3)) return false;
-    return MEANS_YES.test(text3);
+    const text4 = String(value);
+    if (MEANS_NO.test(text4)) return false;
+    return MEANS_YES.test(text4);
   }
   function bareName(label) {
     return normalise(label.replace(/\s*\+\d[\d\s-]*$/, "").replace(/\s*\([^)]*\)\s*$/, ""));
@@ -960,7 +1871,7 @@
     const exact = candidates.findIndex((candidate) => normalise(candidate) === want);
     if (exact >= 0) return exact;
     const plain = candidates.map(bareName);
-    if (plain.filter((text3) => text3 === want).length === 1) return plain.indexOf(want);
+    if (plain.filter((text4) => text4 === want).length === 1) return plain.indexOf(want);
     const whole = [];
     candidates.forEach((candidate, index) => {
       if (` ${normalise(candidate)} `.includes(` ${want} `)) whole.push(index);
@@ -968,8 +1879,8 @@
     if (whole.length === 1) return whole[0];
     const partial = [];
     candidates.forEach((candidate, index) => {
-      const text3 = normalise(candidate);
-      if (text3.length > 0 && (text3.includes(want) || want.includes(text3))) partial.push(index);
+      const text4 = normalise(candidate);
+      if (text4.length > 0 && (text4.includes(want) || want.includes(text4))) partial.push(index);
     });
     return partial.length === 1 ? partial[0] : null;
   }
@@ -1066,8 +1977,8 @@
     const own = el.tagName.toLowerCase() === "input" ? (el.value ?? "").trim() : "";
     let node = el.parentElement;
     for (let hops = 0; node && hops < 5; hops++) {
-      const text3 = shownWithoutChoices(node);
-      if (text3) return own ? `${own} ${text3}` : text3;
+      const text4 = shownWithoutChoices(node);
+      if (text4) return own ? `${own} ${text4}` : text4;
       node = node.parentElement;
     }
     return own;
@@ -1082,8 +1993,8 @@
       const list = parent?.closest(CHOICE_LIST);
       if (!parent || list && block.contains(list)) continue;
       if (parent.checkVisibility && !parent.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })) continue;
-      const text3 = (node.textContent ?? "").replace(/\s+/g, " ").trim();
-      if (text3) parts.push(text3);
+      const text4 = (node.textContent ?? "").replace(/\s+/g, " ").trim();
+      if (text4) parts.push(text4);
     }
     return parts.join(" ");
   }
@@ -1102,8 +2013,8 @@
   }
   var PLACEHOLDER = /^(select|choose|pick|please (select|choose)|none selected)\b|^-+.*-+$|(\.\.\.|…)$/i;
   function readText(el) {
-    const text3 = readBack(el).trim();
-    return text3 ? text3 : null;
+    const text4 = readBack(el).trim();
+    return text4 ? text4 : null;
   }
   function readShown(spec, el) {
     const own = el.tagName.toLowerCase() === "input" ? "" : (el.innerText ?? "").replace(/\s+/g, " ").trim();
@@ -1259,13 +2170,13 @@
       const decided = chosenFrom(spec, spoken);
       if ("status" in decided) return decided;
       const boxes = choiceGroup(el);
-      const wantedValues = decided.chosen.map((c) => c.value);
+      const wantedValues = decided.chosen.map((c2) => c2.value);
       const wants = (box) => wantedValues.includes(choiceKey(box, boxes));
       for (const box of boxes) {
         const shouldCheck = wants(box);
         if (box.checked !== shouldCheck) pressChoice(box, shouldCheck);
       }
-      const wrote = decided.chosen.map((c) => c.label).join(", ");
+      const wrote = decided.chosen.map((c2) => c2.label).join(", ");
       const off = boxes.filter((box) => box.checked !== wants(box));
       return off.length === 0 && boxes.length > 0 ? { fieldId: spec.id, status: "written", wrote } : { fieldId: spec.id, status: "rejected-by-page", wrote, found: boxes.filter((box) => box.checked).map((box) => box.value).join(", ") };
     },
@@ -1367,7 +2278,7 @@
   function everyWordIn(candidates, spoken) {
     const words3 = normalise(spoken).split(" ").filter(Boolean);
     if (words3.length === 0) return null;
-    const hits = candidates.map((candidate, index) => ({ text: normalise(candidate), index })).filter(({ text: text3 }) => words3.every((word) => text3.includes(word)));
+    const hits = candidates.map((candidate, index) => ({ text: normalise(candidate), index })).filter(({ text: text4 }) => words3.every((word) => text4.includes(word)));
     return hits.length === 1 ? hits[0].index : null;
   }
   async function typeAndPick(spec, el, spoken) {
@@ -1487,11 +2398,11 @@
       const decided = chosenFrom(spec, spoken);
       if ("status" in decided) return decided;
       const select = el;
-      const wantedValues = new Set(decided.chosen.map((c) => c.value));
+      const wantedValues = new Set(decided.chosen.map((c2) => c2.value));
       for (const option of Array.from(select.options)) option.selected = wantedValues.has(option.value);
       announce(select, ["input", "change"]);
       const now = Array.from(select.selectedOptions);
-      const wrote = decided.chosen.map((c) => c.label).join(", ");
+      const wrote = decided.chosen.map((c2) => c2.label).join(", ");
       return now.length === wantedValues.size && now.every((option) => wantedValues.has(option.value)) ? { fieldId: spec.id, status: "written", wrote } : { fieldId: spec.id, status: "rejected-by-page", wrote, found: now.map((option) => option.textContent?.trim() ?? "").join(", ") };
     },
     read(_spec, el) {
@@ -1574,11 +2485,11 @@
     name: "contenteditable",
     matches: (_spec, el) => el.isContentEditable,
     async write(spec, el, spoken) {
-      const text3 = String(spoken.value);
-      el.textContent = text3;
+      const text4 = String(spoken.value);
+      el.textContent = text4;
       announce(el, ["input", "change"]);
       const found = readBack(el);
-      return found === text3 ? { fieldId: spec.id, status: "written", wrote: text3 } : { fieldId: spec.id, status: "rejected-by-page", wrote: text3, found };
+      return found === text4 ? { fieldId: spec.id, status: "written", wrote: text4 } : { fieldId: spec.id, status: "rejected-by-page", wrote: text4, found };
     },
     read: readTyped,
     clear: clearTyped
@@ -1807,6 +2718,7 @@
     if (spec.section) parts.push(`(in the "${spec.section}" section)`);
     if (spec.required) parts.push("(the form marks this required)");
     if (spec.longForm) parts.push("(a long answer \u2014 several sentences are welcome)");
+    if (spec.description) parts.push(`(the form adds: "${spec.description}")`);
     return {
       type: "object",
       description: parts.join(" "),
@@ -2029,11 +2941,11 @@
   // core/src/evidence.ts
   var MIN_WORD_OVERLAP = 0.7;
   var MIN_QUOTE_CHARS = 2;
-  function normalise2(text3) {
-    return text3.toLowerCase().replace(/[\p{P}\p{S}]/gu, " ").replace(/\s+/g, " ").trim();
+  function normalise2(text4) {
+    return text4.toLowerCase().replace(/[\p{P}\p{S}]/gu, " ").replace(/\s+/g, " ").trim();
   }
-  function words(text3) {
-    return normalise2(text3).split(" ").filter(Boolean);
+  function words(text4) {
+    return normalise2(text4).split(" ").filter(Boolean);
   }
   function checkEvidence(transcript, evidence) {
     const quote = (evidence ?? "").trim();
@@ -2078,8 +2990,8 @@
   var MAX_KEYTERMS = 100;
   var MAX_KEYTERMS_CHARS = 8e3;
   var MAX_CALLS_PER_UTTERANCE = 3;
-  function clip(text3, max) {
-    return text3.length <= max ? text3 : text3.slice(0, max);
+  function clip(text4, max) {
+    return text4.length <= max ? text4 : text4.slice(0, max);
   }
   function keytermsFrom(specs, known) {
     const terms = [];
@@ -2190,15 +3102,15 @@
   var HEAVILY_EDITED_RATIO = 0.25;
   var SLOW_START_SECONDS = 2.5;
   var FILLER_THRESHOLD = 2;
-  function normalise3(text3) {
-    return text3.toLowerCase().replace(/[\p{P}\p{S}]/gu, " ").replace(/\s+/g, " ").trim();
+  function normalise3(text4) {
+    return text4.toLowerCase().replace(/[\p{P}\p{S}]/gu, " ").replace(/\s+/g, " ").trim();
   }
   function countFillers(verbatim) {
-    const text3 = ` ${normalise3(verbatim)} `;
+    const text4 = ` ${normalise3(verbatim)} `;
     const found = [];
     let count2 = 0;
     for (const filler of FILLERS) {
-      const matches = text3.split(` ${filler} `).length - 1;
+      const matches = text4.split(` ${filler} `).length - 1;
       if (matches > 0) {
         count2 += matches;
         found.push(filler);
@@ -2645,10 +3557,10 @@
       } else if (spec?.kind === "file") {
         why = "needs_the_person";
       } else {
-        const quote = claimed.find((c) => c.fieldId === o.fieldId)?.evidence?.trim() ?? "";
+        const quote = claimed.find((c2) => c2.fieldId === o.fieldId)?.evidence?.trim() ?? "";
         why = quote.length >= 2 && !spec?.suspectedHoneypot ? "quote_not_found" : "not_heard";
       }
-      const tried = claimed.find((c) => c.fieldId === o.fieldId)?.value;
+      const tried = claimed.find((c2) => c2.fieldId === o.fieldId)?.value;
       return {
         field: o.fieldId,
         question: question(o.fieldId),
@@ -2933,10 +3845,10 @@
   // core/src/form-state.ts
   function sameAnswer(written, onPage) {
     if (onPage === null) return false;
-    const flat = (v) => (Array.isArray(v) ? v.join(" ") : String(v)).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+    const flat2 = (v) => (Array.isArray(v) ? v.join(" ") : String(v)).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
     if (typeof onPage === "boolean") return onPage === Boolean(written);
-    const a = flat(written);
-    const b = flat(onPage);
+    const a = flat2(written);
+    const b = flat2(onPage);
     return a === b || a.length > 0 && (b.startsWith(a) || a.startsWith(b) || b.length >= 2 && a.endsWith(b));
   }
   function isOpen(field) {
@@ -3029,8 +3941,8 @@
     return isChoice2(spec) && UNSURE.test(evidence);
   }
   function sameText(a, b) {
-    const flat = (s) => s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
-    return flat(a) === flat(b);
+    const flat2 = (s) => s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+    return flat2(a) === flat2(b);
   }
 
   // core/src/planner.ts
@@ -3100,10 +4012,10 @@
     empty: ""
   };
   function shown(value) {
-    const text3 = value === true ? "ticked" : Array.isArray(value) ? value.join(", ") : String(value);
-    return text3.length > 48 ? `${text3.slice(0, 48)}\u2026` : text3;
+    const text4 = value === true ? "ticked" : Array.isArray(value) ? value.join(", ") : String(value);
+    return text4.length > 48 ? `${text4.slice(0, 48)}\u2026` : text4;
   }
-  function describe(facts) {
+  function describe2(facts) {
     const where = facts.section ? ` (under "${facts.section}")` : "";
     if (facts.searchable) return `${facts.question}${where} \u2014 a searchable list; whatever they say is looked up, and if several match they'll be offered`;
     if (facts.range) return `${facts.question}${where} \u2014 a number from ${facts.range.min} to ${facts.range.max}`;
@@ -3119,7 +4031,7 @@
   }
   function askFor(fields) {
     const now = batch(fields);
-    return now.length > 1 ? `these together, in one question: ${now.map(describe).join("; ")}` : describe(now[0]);
+    return now.length > 1 ? `these together, in one question: ${now.map(describe2).join("; ")}` : describe2(now[0]);
   }
   function doNext(move) {
     switch (move.kind) {
@@ -3136,9 +4048,9 @@
           return `Ask for their phone number, with its country code, as one question.`;
         }
         if (move.fields.length > 1) {
-          return `Ask for these together in one short question \u2014 they can answer them all at once: ${move.fields.map(describe).join("; ")}.`;
+          return `Ask for these together in one short question \u2014 they can answer them all at once: ${move.fields.map(describe2).join("; ")}.`;
         }
-        return `Ask for ${describe(move.fields[0])}.`;
+        return `Ask for ${describe2(move.fields[0])}.`;
       }
       case "offer_optional":
         return `Every required field is in. Say so, and ask if they want to do the ${move.fields.length} optional ones or hear what they are: ${move.fields.map((f) => f.question).join("; ")}.`;
@@ -3170,7 +4082,7 @@
     if (left.length > 0) {
       lines.push("Still empty:");
       for (const f of left) {
-        lines.push(`  ${describe(factsOf(f.spec, specs))}${f.spec.required ? " [required]" : ""}`);
+        lines.push(`  ${describe2(factsOf(f.spec, specs))}${f.spec.required ? " [required]" : ""}`);
       }
     }
     const putOff = state.fields.filter((f) => isOpen(f) && f.later);
@@ -3599,7 +4511,7 @@
       for (const claim of spoken) {
         const codeId = pairs.get(claim.fieldId);
         if (byId.get(claim.fieldId)?.kind !== "tel" || !codeId) continue;
-        if (spoken.some((c) => c.fieldId === codeId)) continue;
+        if (spoken.some((c2) => c2.fieldId === codeId)) continue;
         const said2 = /^\s*\+\s*(\d{1,4})\b/.exec(String(claim.value)) ?? /\+\s*(\d{1,4})\b/.exec(claim.evidence);
         if (!said2) continue;
         claim.value = String(claim.value).replace(/^\s*\+\s*\d{1,4}[\s.-]*/, "");
@@ -3828,16 +4740,16 @@
     "aur",
     "toh"
   ]);
-  function words2(text3) {
-    return text3.toLowerCase().replace(/[\p{P}\p{S}]/gu, " ").split(/\s+/).filter(Boolean);
+  function words2(text4) {
+    return text4.toLowerCase().replace(/[\p{P}\p{S}]/gu, " ").split(/\s+/).filter(Boolean);
   }
   function markers(quote) {
     const all = words2(quote);
     const rare = all.filter((w) => !COMMON.has(w));
     return rare.length > 0 ? rare : all;
   }
-  function count(text3, word) {
-    return words2(text3).filter((w) => w === word).length;
+  function count(text4, word) {
+    return words2(text4).filter((w) => w === word).length;
   }
   function clipFor(quote, timeline, totalSamples, sampleRate = 24e3) {
     const marks = markers(quote);
@@ -3854,8 +4766,8 @@
     if (startIndex === -1) return null;
     let endIndex = -1;
     for (let i = startIndex; i < timeline.length; i++) {
-      const text3 = timeline[i].text;
-      if (marks.every((w) => count(text3, w) > 0) && count(text3, last) > 0) {
+      const text4 = timeline[i].text;
+      if (marks.every((w) => count(text4, w) > 0) && count(text4, last) > 0) {
         endIndex = i;
         break;
       }
@@ -4334,6 +5246,244 @@
     };
   }
 
+  // core/src/concepts.ts
+  var c = (id, say, valueKind, scope, volatility, extra = {}) => ({
+    id,
+    say,
+    valueKind,
+    scope,
+    volatility,
+    ...extra
+  });
+  var CONCEPTS = [
+    // ── Who they are ──────────────────────────────────────────────────────────────────────
+    c("identity.full_name", "full name", "text", "remember", "stable", { group: "name" }),
+    c("identity.first_name", "first name", "text", "remember", "stable", { group: "name" }),
+    c("identity.middle_name", "middle name", "text", "remember", "stable", { group: "name" }),
+    c("identity.last_name", "last name", "text", "remember", "stable", { group: "name" }),
+    c("identity.preferred_name", "preferred name", "text", "remember", "stable"),
+    c("identity.name_prefix", "title (Mr, Ms, Dr)", "choice", "remember", "stable"),
+    c("identity.name_pronunciation", "how the name is said", "text", "remember", "stable"),
+    c("identity.pronouns", "pronouns", "choice", "remember", "stable"),
+    c("identity.date_of_birth", "date of birth", "date", "remember", "stable", { group: "date_of_birth" }),
+    c("identity.age", "age", "number", "this_form", "volatile"),
+    c("identity.sex", "sex", "choice", "sensitive", "stable"),
+    c("identity.nationality", "nationality", "choice", "remember", "stable"),
+    c("identity.marital_status", "marital status", "choice", "sensitive", "slow"),
+    c("identity.signature", "signature", "text", "never", "stable"),
+    // ── How to reach them ────────────────────────────────────────────────────────────────
+    c("contact.email", "email", "email", "remember", "slow"),
+    c("contact.phone", "phone number", "phone", "remember", "slow", { group: "phone" }),
+    c("contact.phone.country_code", "phone country code", "choice", "remember", "slow", { group: "phone" }),
+    c("contact.phone.area_code", "phone area code", "phone", "remember", "slow", { group: "phone" }),
+    c("contact.phone.number", "phone number (without its codes)", "phone", "remember", "slow", { group: "phone" }),
+    c("contact.preferred_method", "best way to reach them", "choice", "remember", "slow"),
+    // ── Where ────────────────────────────────────────────────────────────────────────────
+    c("address.full", "address", "long", "remember", "slow", { group: "address" }),
+    c("address.street", "street address", "text", "remember", "slow", { group: "address" }),
+    c("address.street2", "address line 2", "text", "remember", "slow", { group: "address" }),
+    c("address.city", "city", "text", "remember", "slow", { group: "address" }),
+    c("address.state", "state or region", "text", "remember", "slow", { group: "address" }),
+    c("address.postal_code", "postal code", "text", "remember", "slow", { group: "address" }),
+    c("address.country", "country", "choice", "remember", "slow", { group: "address" }),
+    c("address.current_location", "where they are based", "text", "remember", "slow"),
+    c("address.country_of_residence", "country they live in", "choice", "remember", "slow"),
+    // ── Documents ────────────────────────────────────────────────────────────────────────
+    c("document.passport_number", "passport number", "text", "sensitive", "slow"),
+    c("document.passport_country", "passport country", "choice", "remember", "stable"),
+    c("document.passport_expiry", "passport expiry", "date", "sensitive", "slow"),
+    c("document.national_id", "national ID number", "text", "sensitive", "stable"),
+    c("document.tax_id", "tax number", "text", "sensitive", "stable"),
+    c("document.health_insurance_number", "health insurance number", "text", "sensitive", "slow"),
+    c("document.drivers_license", "driving licence number", "text", "sensitive", "slow"),
+    // ── Education (one entry per school) ─────────────────────────────────────────────────
+    c("education.school", "school or university", "choice", "remember", "stable", { group: "education", repeatable: true }),
+    c("education.degree", "degree", "choice", "remember", "stable", { group: "education", repeatable: true }),
+    c("education.field_of_study", "field of study", "choice", "remember", "stable", { group: "education", repeatable: true }),
+    c("education.start_date", "study start date", "date", "remember", "stable", { group: "education", repeatable: true }),
+    c("education.graduation_date", "graduation date", "date", "remember", "stable", { group: "education", repeatable: true }),
+    c("education.gpa", "grade average", "text", "remember", "stable", { group: "education", repeatable: true }),
+    c("education.highest_level", "highest level of education", "choice", "remember", "slow"),
+    c("education.student_type", "kind of student", "choice", "this_form", "slow"),
+    c("education.interests", "subjects of interest", "choice", "this_form", "slow"),
+    // ── Work history (one entry per job) ─────────────────────────────────────────────────
+    c("employment.current_employer", "current company", "text", "remember", "slow"),
+    c("employment.current_title", "current job title", "text", "remember", "slow"),
+    c("employment.employer", "company", "text", "remember", "stable", { group: "employment", repeatable: true }),
+    c("employment.title", "job title", "text", "remember", "stable", { group: "employment", repeatable: true }),
+    c("employment.start_date", "job start date", "date", "remember", "stable", { group: "employment", repeatable: true }),
+    c("employment.end_date", "job end date", "date", "remember", "stable", { group: "employment", repeatable: true }),
+    c("employment.description", "what they did there", "long", "remember", "stable", { group: "employment", repeatable: true }),
+    c("employment.years_experience", "years of experience", "number", "remember", "slow"),
+    c("employment.headline", "professional headline", "text", "remember", "slow"),
+    c("employment.notice_period", "notice period", "text", "this_form", "volatile"),
+    c("employment.earliest_start", "earliest start date", "date", "this_form", "volatile"),
+    c("employment.expected_salary", "expected salary", "text", "this_form", "volatile"),
+    c("employment.current_salary", "current salary", "text", "sensitive", "volatile"),
+    c("employment.interviewing_elsewhere", "other interviews under way", "long", "this_form", "volatile"),
+    // ── Links ────────────────────────────────────────────────────────────────────────────
+    c("links.linkedin", "LinkedIn", "url", "remember", "slow"),
+    c("links.github", "GitHub", "url", "remember", "slow"),
+    c("links.portfolio", "portfolio", "url", "remember", "slow"),
+    c("links.website", "website", "url", "remember", "slow"),
+    c("links.twitter", "X / Twitter", "url", "remember", "slow"),
+    c("links.other", "other links", "url", "remember", "slow"),
+    // ── The job, the place, the terms ──────────────────────────────────────────────────────
+    // Authorisation and sponsorship are kept: they are the person's standing, asked the same way on
+    // form after form (the old memory kept them too). The rest depends on this job and this place.
+    c("work.authorized", "authorised to work there", "yesno", "remember", "slow"),
+    c("work.needs_sponsorship", "needs visa sponsorship", "yesno", "remember", "slow"),
+    c("work.willing_to_relocate", "willing to relocate", "yesno", "this_form", "volatile"),
+    c("work.relocation_plans", "relocation plans", "long", "this_form", "volatile"),
+    c("work.lives_near_office", "lives near the office", "yesno", "this_form", "volatile"),
+    c("work.office_attendance", "able to work from the office", "yesno", "this_form", "volatile"),
+    c("work.remote_preference", "remote or office preference", "choice", "remember", "slow"),
+    c("work.travel", "comfortable with travel", "yesno", "this_form", "volatile"),
+    c("work.security_clearance", "security clearance", "choice", "sensitive", "slow"),
+    c("work.compensation_ok", "fine with the pay range", "yesno", "this_form", "volatile"),
+    c("work.languages", "languages spoken", "choice", "remember", "stable"),
+    c("work.language_level", "level in a language", "choice", "remember", "slow"),
+    // ── How they found this ──────────────────────────────────────────────────────────────
+    c("source.how_heard", "how they heard about this", "choice", "this_form", "volatile"),
+    c("source.referrer_name", "who referred them", "text", "this_form", "volatile"),
+    c("source.referrer_email", "referrer's email", "email", "this_form", "volatile"),
+    // ── Consents (always asked fresh) ────────────────────────────────────────────────────
+    c("consent.privacy", "privacy notice agreement", "yesno", "never", "volatile"),
+    c("consent.terms", "terms agreement", "yesno", "never", "volatile"),
+    c("consent.marketing", "marketing messages", "yesno", "never", "volatile"),
+    c("consent.background_check", "background check consent", "yesno", "never", "volatile"),
+    c("consent.recording", "recording or AI notetaker consent", "yesno", "never", "volatile"),
+    c("consent.future_contact", "being contacted later", "yesno", "never", "volatile"),
+    c("consent.data_processing", "data processing consent", "yesno", "never", "volatile"),
+    // ── Equal-opportunity questions (sensitive, always optional to answer) ───────────────
+    c("eeo.gender", "gender", "choice", "sensitive", "stable"),
+    c("eeo.gender_identity", "gender identity", "choice", "sensitive", "stable"),
+    c("eeo.transgender", "transgender experience", "choice", "sensitive", "stable"),
+    c("eeo.sexual_orientation", "sexual orientation", "choice", "sensitive", "stable"),
+    c("eeo.lgbtq", "LGBTQ+ community", "choice", "sensitive", "stable"),
+    c("eeo.race_ethnicity", "race or ethnicity", "choice", "sensitive", "stable"),
+    c("eeo.hispanic_latino", "Hispanic or Latino", "choice", "sensitive", "stable"),
+    c("eeo.veteran_status", "veteran status", "choice", "sensitive", "slow"),
+    c("eeo.disability_status", "disability status", "choice", "sensitive", "slow"),
+    // ── Health (sensitive) ───────────────────────────────────────────────────────────────
+    c("health.allergies", "allergies", "long", "sensitive", "slow"),
+    c("health.medications", "current medications", "long", "sensitive", "volatile"),
+    c("health.conditions", "health conditions", "long", "sensitive", "slow"),
+    c("health.history", "medical history", "long", "sensitive", "slow"),
+    c("health.family_history", "family medical history", "long", "sensitive", "stable"),
+    c("health.symptoms", "current symptoms", "long", "sensitive", "volatile"),
+    c("health.lifestyle", "lifestyle (sleep, diet, exercise, smoking)", "long", "sensitive", "slow"),
+    c("health.mental", "psychological history", "long", "sensitive", "slow"),
+    c("health.doctor", "their doctor", "text", "sensitive", "slow"),
+    // ── An organisation's own details (subject: organization) ───────────────────────────
+    c("organization.name", "organisation name", "text", "remember", "slow"),
+    c("organization.type", "kind of organisation", "choice", "remember", "slow"),
+    // ── Answers written for this form ────────────────────────────────────────────────────
+    c("text.about_you", "about them", "long", "remember", "slow"),
+    c("text.cover_letter", "cover letter", "long", "this_form", "volatile"),
+    c("text.why_this", "why this company or role", "long", "this_form", "volatile"),
+    c("text.additional_info", "anything else", "long", "this_form", "volatile"),
+    // ── The form itself ──────────────────────────────────────────────────────────────────
+    c("meta.today", "today's date", "date", "never", "volatile"),
+    c("meta.signature_date", "date signed", "date", "never", "volatile"),
+    c("meta.search", "a search box, not a question", "text", "never", "volatile"),
+    // Anything else: the form's own question. Its `gist` (from the model) says what it asks.
+    c("other", "this form's own question", "text", "this_form", "volatile")
+  ];
+  var BY_ID = new Map(CONCEPTS.map((concept) => [concept.id, concept]));
+  function conceptById(id) {
+    return BY_ID.get(id);
+  }
+  var LEGACY_KEY_TO_CONCEPT = {
+    first_name: "identity.first_name",
+    last_name: "identity.last_name",
+    full_name: "identity.full_name",
+    preferred_name: "identity.preferred_name",
+    email: "contact.email",
+    phone: "contact.phone",
+    city: "address.city",
+    country: "address.country",
+    postal_code: "address.postal_code",
+    linkedin: "links.linkedin",
+    github: "links.github",
+    portfolio: "links.portfolio",
+    current_employer: "employment.current_employer",
+    current_title: "employment.current_title",
+    years_experience: "employment.years_experience",
+    notice_period: "employment.notice_period",
+    expected_salary: "employment.expected_salary",
+    current_salary: "employment.current_salary",
+    willing_to_relocate: "work.willing_to_relocate",
+    work_authorization: "work.authorized",
+    needs_sponsorship: "work.needs_sponsorship",
+    about_you: "text.about_you"
+  };
+
+  // core/src/understand.ts
+  var SUBJECTS = ["self", "other_person", "organization", "none"];
+  var CONFIDENCES = ["high", "medium", "low"];
+  var KEEPS = { remember: 3, sensitive: 2, this_form: 1, never: 0 };
+  function narrower(a, b) {
+    return KEEPS[a] <= KEEPS[b] ? a : b;
+  }
+  var text3 = (value, cap) => typeof value === "string" ? value.trim().slice(0, cap) : "";
+  function validateMeanings(raw, specs) {
+    const ids = new Set(specs.map((spec) => spec.id));
+    const list = raw && typeof raw === "object" && Array.isArray(raw.fields) ? raw.fields : [];
+    const meanings = {};
+    for (const item of list) {
+      const id = text3(item?.id, 120);
+      if (!ids.has(id) || meanings[id]) continue;
+      const concept = conceptById(text3(item.concept, 80))?.id ?? "other";
+      const defaults = conceptById(concept);
+      const subject = concept.startsWith("organization.") ? "organization" : SUBJECTS.includes(item.subject) ? item.subject : "self";
+      const scope = subject === "self" ? defaults.scope : narrower(defaults.scope, "this_form");
+      const confidence = CONFIDENCES.includes(item.confidence) ? item.confidence : "low";
+      const part = text3(item.part, 40);
+      const entry = item.entry;
+      meanings[id] = {
+        concept,
+        subject,
+        scope,
+        ...part ? { part } : {},
+        ...entry && typeof entry.set === "string" && Number.isInteger(entry.index) ? { entry: { set: entry.set, index: entry.index } } : {},
+        gist: text3(item.gist, 80),
+        confidence,
+        source: "model"
+      };
+    }
+    const partOf = new Map(specs.map((spec) => [spec.id, spec.part ?? ""]));
+    const theirs = /* @__PURE__ */ new Map();
+    for (const [id, meaning] of Object.entries(meanings)) {
+      if (meaning.subject !== "self" || meaning.concept === "other" || conceptById(meaning.concept)?.repeatable) continue;
+      const key = `${meaning.concept}|${partOf.get(id) || meaning.part || ""}`;
+      theirs.set(key, [...theirs.get(key) ?? [], id]);
+    }
+    for (const ids2 of theirs.values()) {
+      if (ids2.length < 2) continue;
+      for (const id of ids2) if (meanings[id].confidence === "high") meanings[id].confidence = "medium";
+    }
+    return meanings;
+  }
+  function fallbackMeanings(specs) {
+    const meanings = {};
+    for (const spec of specs) {
+      if (spec.suspectedHoneypot || spec.kind === "file") continue;
+      const key = canonicalKey(spec);
+      const concept = key && LEGACY_KEY_TO_CONCEPT[key] || "other";
+      const defaults = conceptById(concept);
+      meanings[spec.id] = {
+        concept,
+        subject: "self",
+        scope: defaults.scope,
+        gist: fieldName(spec).slice(0, 80),
+        confidence: "low",
+        source: "fallback"
+      };
+    }
+    return meanings;
+  }
+
   // core/src/notices.ts
   var WHY = {
     not_an_option: "that isn't one of its choices",
@@ -4448,8 +5598,8 @@
       this.current = { ...this.current, ...patch };
       for (const listener of this.listeners) listener(this.current);
     }
-    note(kind, text3) {
-      const log = [...this.current.log.slice(-(LOG_LIMIT - 1)), { at: (/* @__PURE__ */ new Date()).toISOString(), kind, text: text3 }];
+    note(kind, text4) {
+      const log = [...this.current.log.slice(-(LOG_LIMIT - 1)), { at: (/* @__PURE__ */ new Date()).toISOString(), kind, text: text4 }];
       this.update({ log });
     }
     /** Redraw the form, and drop "didn't go in" notices for fields that now have something in them. */
@@ -4532,15 +5682,15 @@
             this.update({ status: "live" });
             this.note("app", how === "resumed" ? "reconnected \u2014 same conversation" : "reconnected \u2014 new session, picked up from the form");
           },
-          onUserPartial: (text3) => {
-            this.partial = text3;
-            this.update({ partial: text3 });
+          onUserPartial: (text4) => {
+            this.partial = text4;
+            this.update({ partial: text4 });
           },
-          onUserTranscript: (text3, audio, timeline) => this.heardTurn(text3, audio, timeline),
-          onAgentTranscript: (text3) => {
+          onUserTranscript: (text4, audio, timeline) => this.heardTurn(text4, audio, timeline),
+          onAgentTranscript: (text4) => {
             this.askedAt = Date.now();
-            this.note("agent", text3);
-            this.update({ turns: [...this.current.turns, { who: "agent", text: text3 }] });
+            this.note("agent", text4);
+            this.update({ turns: [...this.current.turns, { who: "agent", text: text4 }] });
           },
           onSpeechStart: () => {
             const now = Date.now();
@@ -4590,18 +5740,18 @@
       return `${this.transcript}
 ${this.partial}`.trim();
     }
-    heardTurn(text3, audio, timeline) {
+    heardTurn(text4, audio, timeline) {
       if (audio && audio.length > 0) {
-        this.turnAudio = [...this.turnAudio.slice(-5), { text: text3, audio, timeline }];
+        this.turnAudio = [...this.turnAudio.slice(-5), { text: text4, audio, timeline }];
         for (const [fieldId, evidence] of this.pendingClips) {
           if (this.placeClip(fieldId, evidence)) this.pendingClips.delete(fieldId);
         }
       }
       this.partial = "";
       this.transcript = `${this.transcript}
-${text3}`.trim();
-      this.note("you", text3);
-      this.update({ partial: "", turns: [...this.current.turns, { who: "you", text: text3 }] });
+${text4}`.trim();
+      this.note("you", text4);
+      this.update({ partial: "", turns: [...this.current.turns, { who: "you", text: text4 }] });
     }
     // ── The tools ──────────────────────────────────────────────────────────────────────
     /** Runs one tool call and returns what goes back to the agent. Public so replays can drive it. */
@@ -4635,7 +5785,7 @@ ${text3}`.trim();
       }
       if (name === CLEAR_TOOL_NAME) {
         const done = await session.clear(args, heard);
-        const cleared = new Set((done.result.cleared ?? []).map((c) => c.field));
+        const cleared = new Set((done.result.cleared ?? []).map((c2) => c2.field));
         if (cleared.size > 0) {
           for (const id of cleared) this.pendingClips.delete(id);
           const without = (record) => Object.fromEntries(Object.entries(record).filter(([id]) => !cleared.has(id)));
@@ -4798,14 +5948,14 @@ ${text3}`.trim();
       return this.options;
     }
     /** The person finished a turn. */
-    userSays(text3) {
+    userSays(text4) {
       this.o.onSpeechStart?.();
-      this.o.onUserPartial?.(text3);
-      this.o.onUserTranscript?.(text3, null, [{ text: text3, sample: 0 }]);
+      this.o.onUserPartial?.(text4);
+      this.o.onUserTranscript?.(text4, null, [{ text: text4, sample: 0 }]);
     }
     /** The person is mid-sentence: a running partial, not yet final. */
-    partial(text3) {
-      this.o.onUserPartial?.(text3);
+    partial(text4) {
+      this.o.onUserPartial?.(text4);
     }
     /** The agent calls a tool; resolves with what would go back to it. */
     async toolCall(name, args) {
@@ -4815,8 +5965,8 @@ ${text3}`.trim();
       return result;
     }
     /** The agent said something. */
-    agentSays(text3) {
-      this.o.onAgentTranscript?.(text3);
+    agentSays(text4) {
+      this.o.onAgentTranscript?.(text4);
     }
     /** The latest system prompt the agent has — the opening one until something replaced it. */
     get prompt() {
@@ -4976,6 +6126,10 @@ ${text3}`.trim();
     nextReconnect,
     resumeLine,
     matchOption,
+    accessibleName,
+    accessibleDescription,
+    fallbackMeanings,
+    validateMeanings,
     Conductor,
     FakeVoice,
     runScript,

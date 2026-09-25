@@ -81,10 +81,19 @@ const TALK: Metric[] = [
   { key: "touchedUnasked", label: "Changed unasked", better: "lower", gate: true, value: (c) => c.touched ?? 0 },
 ];
 
+const MEANING: Metric[] = [
+  { key: "meaningGiven", label: "Meaning given", better: "higher", value: (c) => ratio(c.given, c.fields) },
+  { key: "conceptRight", label: "Concept right", better: "higher", value: (c) => ratio(c.conceptRight, c.fields) },
+  { key: "subjectRight", label: "Subject right", better: "higher", value: (c) => ratio(c.subjectRight, c.fields) },
+  { key: "scopeRight", label: "Scope right", better: "higher", value: (c) => ratio(c.scopeRight, c.fields) },
+  { key: "dangerous", label: "Someone else's read as theirs", better: "lower", gate: true, value: (c) => c.dangerous ?? 0 },
+];
+
 export const SCORERS: Scorer[] = [
   { name: "read", title: "reading", size: (t) => `${t.fields ?? 0} fields`, metrics: READ },
   { name: "fill", title: "filling", size: (t) => `${t.cases ?? 0} answers`, metrics: FILL },
   { name: "talk", title: "talking", size: (t) => `${t.checks ?? 0} checks`, metrics: TALK },
+  { name: "meaning", title: "meaning", size: (t) => `${t.fields ?? 0} fields`, metrics: MEANING },
 ];
 
 /** Deterministic reads and writes: any move is a real move. Raise per metric here only if one turns out noisy. */

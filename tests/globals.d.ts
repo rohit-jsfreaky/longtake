@@ -60,6 +60,10 @@ import type {
   resumeLine,
   matchOption,
   Conductor,
+  accessibleName,
+  accessibleDescription,
+  fallbackMeanings,
+  validateMeanings,
 } from "@longtake/core";
 import type { FakeVoice } from "../tools/replay/fake-voice";
 import type { runScript } from "../tools/replay/run-script";
@@ -128,6 +132,10 @@ declare global {
       resumeLine: typeof resumeLine;
       matchOption: typeof matchOption;
       Conductor: typeof Conductor;
+      accessibleName: typeof accessibleName;
+      accessibleDescription: typeof accessibleDescription;
+      fallbackMeanings: typeof fallbackMeanings;
+      validateMeanings: typeof validateMeanings;
       FakeVoice: typeof FakeVoice;
       runScript: typeof runScript;
       inspect: () => unknown;

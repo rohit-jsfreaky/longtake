@@ -23,6 +23,9 @@ const DEFAULT_SITE = "http://localhost:3000";
 /** A tab stays "live" across a page load for this long — long enough to load, not to wander off. */
 const CARRY_OVER_MS = 60_000;
 
+/** The site's server routes a content script may reach through here, and no others. */
+const API_PATHS = new Set(["/api/understand"]);
+
 async function site() {
   const { site: override } = await chrome.storage.local.get("site");
   return (override || DEFAULT_SITE).replace(/\/+$/, "");
@@ -148,6 +151,29 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
         reply(response.ok ? { token: body.token } : { error: body.error ?? `Token request failed (${response.status})` });
       } catch (cause) {
         reply({ error: `Could not reach the Longtake site for a voice token. ${String(cause)}` });
+      }
+    })();
+    return true; // answered asynchronously
+  }
+
+  if (message?.type === "longtake:api") {
+    // A content script lives under the page's own CSP and CORS, so the site's server routes are
+    // reached through here — and only the ones on this list.
+    (async () => {
+      if (!API_PATHS.has(message.path)) {
+        reply({ error: `Not a Longtake route: ${message.path}` });
+        return;
+      }
+      try {
+        const response = await fetch(`${await site()}${message.path}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(message.body ?? {}),
+          cache: "no-store",
+        });
+        reply({ status: response.status, body: await response.json().catch(() => ({})) });
+      } catch (cause) {
+        reply({ error: `Could not reach the Longtake site. ${String(cause)}` });
       }
     })();
     return true; // answered asynchronously

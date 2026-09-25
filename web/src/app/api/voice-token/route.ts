@@ -9,12 +9,18 @@
  *     reconnects via `session.resume`.
  */
 
+import { guard } from "@/lib/guard";
+
 const TOKEN_URL = "https://agents.assemblyai.com/v1/token";
 
 // Single-use tokens must never be served from a cache.
 export const dynamic = "force-dynamic";
 
-export async function GET() {
+export async function GET(request: Request) {
+  // Only this site and the Longtake extension may spend its credit — see guard.ts.
+  const refused = guard(request);
+  if (refused) return refused;
+
   const apiKey = process.env.ASSEMBLYAI_API_KEY;
 
   if (!apiKey) {

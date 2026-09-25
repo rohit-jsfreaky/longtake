@@ -529,3 +529,13 @@ test.describe("what is still missing, for the ask-back", () => {
     expect(missing).toEqual([]);
   });
 });
+
+// Jotform's phone boxes say "Format: (000) 000-0000." under the box. The agent is told, so the
+// answer arrives in the shape the form asks for.
+test("the help the page gives for a field goes to the agent with it", async ({ page }) => {
+  const { tool } = await buildFrom(
+    page,
+    `<label for="p">Phone Number</label><input id="p" type="tel" aria-describedby="h"><span id="h">Format: (000) 000-0000.</span>`,
+  );
+  expect(field(tool, "phone_number").description).toContain('the form adds: "Format: (000) 000-0000."');
+});

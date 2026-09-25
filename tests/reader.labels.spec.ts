@@ -148,6 +148,12 @@ test.describe("one answer split across boxes", () => {
   });
 });
 
+// The W3C description — the help under the box — is kept apart from the question, never in it.
+test("the help the page gives is the field's description, not part of its question", async ({ page }) => {
+  await load(page, `<label for="e">Email</label><input id="e" type="email" aria-describedby="h"><span id="h">example@example.com</span>`);
+  expect(only(await read(page))).toMatchObject({ label: "Email", description: "example@example.com" });
+});
+
 test.describe("label cleanup", () => {
   const markers: [string, string][] = [
     ["Country*", "Country"],
