@@ -271,8 +271,8 @@ export async function startSession(page: Page): Promise<void> {
  * answer for what this form's fields mean, already keyed by today's spec ids (`recordedMeanings`);
  * without it, the offline reading.
  */
-export async function startConductor(page: Page, options: { profile?: unknown; understood?: unknown } = {}): Promise<void> {
-  await page.evaluate(async ({ profile, understood }) => {
+export async function startConductor(page: Page, options: { profile?: unknown; understood?: unknown; judge?: boolean } = {}): Promise<void> {
+  await page.evaluate(async ({ profile, understood, judge }) => {
     const core = window.__longtake;
     const fake = new core.FakeVoice();
     const store = core.memoryProfileStore((profile as never) ?? core.emptyProfile());
@@ -286,6 +286,8 @@ export async function startConductor(page: Page, options: { profile?: unknown; u
         workletUrl: "",
         startVoice: fake.start,
         ...(understood ? { understand: async () => understood } : {}),
+        // The trust layer's judge, from Node (judge.ts): recorded, or the gateway itself.
+        ...(judge ? { check: (input: unknown) => (window as unknown as { __corpusCheck: (i: unknown) => Promise<unknown> }).__corpusCheck(input) } : {}),
       },
     });
     await conductor.start();

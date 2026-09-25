@@ -48,6 +48,8 @@ export type FieldState = {
    * or waits for their yes. What it means is on the field itself (`spec.understood`).
    */
   recalled?: { factId: string; sure: boolean };
+  /** The agent told them this went in, and it did not: its words. */
+  claimedIn?: string;
 };
 
 export type FormState = {
@@ -107,6 +109,8 @@ export function snapshot(read: FormRead, ledger: Ledger, title = "", buttons?: A
     if ((source === "spoken" || source === "memory") && entry) state.evidence = entry.evidence;
     const pending = ledger.pendingFor(spec.id);
     if (pending && value === null) state.pending = pending;
+    const claimed = ledger.claimFor(spec.id);
+    if (claimed && value === null) state.claimedIn = claimed;
     if (source === "memory" && entry?.factId) state.recalled = { factId: entry.factId, sure: true };
     else if (value === null && pending?.reason === "from_last_time" && pending.factId) state.recalled = { factId: pending.factId, sure: false };
     const error = el && el.isConnected ? readError(el) : null;

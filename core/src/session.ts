@@ -142,6 +142,17 @@ export class LongtakeSession {
     return move;
   }
 
+  /** What the next move would be, without taking it — offering the optional ones is not marked. */
+  peekMove(): Move {
+    return nextMove(this.state(), this.plan);
+  }
+
+  /** The agent said this field went in; it did not. Told in the brief until the field has an answer. */
+  noteClaimedIn(id: string, said: string): void {
+    this.ledger.claimedIn(id, said);
+    this.options.onChange?.();
+  }
+
   /** The agent's whole prompt: who it is, the form as it is, and what to do next. */
   prompt(): string {
     return systemPrompt(brief(this.state(), this.move()));

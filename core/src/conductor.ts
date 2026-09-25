@@ -23,6 +23,9 @@ import { configForField, fieldsWorthShaping, shapeResult, type DictationConfig, 
 import type { FormState } from "./form-state";
 import { readHesitation, type Hesitation } from "./hesitation";
 import { missesIn, type Missed } from "./notices";
+import { Overlay } from "./overlay";
+import { badgesFor, reviewList, type ReviewGroup } from "./review";
+import { correction, mismatches, TrustWatch, validateClaims, type CheckInput, type Mismatch } from "./trust";
 import type { KnownFact } from "./profile";
 import type { ProfileStore } from "./profile-store";
 import { LongtakeSession } from "./session";
@@ -35,6 +38,8 @@ import {
   type VoiceSession,
   type VoiceSessionOptions,
 } from "./voice";
+import type { Move } from "./planner";
+import { fieldName } from "./types";
 import type { WriteOutcome } from "./writer";
 
 export type ConductorStatus = "idle" | "reading" | "connecting" | "live" | "reconnecting" | "stopped" | "error";
@@ -61,6 +66,8 @@ export type ConductorView = {
   hesitations: Record<string, Hesitation>;
   /** Everything known about the person, newest first. */
   known: KnownFact[];
+  /** What to look at before sending, grouped — the same reading as the badges on the page. */
+  review: ReviewGroup[];
   log: LogEntry[];
 };
 
@@ -74,6 +81,11 @@ export type ConductorServices = {
   dictate?: (config: DictationConfig, pcmBase64: string) => Promise<DictationResult>;
   /** What each field means, from the model. Absent: the offline reading, which fills nothing unasked. */
   understand?: (snapshot: FormSnapshot) => Promise<unknown>;
+  /**
+   * The judge: what the agent claimed about the form in one reply (`/api/check`). Absent: nothing
+   * is judged — the trust layer never guesses without it.
+   */
+  check?: (input: CheckInput) => Promise<unknown>;
   /** The call itself. A fake in tests; `startVoiceSession` everywhere else. */
   startVoice?: (options: VoiceSessionOptions) => Promise<VoiceSession>;
 };
@@ -88,6 +100,8 @@ export type ConductorOptions = {
   logFrames?: boolean;
   /** A call started or ended — the extension tells its background worker, so a page load can carry it on. */
   onActive?: (active: boolean) => void;
+  /** Badges beside each field on the page (overlay.ts). On unless turned off. */
+  badges?: boolean;
 };
 
 const EMPTY_FORM: FormState = {
@@ -116,6 +130,25 @@ export function pcmToBase64(samples: Int16Array): string {
   return btoa(binary);
 }
 
+/** The fields a move asks about — what a "got that in" points at. */
+function askingOf(move: Move): string[] {
+  switch (move.kind) {
+    case "ask":
+    case "optional":
+    case "offer_optional":
+      return move.fields.map((f) => f.field);
+    case "confirm":
+    case "resolve":
+      return [move.field.field];
+    case "confirm_recalled":
+      return move.fields.map((f) => f.field.field);
+    case "update_profile":
+      return move.asks.map((a) => a.field);
+    default:
+      return [];
+  }
+}
+
 export class Conductor {
   readonly session: LongtakeSession;
   private voice: VoiceSession | null = null;
@@ -140,6 +173,12 @@ export class Conductor {
   /** Long answers filled mid-sentence, waiting for their turn to end so their audio exists. */
   private pendingClips = new Map<string, string>();
   private askedAt: number | null = null;
+  /** The trust layer: what the agent says, against what went in (trust.ts). One per call. */
+  private trust = new TrustWatch();
+  /** What each reply said, until it is done. */
+  private replyText = new Map<string, string>();
+  /** The form's answers when the person last spoke — to tell whether a reply changed anything. */
+  private answersAtTurn = "";
   private pauseBeforeAnswer: number | undefined;
   private detach: (() => void) | null = null;
 
@@ -183,6 +222,7 @@ export class Conductor {
       shaped: {},
       hesitations: {},
       known: [],
+      review: [],
       log: [],
     };
   }
@@ -205,7 +245,38 @@ export class Conductor {
 
   private update(patch: Partial<ConductorView>): void {
     this.current = { ...this.current, ...patch };
+    // The list and the badges come from the same reading, whenever what they read changes.
+    if (patch.form || patch.missed || patch.hesitations) {
+      this.current.review = reviewList(this.current.form, this.current.missed);
+      this.overlay?.show(badgesFor(this.current.form, this.current.missed, this.current.hesitations));
+    }
     for (const listener of this.listeners) listener(this.current);
+  }
+
+  /** Bring a field into view and flash its badge — from the review list. */
+  focus(fieldId: string): void {
+    this.overlay?.focus(fieldId);
+  }
+
+  /** Where each badge sits in the viewport — for tests of placement. */
+  badgePositions(): Record<string, { x: number; y: number; shown: boolean }> {
+    return this.overlay?.positions() ?? {};
+  }
+
+  /** Take the badges off the page — the panel closed, the page is leaving. */
+  dispose(): void {
+    this.overlay?.destroy();
+    this.overlay = null;
+  }
+
+  /** The badges on the page, made once, on the page's own document. */
+  private overlay: Overlay | null = null;
+  private showBadges(): void {
+    if (this.options.badges === false || this.overlay || typeof document === "undefined") return;
+    const scope = this.options.root();
+    const doc = "ownerDocument" in scope && scope.ownerDocument ? scope.ownerDocument : (scope as Document);
+    this.overlay = new Overlay(doc, () => this.session.read?.handles ?? new Map());
+    this.overlay.show(badgesFor(this.current.form, this.current.missed, this.current.hesitations));
   }
 
   private note(kind: LogEntry["kind"], text: string): void {
@@ -253,12 +324,15 @@ export class Conductor {
     this.pendingClips = new Map();
     this.askedAt = null;
     this.pauseBeforeAnswer = undefined;
+    this.trust = new TrustWatch();
+    this.replyText = new Map();
     this.update({ status: "reading", error: null, problem: null, turns: [], partial: "", missed: [], log: [] });
     this.options.onActive?.(true);
 
     try {
       await this.prepare();
       await this.session.open();
+      this.showBadges();
       this.refresh();
 
       const problems = this.session.toolProblems();
@@ -284,7 +358,12 @@ export class Conductor {
           this.sentPrompt = this.session.prompt();
           return { systemPrompt: this.sentPrompt, greeting: this.session.resumeGreeting(), tools: this.session.tools() };
         },
-        onToolCall: (name, args) => this.runTool(name, args),
+        onToolCall: (name, args, callId) => this.runTool(name, args, callId),
+        onToolCallStarted: (callId, name) => this.trust.toolCall(callId, name),
+        onReply: (event) => {
+          if (event.type === "started") this.trust.replyStarted(event.id);
+          else this.replyOver(event.id);
+        },
         // After results are out, the agent's prompt catches up with the form — so even a turn with
         // no tool call ("hello?", "what's left?") is answered from the form as it is.
         onResultsSent: () => {
@@ -311,7 +390,8 @@ export class Conductor {
           this.update({ partial: text });
         },
         onUserTranscript: (text, audio, timeline) => this.heardTurn(text, audio, timeline),
-        onAgentTranscript: (text) => {
+        onAgentTranscript: (text, reply) => {
+          if (reply?.id) this.replyText.set(reply.id, text);
           this.askedAt = Date.now();
           this.note("agent", text);
           this.update({ turns: [...this.current.turns, { who: "agent", text }] });
@@ -379,6 +459,10 @@ export class Conductor {
       }
     }
     this.partial = "";
+    // A new exchange for the trust layer: what the agent was asking when they spoke, and the form then.
+    const move = this.session.peekMove();
+    this.trust.userTurn(text, move.kind, askingOf(move));
+    this.answersAtTurn = this.answers();
     // Accumulated, not replaced: a quote may span two turns of one long take.
     this.transcript = `${this.transcript}\n${text}`.trim();
     this.note("you", text);
@@ -388,9 +472,10 @@ export class Conductor {
   // ── The tools ──────────────────────────────────────────────────────────────────────
 
   /** Runs one tool call and returns what goes back to the agent. Public so replays can drive it. */
-  async runTool(name: string, args: Record<string, unknown>): Promise<unknown> {
+  async runTool(name: string, args: Record<string, unknown>, callId?: string): Promise<unknown> {
     this.note("tool", `call ${name} ${JSON.stringify(args)}`);
     const result = await this.route(name, args);
+    if (callId) this.trust.toolResult(callId, result);
     this.note("tool", `result ${name} ${JSON.stringify(result)}`);
     for (const miss of missesIn(result)) this.missed.set(miss.fieldId, miss);
     this.refresh();
@@ -451,6 +536,55 @@ export class Conductor {
     return { error: `Unknown tool "${name}".` };
   }
 
+  // ── The trust layer ────────────────────────────────────────────────────────────────
+
+  /** Every answer on the form, as one string — to tell whether a reply changed anything. */
+  private answers(): string {
+    return JSON.stringify(this.session.state().fields.map((f) => f.value));
+  }
+
+  /**
+   * A reply is over. If it is one worth checking (trust.ts), the judge says what it claimed; every
+   * "put in" that is not in is corrected at once — the agent asked to put it in, quoting the person,
+   * or to say plainly it is not — and the person sees it on screen.
+   */
+  private replyOver(id: string): void {
+    const said = this.replyText.get(id) ?? "";
+    this.replyText.delete(id);
+    const ask = this.trust.replyDone(id, said, this.answers() !== this.answersAtTurn);
+    const check = this.options.services.check;
+    if (!ask || !check) return;
+    // The fields being asked first: a "got that in" points at them, and a small model reading a
+    // long form lost them further down the list (RESEARCH.md §9h).
+    const all = this.session.state().fields.map((f) => ({ id: f.spec.id, question: fieldName(f.spec) }));
+    const fields = [...all.filter((f) => ask.asking.includes(f.id)), ...all.filter((f) => !ask.asking.includes(f.id))];
+    void check({ said: ask.said, heard: ask.heard, asking: ask.asking, fields })
+      .then((raw) => {
+        const state = this.session.state();
+        const byId = new Map(state.fields.map((f) => [f.spec.id, f]));
+        const claims = validateClaims(raw, ask.said, [...byId.keys()]);
+        const found = mismatches(
+          claims,
+          (field) => byId.get(field)?.value !== null && byId.get(field)?.value !== undefined && !ask.notIn.includes(field),
+          (field) => { const f = byId.get(field); return f ? fieldName(f.spec) : field; },
+        );
+        if (found.length > 0) this.correct(found);
+      })
+      .catch((cause) => this.note("app", `could not check the reply: ${cause instanceof Error ? cause.message : String(cause)}`));
+  }
+
+  private correct(found: Mismatch[]): void {
+    for (const m of found) {
+      this.session.noteClaimedIn(m.field, m.said);
+      this.missed.set(m.field, { fieldId: m.field, question: m.question, why: "the agent said it went in, but it did not — it's being put right" });
+    }
+    this.note("app", `said it went in, but it did not: ${found.map((m) => m.field).join(", ")}`);
+    this.refresh();
+    this.sentPrompt = this.session.prompt();
+    this.voice?.setSystemPrompt(this.sentPrompt);
+    this.voice?.createReply(correction(found));
+  }
+
   // ── Watching the page ──────────────────────────────────────────────────────────────
 
   /**
@@ -471,8 +605,15 @@ export class Conductor {
 
     let shapeTimer: ReturnType<typeof setTimeout> | undefined;
     let typeTimer: ReturnType<typeof setTimeout> | undefined;
+    // A change inside our own furniture, or the furniture itself arriving or leaving (the badges'
+    // host), is not the form changing.
+    const oursOnly = (record: MutationRecord) =>
+      ours(record.target) ||
+      (record.type === "childList" &&
+        [...record.addedNodes, ...record.removedNodes].length > 0 &&
+        [...record.addedNodes, ...record.removedNodes].every((node) => ours(node)));
     const observer = new MutationObserver((records) => {
-      if (records.every((record) => ours(record.target))) return;
+      if (records.every(oursOnly)) return;
       if (this.session.isWriting) {
         this.session.noteMoveDuringWrite();
         return;

@@ -13,6 +13,7 @@ export type Sent =
   | { kind: "systemPrompt"; value: string }
   | { kind: "tools"; value: unknown[] }
   | { kind: "transcriptionMode"; value: string }
+  | { kind: "reply"; value: string }
   | { kind: "stop" };
 
 export class FakeVoice {
@@ -20,6 +21,8 @@ export class FakeVoice {
   sent: Sent[] = [];
   /** The opening config the call was started with. */
   opening: { systemPrompt: string; greeting: string; tools: unknown[]; voice?: string } | null = null;
+  private replies = 0;
+  private calls = 0;
 
   start = async (options: VoiceSessionOptions): Promise<VoiceSession> => {
     this.options = options;
@@ -33,6 +36,7 @@ export class FakeVoice {
       setSystemPrompt: (value) => this.sent.push({ kind: "systemPrompt", value }),
       setTools: (value) => this.sent.push({ kind: "tools", value }),
       setTranscriptionMode: (value) => this.sent.push({ kind: "transcriptionMode", value }),
+      createReply: (value) => this.sent.push({ kind: "reply", value }),
     };
   };
 
@@ -56,14 +60,24 @@ export class FakeVoice {
   /** The agent calls a tool; resolves with what would go back to it. */
   async toolCall(name: string, args: Record<string, unknown>): Promise<unknown> {
     if (!this.o.onToolCall) throw new Error("FakeVoice: no tool handler");
-    const result = await this.o.onToolCall(name, args);
+    const callId = `call_${++this.calls}`;
+    this.o.onToolCallStarted?.(callId, name);
+    const result = await this.o.onToolCall(name, args, callId);
     this.o.onResultsSent?.();
     return result;
   }
 
-  /** The agent said something. */
+  /** The agent said something: one whole reply — started, its words, done. */
   agentSays(text: string): void {
-    this.o.onAgentTranscript?.(text);
+    const id = `reply_${++this.replies}`;
+    this.o.onReply?.({ type: "started", id });
+    this.o.onAgentTranscript?.(text, { id, interrupted: false });
+    this.o.onReply?.({ type: "done", id, status: "completed" });
+  }
+
+  /** Every reply the conductor asked for, with its instructions. */
+  get asked(): string[] {
+    return this.sent.flatMap((s) => (s.kind === "reply" ? [s.value] : []));
   }
 
   /** The latest system prompt the agent has — the opening one until something replaced it. */

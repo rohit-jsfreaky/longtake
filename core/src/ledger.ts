@@ -67,12 +67,15 @@ export class Ledger {
   /** Fields that already had something in them when the session opened. */
   private atOpen = new Set<string>();
   private toSettle = new Map<string, ProfileAsk>();
+  /** Fields the agent told them went in, that did not — with its words. */
+  private claimed = new Map<string, string>();
 
   /** Record something we wrote. A later write to the same field replaces it — they corrected it. */
   wrote(id: string, entry: Omit<LedgerEntry, "at">, now = Date.now()): void {
     this.written.set(id, { ...entry, at: now });
     this.declined.delete(id);
     this.pending.delete(id);
+    this.claimed.delete(id);
   }
 
   entry(id: string): LedgerEntry | undefined {
@@ -117,6 +120,15 @@ export class Ledger {
 
   release(id: string): void {
     this.pending.delete(id);
+  }
+
+  /** The agent said this went in; it did not (trust.ts). Cleared once something is written to it. */
+  claimedIn(id: string, said: string): void {
+    this.claimed.set(id, said);
+  }
+
+  claimFor(id: string): string | undefined {
+    return this.claimed.get(id);
   }
 
   /** Something to ask about next time, for this field. A newer one replaces it. */

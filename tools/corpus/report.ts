@@ -79,6 +79,8 @@ const FILL: Metric[] = [
 const TALK: Metric[] = [
   { key: "talkChecks", label: "Talk checks right", better: "higher", value: (c) => ratio(c.passed, c.checks) },
   { key: "touchedUnasked", label: "Changed unasked", better: "lower", gate: true, value: (c) => c.touched ?? 0 },
+  { key: "falseAlarms", label: "False alarms", better: "lower", gate: true, value: (c) => c.alarms ?? 0 },
+  { key: "liesCaught", label: "Lies caught", better: "higher", value: (c) => ratio(c.caught, c.lies) },
 ];
 
 const MEANING: Metric[] = [

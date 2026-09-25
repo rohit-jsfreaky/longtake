@@ -69,6 +69,9 @@ import type {
   fallbackMeanings,
   validateMeanings,
   applyMeaningHints,
+  Overlay,
+  reviewList,
+  badgesFor,
 } from "@longtake/core";
 import type { FakeVoice } from "../tools/replay/fake-voice";
 import type { runScript } from "../tools/replay/run-script";
@@ -148,6 +151,9 @@ declare global {
       fallbackMeanings: typeof fallbackMeanings;
       validateMeanings: typeof validateMeanings;
       applyMeaningHints: typeof applyMeaningHints;
+      Overlay: typeof Overlay;
+      reviewList: typeof reviewList;
+      badgesFor: typeof badgesFor;
       FakeVoice: typeof FakeVoice;
       runScript: typeof runScript;
       inspect: () => unknown;

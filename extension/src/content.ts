@@ -15,16 +15,16 @@
  * Built by `npm run build:extension` into `extension/dist/content.js`.
  */
 
-import { Conductor, readForm, type ConductorView, type FormSnapshot } from "@longtake/core";
+import { Conductor, readForm, type CheckInput, type ConductorView, type FormSnapshot } from "@longtake/core";
 
 import { miss, notice, Panel, type PanelView } from "./panel";
 import { profileClient } from "./profile-client";
 
 /** Our own panel, and nothing else, is never part of their form. */
 const IGNORE = "[data-longtake-ignore]";
-/** What each field means, from the site's model route — reached through the background worker. */
-async function understand(snapshot: FormSnapshot): Promise<unknown> {
-  const reply = (await chrome.runtime.sendMessage({ type: "longtake:api", path: "/api/understand", body: snapshot })) as
+/** One of the site's model routes, reached through the background worker. */
+async function siteApi(path: string, body: unknown): Promise<unknown> {
+  const reply = (await chrome.runtime.sendMessage({ type: "longtake:api", path, body })) as
     | { status?: number; body?: { error?: string }; error?: string }
     | undefined;
   if (!reply || reply.error || !reply.status || reply.status >= 400) {
@@ -62,6 +62,7 @@ function openPanel(carrying = false): void {
       close: () => closePanel(),
       settings: (tab) => tellBackground({ type: "longtake:settings", tab }),
       copyLog: () => void navigator.clipboard.writeText(conductor?.copyLog() ?? "{}").catch(() => undefined),
+      focus: (fieldId) => conductor?.focus(fieldId),
     });
   }
   const questions = countQuestions();
@@ -71,6 +72,7 @@ function openPanel(carrying = false): void {
 
 function closePanel(): void {
   void conductor?.stop();
+  conductor?.dispose();
   unsubscribe?.();
   unsubscribe = null;
   conductor = null;
@@ -95,6 +97,7 @@ function toPanel(view: ConductorView): PanelView {
     progress: `${form.progress.filled} of ${form.progress.total} in · ${form.progress.requiredLeft} required left`,
     ...(lastHeard ? { heard: lastHeard } : {}),
     ...(lastSaid ? { said: lastSaid } : {}),
+    review: view.review,
     notices: [
       ...view.missed.map((m) => miss("Didn't go in:", `${m.question} — ${m.why}`)),
       ...form.fields.filter((f) => f.pending).map((f) => notice("Waiting for your yes:", `${f.spec.label} → ${f.pending!.suggestion}`)),
@@ -121,7 +124,8 @@ async function begin(): Promise<void> {
       workletUrl: chrome.runtime.getURL("dist/pcm-processor.js"),
       ...(settings.wsUrl ? { wsUrl: settings.wsUrl } : {}),
       voice: settings.voice ?? "charles",
-      understand,
+      understand: (snapshot: FormSnapshot) => siteApi("/api/understand", snapshot),
+      check: (input: CheckInput) => siteApi("/api/check", input),
     },
     onActive: (active) => tellBackground({ type: "longtake:active", active }),
   });

@@ -32,7 +32,7 @@ const DEFAULT_SITE = "http://localhost:3000";
 const CARRY_OVER_MS = 60_000;
 
 /** The site's server routes a content script may reach through here, and no others. */
-const API_PATHS = new Set(["/api/understand"]);
+const API_PATHS = new Set(["/api/understand", "/api/check"]);
 
 type Live = { frameId: number; origin: string; at: number };
 

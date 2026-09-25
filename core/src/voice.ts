@@ -11,7 +11,7 @@
  * worklet are passed in, not fetched from our own paths.
  */
 
-import { ToolResultQueue } from "./dispatch";
+import { ReplyRequestQueue, ToolResultQueue } from "./dispatch";
 import { nextReconnect, RESUME_REFUSED, type Drop } from "./reconnect";
 import type { TimelinePoint } from "./clip";
 
@@ -153,7 +153,7 @@ export type VoiceSessionOptions = {
    * Returning an object is enough — it is stringified before it is sent, as the API requires.
    * Throwing is also fine: the message becomes an `error` the agent reads verbatim.
    */
-  onToolCall?: (name: string, args: Record<string, unknown>) => Promise<unknown>;
+  onToolCall?: (name: string, args: Record<string, unknown>, callId?: string) => Promise<unknown>;
   /** Every frame in both directions, for the on-screen log. */
   onEvent?: (direction: "in" | "out", message: AgentMessage) => void;
   onReady?: (sessionId: string) => void;
@@ -161,7 +161,12 @@ export type VoiceSessionOptions = {
   onUserPartial?: (runningText: string) => void;
   /** A finished turn: the words, its PCM16 24 kHz audio (or null), and when each word arrived. */
   onUserTranscript?: (text: string, audio: Int16Array | null, timeline: TimelinePoint[]) => void;
-  onAgentTranscript?: (text: string) => void;
+  /** What the agent said, whole, with the reply it belongs to and whether it was cut off. */
+  onAgentTranscript?: (text: string, reply?: { id: string; interrupted: boolean }) => void;
+  /** Every reply's start and end — the trust layer's clock. */
+  onReply?: (event: { type: "started" | "done"; id: string; status?: string }) => void;
+  /** A tool call arrived, before its handler runs. */
+  onToolCallStarted?: (callId: string, name: string) => void;
   /** Fired the moment the person starts speaking a turn. */
   onSpeechStart?: () => void;
   onError?: (message: string) => void;
@@ -183,6 +188,11 @@ export type VoiceSession = {
   setTools: (tools: unknown[]) => void;
   /** Replace the system prompt mid-call. */
   setSystemPrompt: (prompt: string) => void;
+  /**
+   * Ask the agent to speak now, with one-shot instructions (`reply.create`) — sent only when it is
+   * not mid-reply, the person is not mid-sentence, and no tool result is out or owed (dispatch.ts).
+   */
+  createReply: (instructions: string) => void;
 };
 
 /**
@@ -243,6 +253,8 @@ export async function startVoiceSession(options: VoiceSessionOptions): Promise<V
     onUserPartial,
     onUserTranscript,
     onAgentTranscript,
+    onReply,
+    onToolCallStarted,
     onSpeechStart,
     onError,
     onClosed,
@@ -467,6 +479,14 @@ export async function startVoiceSession(options: VoiceSessionOptions): Promise<V
    * that could not be resumed has nobody left to read it, so a fresh session starts a fresh queue.
    */
   let results = new ToolResultQueue();
+  /** Replies we ask for (`reply.create`), held for a moment the agent is free — see dispatch.ts. */
+  const replies = new ReplyRequestQueue();
+
+  const flushReplies = () => {
+    if (!ready || !ws || ws.readyState !== WebSocket.OPEN) return;
+    const instructions = replies.due(Date.now());
+    if (instructions !== null) send({ type: "reply.create", instructions });
+  };
 
   const flushResults = () => {
     // Checked before draining: `due` removes what it returns, and a closed socket would lose it.
@@ -475,8 +495,10 @@ export async function startVoiceSession(options: VoiceSessionOptions): Promise<V
     const due = results.due(Date.now());
     for (const held of due) {
       send({ type: "tool.result", call_id: held.call_id, result: JSON.stringify(held.result) });
+      replies.note("tool.result", Date.now(), held.call_id);
     }
     if (due.length > 0) onResultsSent?.();
+    flushReplies();
   };
 
   /** A heartbeat, because a deadlock has no event to recover on. One for the whole call. */
@@ -490,7 +512,7 @@ export async function startVoiceSession(options: VoiceSessionOptions): Promise<V
     let result: unknown;
     try {
       result = onToolCall
-        ? await withDeadline(onToolCall(name, args), TOOL_DEADLINE_MS)
+        ? await withDeadline(onToolCall(name, args, callId), TOOL_DEADLINE_MS)
         : { error: `No handler for "${name}" in this client.` };
     } catch (cause) {
       result = { error: cause instanceof Error ? cause.message : String(cause) };
@@ -519,6 +541,9 @@ export async function startVoiceSession(options: VoiceSessionOptions): Promise<V
 
     // Every frame, before the switch: any frame is a chance to send a held result.
     results.note(message.type);
+    replies.note(message.type, Date.now(), typeof message.call_id === "string" ? message.call_id : undefined);
+    if (message.type === "reply.started") onReply?.({ type: "started", id: String(message.reply_id ?? "") });
+    if (message.type === "reply.done") onReply?.({ type: "done", id: String(message.reply_id ?? ""), status: String(message.status ?? "") });
 
     switch (message.type) {
       case "session.ready": {
@@ -555,6 +580,7 @@ export async function startVoiceSession(options: VoiceSessionOptions): Promise<V
         playReplyAudio(String(message.data));
         break;
       case "tool.call":
+        onToolCallStarted?.(String(message.call_id ?? ""), String(message.name ?? ""));
         void runTool(message);
         break;
       case "input.speech.started":
@@ -583,7 +609,7 @@ export async function startVoiceSession(options: VoiceSessionOptions): Promise<V
         break;
       }
       case "transcript.agent":
-        onAgentTranscript?.(String(message.text ?? ""));
+        onAgentTranscript?.(String(message.text ?? ""), { id: String(message.reply_id ?? ""), interrupted: message.interrupted === true });
         break;
       case "session.ended":
         // A clean end from the server — its maximum duration, or our own `session.end`.
@@ -704,6 +730,10 @@ export async function startVoiceSession(options: VoiceSessionOptions): Promise<V
     },
     setSystemPrompt: (prompt: string) => {
       send({ type: "session.update", session: { system_prompt: prompt } });
+    },
+    createReply: (instructions: string) => {
+      replies.add(instructions, Date.now());
+      flushReplies();
     },
     stop: async () => {
       closing = true;

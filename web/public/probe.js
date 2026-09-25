@@ -3074,20 +3074,20 @@
     return normalise2(text4).split(" ").filter(Boolean);
   }
   function checkEvidence(transcript, evidence) {
-    const quote = (evidence ?? "").trim();
-    if (quote.length < MIN_QUOTE_CHARS) {
+    const quote2 = (evidence ?? "").trim();
+    if (quote2.length < MIN_QUOTE_CHARS) {
       return { ok: false, reason: "Nothing was spoken about this field, so it stays empty." };
     }
     const heard = normalise2(transcript);
     if (!heard) {
       return { ok: false, reason: "Nothing has been said yet, so there is nothing to go on." };
     }
-    const normalisedQuote = normalise2(quote);
+    const normalisedQuote = normalise2(quote2);
     if (normalisedQuote.length < MIN_QUOTE_CHARS) {
       return { ok: false, reason: "Nothing was spoken about this field, so it stays empty." };
     }
     if (heard.includes(normalisedQuote)) return { ok: true };
-    const quoteWords = words(quote);
+    const quoteWords = words(quote2);
     if (quoteWords.length === 0) {
       return { ok: false, reason: "Nothing was spoken about this field, so it stays empty." };
     }
@@ -3450,6 +3450,55 @@
     /** Whether the agent is believed to be mid-reply. Exposed for tests and the on-screen log. */
     get isSpeaking() {
       return this.speaking;
+    }
+  };
+  var REPLY_AFTER_RESULT_MS = 3e3;
+  var REPLY_REQUEST_TTL_MS = 2e4;
+  var ReplyRequestQueue = class {
+    constructor() {
+      this.speaking = false;
+      this.listening = false;
+      this.calls = /* @__PURE__ */ new Set();
+      /** A tool result went out: its reply is coming. Since when. */
+      this.expecting = null;
+      this.pending = null;
+    }
+    /** Tell it what happened: every incoming event, and our own `tool.result` sends. */
+    note(type, now, callId) {
+      if (type === "reply.started") {
+        this.speaking = true;
+        this.expecting = null;
+      } else if (type === "reply.done") {
+        this.speaking = false;
+      } else if (type === "input.speech.started") {
+        this.listening = true;
+      } else if (type === "transcript.user") {
+        this.listening = false;
+      } else if (type === "tool.call" && callId) {
+        this.calls.add(callId);
+      } else if (type === "tool.result" && callId) {
+        this.calls.delete(callId);
+        this.expecting = now;
+      }
+    }
+    add(instructions, now) {
+      this.pending = { instructions, at: now };
+    }
+    /** The instructions to send now, removed — or null while it is not the moment. */
+    due(now) {
+      if (!this.pending) return null;
+      if (now - this.pending.at > REPLY_REQUEST_TTL_MS) {
+        this.pending = null;
+        return null;
+      }
+      if (this.expecting !== null && now - this.expecting > REPLY_AFTER_RESULT_MS) this.expecting = null;
+      if (this.speaking || this.listening || this.calls.size > 0 || this.expecting !== null) return null;
+      const { instructions } = this.pending;
+      this.pending = null;
+      return instructions;
+    }
+    get waiting() {
+      return this.pending !== null;
     }
   };
 
@@ -3846,8 +3895,8 @@
       } else if (spec?.kind === "file") {
         why = "needs_the_person";
       } else {
-        const quote = claimed.find((c2) => c2.fieldId === o.fieldId)?.evidence?.trim() ?? "";
-        why = quote.length >= 2 && !spec?.suspectedHoneypot ? "quote_not_found" : "not_heard";
+        const quote2 = claimed.find((c2) => c2.fieldId === o.fieldId)?.evidence?.trim() ?? "";
+        why = quote2.length >= 2 && !spec?.suspectedHoneypot ? "quote_not_found" : "not_heard";
       }
       const tried = claimed.find((c2) => c2.fieldId === o.fieldId)?.value;
       return {
@@ -4043,12 +4092,15 @@
       /** Fields that already had something in them when the session opened. */
       this.atOpen = /* @__PURE__ */ new Set();
       this.toSettle = /* @__PURE__ */ new Map();
+      /** Fields the agent told them went in, that did not — with its words. */
+      this.claimed = /* @__PURE__ */ new Map();
     }
     /** Record something we wrote. A later write to the same field replaces it — they corrected it. */
     wrote(id, entry, now = Date.now()) {
       this.written.set(id, { ...entry, at: now });
       this.declined.delete(id);
       this.pending.delete(id);
+      this.claimed.delete(id);
     }
     entry(id) {
       return this.written.get(id);
@@ -4084,6 +4136,13 @@
     }
     release(id) {
       this.pending.delete(id);
+    }
+    /** The agent said this went in; it did not (trust.ts). Cleared once something is written to it. */
+    claimedIn(id, said2) {
+      this.claimed.set(id, said2);
+    }
+    claimFor(id) {
+      return this.claimed.get(id);
     }
     /** Something to ask about next time, for this field. A newer one replaces it. */
     ask(id, ask) {
@@ -4173,6 +4232,8 @@
       if ((source === "spoken" || source === "memory") && entry) state.evidence = entry.evidence;
       const pending = ledger.pendingFor(spec.id);
       if (pending && value === null) state.pending = pending;
+      const claimed = ledger.claimFor(spec.id);
+      if (claimed && value === null) state.claimedIn = claimed;
       if (source === "memory" && entry?.factId) state.recalled = { factId: entry.factId, sure: true };
       else if (value === null && pending?.reason === "from_last_time" && pending.factId) state.recalled = { factId: pending.factId, sure: false };
       const error = el && el.isConnected ? readError(el) : null;
@@ -4333,8 +4394,8 @@
             break;
           }
           const last = known.history[known.history.length - 1];
-          const correction = !!change.from.session && last?.session === change.from.session && last.field === change.from.field;
-          if (correction) {
+          const correction2 = !!change.from.session && last?.session === change.from.session && last.field === change.from.field;
+          if (correction2) {
             next.facts[id] = withTelling(known, change.from, change.value, now);
             changed = true;
             break;
@@ -4932,6 +4993,9 @@
         f.pending.reason === "from_last_time" ? `Waiting for their yes: ${factsOf(f.spec, specs).question} \u2192 "${f.pending.suggestion}" (from their last form)` : `Waiting for their yes: ${factsOf(f.spec, specs).question} \u2192 "${f.pending.suggestion}" (they said "${f.pending.heard}")`
       );
     }
+    for (const f of state.fields.filter((f2) => f2.claimedIn)) {
+      lines.push(`You told them "${factsOf(f.spec, specs).question}" went in ("${f.claimedIn}"); it did not. Put it in with their words, or say plainly it isn't in.`);
+    }
     const problems = state.fields.filter((f) => f.error && f.value !== null);
     for (const f of problems) {
       lines.push(`The form rejects: ${factsOf(f.spec, specs).question} = "${shown(f.value)}" \u2014 "${f.error}"`);
@@ -5225,6 +5289,15 @@
       const move = nextMove(this.state(), this.plan);
       if (move.kind === "offer_optional") this.plan.optionalOffered = true;
       return move;
+    }
+    /** What the next move would be, without taking it — offering the optional ones is not marked. */
+    peekMove() {
+      return nextMove(this.state(), this.plan);
+    }
+    /** The agent said this field went in; it did not. Told in the brief until the field has an answer. */
+    noteClaimedIn(id, said2) {
+      this.ledger.claimedIn(id, said2);
+      this.options.onChange?.();
     }
     /** The agent's whole prompt: who it is, the form as it is, and what to do next. */
     prompt() {
@@ -6032,16 +6105,16 @@
   function words2(text4) {
     return text4.toLowerCase().replace(/[\p{P}\p{S}]/gu, " ").split(/\s+/).filter(Boolean);
   }
-  function markers(quote) {
-    const all = words2(quote);
+  function markers(quote2) {
+    const all = words2(quote2);
     const rare = all.filter((w) => !COMMON.has(w));
     return rare.length > 0 ? rare : all;
   }
   function count(text4, word) {
     return words2(text4).filter((w) => w === word).length;
   }
-  function clipFor(quote, timeline, totalSamples, sampleRate = 24e3) {
-    const marks = markers(quote);
+  function clipFor(quote2, timeline, totalSamples, sampleRate = 24e3) {
+    const marks = markers(quote2);
     if (marks.length === 0 || timeline.length === 0) return null;
     const first = marks[0];
     const last = marks[marks.length - 1];
@@ -6157,6 +6230,8 @@
       onUserPartial,
       onUserTranscript,
       onAgentTranscript,
+      onReply,
+      onToolCallStarted,
       onSpeechStart,
       onError,
       onClosed,
@@ -6321,13 +6396,21 @@
       enqueue(incoming);
     };
     let results = new ToolResultQueue();
+    const replies = new ReplyRequestQueue();
+    const flushReplies = () => {
+      if (!ready || !ws || ws.readyState !== WebSocket.OPEN) return;
+      const instructions = replies.due(Date.now());
+      if (instructions !== null) send({ type: "reply.create", instructions });
+    };
     const flushResults = () => {
       if (!ready || !ws || ws.readyState !== WebSocket.OPEN) return;
       const due = results.due(Date.now());
       for (const held of due) {
         send({ type: "tool.result", call_id: held.call_id, result: JSON.stringify(held.result) });
+        replies.note("tool.result", Date.now(), held.call_id);
       }
       if (due.length > 0) onResultsSent?.();
+      flushReplies();
     };
     const heartbeat = setInterval(flushResults, 500);
     const runTool = async (message) => {
@@ -6336,7 +6419,7 @@
       const args = message.arguments ?? {};
       let result;
       try {
-        result = onToolCall ? await withDeadline(onToolCall(name, args), TOOL_DEADLINE_MS) : { error: `No handler for "${name}" in this client.` };
+        result = onToolCall ? await withDeadline(onToolCall(name, args, callId), TOOL_DEADLINE_MS) : { error: `No handler for "${name}" in this client.` };
       } catch (cause) {
         result = { error: cause instanceof Error ? cause.message : String(cause) };
       }
@@ -6359,6 +6442,9 @@
       const message = JSON.parse(String(event.data));
       if (message.type !== "reply.audio") onEvent?.("in", message);
       results.note(message.type);
+      replies.note(message.type, Date.now(), typeof message.call_id === "string" ? message.call_id : void 0);
+      if (message.type === "reply.started") onReply?.({ type: "started", id: String(message.reply_id ?? "") });
+      if (message.type === "reply.done") onReply?.({ type: "done", id: String(message.reply_id ?? ""), status: String(message.status ?? "") });
       switch (message.type) {
         case "session.ready": {
           ready = true;
@@ -6387,6 +6473,7 @@
           playReplyAudio(String(message.data));
           break;
         case "tool.call":
+          onToolCallStarted?.(String(message.call_id ?? ""), String(message.name ?? ""));
           void runTool(message);
           break;
         case "input.speech.started":
@@ -6412,7 +6499,7 @@
           break;
         }
         case "transcript.agent":
-          onAgentTranscript?.(String(message.text ?? ""));
+          onAgentTranscript?.(String(message.text ?? ""), { id: String(message.reply_id ?? ""), interrupted: message.interrupted === true });
           break;
         case "session.ended":
           ended = true;
@@ -6514,6 +6601,10 @@
       setSystemPrompt: (prompt) => {
         send({ type: "session.update", session: { system_prompt: prompt } });
       },
+      createReply: (instructions) => {
+        replies.add(instructions, Date.now());
+        flushReplies();
+      },
       stop: async () => {
         closing = true;
         clearTimeout(reconnectTimer);
@@ -6533,6 +6624,303 @@
         teardown();
       }
     };
+  }
+
+  // core/src/trust.ts
+  var ANSWERED_MOVES = /* @__PURE__ */ new Set(["ask", "confirm", "confirm_recalled", "resolve", "optional", "update_profile"]);
+  var TrustWatch = class {
+    constructor() {
+      this.exchange = null;
+      this.replying = /* @__PURE__ */ new Set();
+    }
+    /** The person finished a turn; `expected` is the move the agent was on, `asking` its fields. */
+    userTurn(text4, expected, asking = []) {
+      this.exchange = { userText: text4, expected, asking, calls: [], calling: /* @__PURE__ */ new Set(), judged: false };
+    }
+    replyStarted(id) {
+      this.replying.add(id);
+    }
+    toolCall(id, name) {
+      if (!this.exchange) return;
+      this.exchange.calls.push({ id, name, done: false, notIn: [] });
+      for (const reply of this.replying) this.exchange.calling.add(reply);
+    }
+    /** A tool's result: which fields it reports as not in, or waiting for a yes. */
+    toolResult(id, result) {
+      const call = this.exchange?.calls.find((c2) => c2.id === id);
+      if (!call) return;
+      call.done = true;
+      call.notIn = notInFrom(result);
+    }
+    /**
+     * A reply is over and this is what it said. Returns what to ask the judge, or null. Asked at most
+     * once per exchange, so a correction cannot set off another.
+     */
+    replyDone(id, said2, formChanged) {
+      this.replying.delete(id);
+      const exchange = this.exchange;
+      if (!exchange || exchange.judged || !said2.trim()) return null;
+      if (id.startsWith("fc-") || exchange.calling.has(id)) return null;
+      if (exchange.calls.some((call) => !call.done)) return null;
+      const notIn = [...new Set(exchange.calls.flatMap((call) => call.notIn))];
+      const fills = exchange.calls.filter((call) => call.name === "fill_fields" || call.name === "confirm_answer");
+      let reason = null;
+      if (fills.length === 0 && exchange.calls.length === 0 && !formChanged && ANSWERED_MOVES.has(exchange.expected)) reason = "no_call";
+      else if (notIn.length > 0) reason = "not_all_in";
+      if (!reason) return null;
+      exchange.judged = true;
+      return { reason, said: said2, heard: exchange.userText, asking: exchange.asking, notIn };
+    }
+  };
+  function notInFrom(result) {
+    if (!result || typeof result !== "object") return [];
+    const r = result;
+    const ids = (list) => Array.isArray(list) ? list.map((item) => String(item?.field ?? "")).filter(Boolean) : [];
+    const notConfirmed = r.not_confirmed && typeof r.not_confirmed === "object" ? [String(r.not_confirmed.field ?? "")] : [];
+    return [...ids(r.not_filled), ...ids(r.waiting_for_yes), ...notConfirmed].filter(Boolean);
+  }
+  var CLAIMS = /* @__PURE__ */ new Set(["put_in", "not_in", "asked"]);
+  function validateClaims(raw, said2, fieldIds) {
+    const known = new Set(fieldIds);
+    const list = raw && typeof raw === "object" && Array.isArray(raw.claims) ? raw.claims : [];
+    const claims = [];
+    for (const item of list) {
+      const field = typeof item?.field === "string" ? item.field : "";
+      const claim = typeof item?.claim === "string" ? item.claim : "";
+      const quote2 = typeof item?.quote === "string" ? item.quote.trim() : "";
+      if (!known.has(field) || !CLAIMS.has(claim) || !quote2) continue;
+      if (!checkEvidence(said2, quote2).ok) continue;
+      const asks = /\?\s*["'”’)]*\s*$/.test(quote2);
+      claims.push({ field, claim: claim === "put_in" && asks ? "asked" : claim, quote: quote2 });
+    }
+    return claims;
+  }
+  function mismatches(claims, isIn, questionOf2) {
+    const seen = /* @__PURE__ */ new Set();
+    const out = [];
+    for (const claim of claims) {
+      if (claim.claim !== "put_in" || seen.has(claim.field) || isIn(claim.field)) continue;
+      seen.add(claim.field);
+      out.push({ field: claim.field, question: questionOf2(claim.field), said: claim.quote });
+    }
+    return out;
+  }
+  function correction(found) {
+    const which = found.map((m) => `"${m.question}"`).join(" and ");
+    return `You told them ${which} went in, but it did not \u2014 nothing was put in. If they said it, call fill_fields now for ${found.map((m) => m.field).join(", ")}, quoting their exact words. If they did not, say plainly that it is not in yet and ask for it. Do not apologise at length.`;
+  }
+
+  // core/src/overlay.ts
+  var LABEL = {
+    spoken: "Spoken",
+    memory: "From last time",
+    typed: "Typed",
+    page: "Already there",
+    waiting: "Waiting for your yes",
+    not_in: "Not in",
+    look: "Another look?"
+  };
+  var STYLE = `
+:host { all: initial; }
+.layer { position: fixed; inset: 0; pointer-events: none; z-index: 2147483646; }
+.badge {
+  position: fixed; pointer-events: auto; cursor: pointer; transform: translate(-100%, -55%);
+  font: 600 10.5px/1 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  padding: 3px 7px; border-radius: 999px; white-space: nowrap;
+  background: #0e0f10; color: #fafafa; border: 1px solid rgba(255,255,255,.18);
+  box-shadow: 0 1px 4px rgba(0,0,0,.25);
+  transition: transform 160ms cubic-bezier(0.23, 1, 0.32, 1), opacity 160ms ease;
+}
+.badge:active { transform: translate(-100%, -55%) scale(0.97); }
+.badge::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 5px; vertical-align: 1px; background: currentColor; }
+.spoken { color: #43c39b; } .memory { color: #6aa8ff; } .typed, .page { color: #b8b8c0; }
+.waiting, .look { color: #e0b060; } .not_in { color: #1a1206; background: #e0b060; border-color: #e0b060; }
+.not_in::before { background: #1a1206; }
+.flash { animation: flash 900ms ease-out 1; }
+@keyframes flash { 0%, 60% { box-shadow: 0 0 0 4px rgba(224,176,96,.55); } 100% { box-shadow: 0 1px 4px rgba(0,0,0,.25); } }
+.detail {
+  position: fixed; pointer-events: auto; max-width: 280px; z-index: 1;
+  font: 12px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  background: #0e0f10; color: #fafafa; border: 1px solid rgba(255,255,255,.14); border-radius: 12px;
+  padding: 8px 10px; box-shadow: 0 6px 20px rgba(0,0,0,.35);
+}
+.detail[hidden] { display: none; }
+@media (prefers-reduced-motion: reduce) { .badge, .flash { transition: none; animation: none; } }
+`;
+  function viewportRect(el, top) {
+    let rect = el.getBoundingClientRect();
+    let x = rect.left;
+    let y = rect.top;
+    let doc = el.ownerDocument;
+    while (doc && doc !== top) {
+      const frame = doc.defaultView?.frameElement;
+      if (!frame) return null;
+      const outer = frame.getBoundingClientRect();
+      x += outer.left + frame.clientLeft;
+      y += outer.top + frame.clientTop;
+      doc = frame.ownerDocument;
+    }
+    rect = new DOMRect(x, y, rect.width, rect.height);
+    return rect;
+  }
+  var Overlay = class {
+    constructor(doc, handles) {
+      this.doc = doc;
+      this.handles = handles;
+      this.badges = /* @__PURE__ */ new Map();
+      this.frame = 0;
+      this.place = () => {
+        cancelAnimationFrame(this.frame);
+        this.frame = requestAnimationFrame(() => this.placeNow());
+      };
+      this.host = doc.createElement("longtake-badges");
+      this.host.setAttribute("data-longtake-ignore", "");
+      const root = this.host.attachShadow({ mode: "closed" });
+      const style = doc.createElement("style");
+      style.textContent = STYLE;
+      this.layer = doc.createElement("div");
+      this.layer.className = "layer";
+      this.detailBox = doc.createElement("div");
+      this.detailBox.className = "detail";
+      this.detailBox.hidden = true;
+      this.layer.append(this.detailBox);
+      root.append(style, this.layer);
+      (doc.body ?? doc.documentElement).append(this.host);
+      const view = doc.defaultView;
+      view?.addEventListener("scroll", this.place, { capture: true, passive: true });
+      view?.addEventListener("resize", this.place, { passive: true });
+      this.layer.addEventListener("click", (event) => {
+        const target = event.target.closest(".badge");
+        if (target) this.explain(target.dataset.field ?? "");
+        else this.detailBox.hidden = true;
+      });
+    }
+    /** Show exactly these badges. */
+    show(badges) {
+      const wanted = new Map(badges.map((badge) => [badge.fieldId, badge]));
+      for (const [id, shown2] of this.badges) {
+        if (!wanted.has(id)) {
+          shown2.el.remove();
+          this.badges.delete(id);
+        }
+      }
+      for (const badge of badges) {
+        let shown2 = this.badges.get(badge.fieldId);
+        if (!shown2) {
+          const el = this.doc.createElement("button");
+          el.type = "button";
+          el.dataset.field = badge.fieldId;
+          this.layer.append(el);
+          shown2 = { el, badge };
+          this.badges.set(badge.fieldId, shown2);
+        }
+        shown2.badge = badge;
+        shown2.el.className = `badge ${badge.state}`;
+        shown2.el.textContent = LABEL[badge.state];
+        shown2.el.setAttribute("aria-label", `${LABEL[badge.state]}: ${badge.detail}`);
+      }
+      this.placeNow();
+    }
+    /** Bring a field into view and make its badge flash — from the review list. */
+    focus(fieldId) {
+      const el = this.handles().get(fieldId);
+      el?.scrollIntoView({ block: "center", behavior: "smooth" });
+      const shown2 = this.badges.get(fieldId);
+      if (!shown2) return;
+      shown2.el.classList.remove("flash");
+      void shown2.el.offsetWidth;
+      shown2.el.classList.add("flash");
+      setTimeout(() => this.placeNow(), 400);
+    }
+    /** Where each badge sits now, in the viewport — for tests of placement. */
+    positions() {
+      const out = {};
+      for (const [id, { el }] of this.badges) out[id] = { x: parseFloat(el.style.left), y: parseFloat(el.style.top), shown: el.style.display !== "none" };
+      return out;
+    }
+    destroy() {
+      cancelAnimationFrame(this.frame);
+      const view = this.doc.defaultView;
+      view?.removeEventListener("scroll", this.place, { capture: true });
+      view?.removeEventListener("resize", this.place);
+      this.host.remove();
+    }
+    placeNow() {
+      const handles = this.handles();
+      for (const [id, { el }] of this.badges) {
+        const field = handles.get(id);
+        const rect = field && field.isConnected ? viewportRect(field, this.doc) : null;
+        const visible = rect && rect.width > 0 && rect.height > 0;
+        el.style.display = visible ? "" : "none";
+        if (!visible) continue;
+        el.style.left = `${rect.right}px`;
+        el.style.top = `${rect.top}px`;
+      }
+    }
+    explain(fieldId) {
+      const shown2 = this.badges.get(fieldId);
+      if (!shown2) return;
+      this.detailBox.textContent = shown2.badge.detail;
+      const at = shown2.el.getBoundingClientRect();
+      this.detailBox.style.left = `${Math.max(8, at.left - 200)}px`;
+      this.detailBox.style.top = `${at.bottom + 6}px`;
+      this.detailBox.hidden = false;
+    }
+  };
+
+  // core/src/review.ts
+  var TITLES = {
+    waiting: "Waiting for your yes",
+    not_in: "Said, but not in",
+    memory: "From your last form",
+    spoken: "Spoken",
+    typed: "Typed by you",
+    theirs: "Yours to do"
+  };
+  var quote = (text4, max = 70) => text4.length > max ? `\u201C${text4.slice(0, max)}\u2026\u201D` : `\u201C${text4}\u201D`;
+  function reviewList(form, missed = []) {
+    const groups = { waiting: [], not_in: [], memory: [], spoken: [], typed: [], theirs: [] };
+    const missing = new Map(missed.map((m) => [m.fieldId, m]));
+    for (const field of form.fields) {
+      const question = fieldName(field.spec);
+      const fieldId = field.spec.id;
+      if (field.pending) {
+        groups.waiting.push({ fieldId, question, detail: `${field.pending.suggestion} \u2014 you said ${quote(field.pending.heard)}` });
+      } else if (field.value === null && (missing.has(fieldId) || field.claimedIn)) {
+        groups.not_in.push({ fieldId, question, detail: missing.get(fieldId)?.why ?? "the agent said it went in, but it did not" });
+      } else if (field.source === "memory") {
+        groups.memory.push({ fieldId, question, detail: field.evidence ? `you said ${quote(field.evidence)}` : "from your last form" });
+      } else if (field.source === "spoken") {
+        groups.spoken.push({ fieldId, question, detail: field.evidence ? `you said ${quote(field.evidence)}` : "" });
+      } else if (field.source === "typed") {
+        groups.typed.push({ fieldId, question, detail: "typed by you" });
+      }
+    }
+    for (const item of form.theirs) groups.theirs.push({ question: item, detail: "a file or a signature \u2014 only you can add it" });
+    return Object.keys(groups).filter((kind) => groups[kind].length > 0).map((kind) => ({ kind, title: TITLES[kind], items: groups[kind] }));
+  }
+  function badgesFor(form, missed = [], hesitations = {}) {
+    const missing = new Map(missed.map((m) => [m.fieldId, m]));
+    const badges = [];
+    for (const field of form.fields) {
+      const fieldId = field.spec.id;
+      if (field.pending) {
+        badges.push({ fieldId, state: "waiting", detail: `${field.pending.suggestion}? You said ${quote(field.pending.heard)}.` });
+      } else if (field.value === null && (missing.has(fieldId) || field.claimedIn)) {
+        badges.push({ fieldId, state: "not_in", detail: `Not in: ${missing.get(fieldId)?.why ?? "the agent said it went in, but it did not"}.` });
+      } else if (hesitations[fieldId]?.worthAnotherLook && field.value !== null) {
+        badges.push({ fieldId, state: "look", detail: "Want another look at this one?" });
+      } else if (field.source === "spoken") {
+        badges.push({ fieldId, state: "spoken", detail: field.evidence ? `You said ${quote(field.evidence, 120)}.` : "You said it." });
+      } else if (field.source === "memory") {
+        badges.push({ fieldId, state: "memory", detail: field.evidence ? `From your last form \u2014 you said ${quote(field.evidence, 120)}.` : "From your last form." });
+      } else if (field.source === "typed") {
+        badges.push({ fieldId, state: "typed", detail: "Typed by you." });
+      } else if (field.source === "page") {
+        badges.push({ fieldId, state: "page", detail: "Already on the form when you started." });
+      }
+    }
+    return badges;
   }
 
   // core/src/notices.ts
@@ -6576,6 +6964,23 @@
     }
     return btoa(binary);
   }
+  function askingOf(move) {
+    switch (move.kind) {
+      case "ask":
+      case "optional":
+      case "offer_optional":
+        return move.fields.map((f) => f.field);
+      case "confirm":
+      case "resolve":
+        return [move.field.field];
+      case "confirm_recalled":
+        return move.fields.map((f) => f.field.field);
+      case "update_profile":
+        return move.asks.map((a) => a.field);
+      default:
+        return [];
+    }
+  }
   var Conductor = class {
     constructor(options) {
       this.options = options;
@@ -6599,7 +7004,15 @@
       /** Long answers filled mid-sentence, waiting for their turn to end so their audio exists. */
       this.pendingClips = /* @__PURE__ */ new Map();
       this.askedAt = null;
+      /** The trust layer: what the agent says, against what went in (trust.ts). One per call. */
+      this.trust = new TrustWatch();
+      /** What each reply said, until it is done. */
+      this.replyText = /* @__PURE__ */ new Map();
+      /** The form's answers when the person last spoke — to tell whether a reply changed anything. */
+      this.answersAtTurn = "";
       this.detach = null;
+      /** The badges on the page, made once, on the page's own document. */
+      this.overlay = null;
       const session = new LongtakeSession({
         root: options.root,
         ignore: options.ignore,
@@ -6638,6 +7051,7 @@
         shaped: {},
         hesitations: {},
         known: [],
+        review: [],
         log: []
       };
     }
@@ -6655,7 +7069,31 @@
     }
     update(patch) {
       this.current = { ...this.current, ...patch };
+      if (patch.form || patch.missed || patch.hesitations) {
+        this.current.review = reviewList(this.current.form, this.current.missed);
+        this.overlay?.show(badgesFor(this.current.form, this.current.missed, this.current.hesitations));
+      }
       for (const listener of this.listeners) listener(this.current);
+    }
+    /** Bring a field into view and flash its badge — from the review list. */
+    focus(fieldId) {
+      this.overlay?.focus(fieldId);
+    }
+    /** Where each badge sits in the viewport — for tests of placement. */
+    badgePositions() {
+      return this.overlay?.positions() ?? {};
+    }
+    /** Take the badges off the page — the panel closed, the page is leaving. */
+    dispose() {
+      this.overlay?.destroy();
+      this.overlay = null;
+    }
+    showBadges() {
+      if (this.options.badges === false || this.overlay || typeof document === "undefined") return;
+      const scope = this.options.root();
+      const doc = "ownerDocument" in scope && scope.ownerDocument ? scope.ownerDocument : scope;
+      this.overlay = new Overlay(doc, () => this.session.read?.handles ?? /* @__PURE__ */ new Map());
+      this.overlay.show(badgesFor(this.current.form, this.current.missed, this.current.hesitations));
     }
     note(kind, text4) {
       const log = [...this.current.log.slice(-(LOG_LIMIT - 1)), { at: (/* @__PURE__ */ new Date()).toISOString(), kind, text: text4 }];
@@ -6694,11 +7132,14 @@
       this.pendingClips = /* @__PURE__ */ new Map();
       this.askedAt = null;
       this.pauseBeforeAnswer = void 0;
+      this.trust = new TrustWatch();
+      this.replyText = /* @__PURE__ */ new Map();
       this.update({ status: "reading", error: null, problem: null, turns: [], partial: "", missed: [], log: [] });
       this.options.onActive?.(true);
       try {
         await this.prepare();
         await this.session.open();
+        this.showBadges();
         this.refresh();
         const problems = this.session.toolProblems();
         if (problems.length > 0) throw new Error(`This form produced a tool the voice service would reject: ${problems[0]}`);
@@ -6721,7 +7162,12 @@
             this.sentPrompt = this.session.prompt();
             return { systemPrompt: this.sentPrompt, greeting: this.session.resumeGreeting(), tools: this.session.tools() };
           },
-          onToolCall: (name, args) => this.runTool(name, args),
+          onToolCall: (name, args, callId) => this.runTool(name, args, callId),
+          onToolCallStarted: (callId, name) => this.trust.toolCall(callId, name),
+          onReply: (event) => {
+            if (event.type === "started") this.trust.replyStarted(event.id);
+            else this.replyOver(event.id);
+          },
           // After results are out, the agent's prompt catches up with the form — so even a turn with
           // no tool call ("hello?", "what's left?") is answered from the form as it is.
           onResultsSent: () => {
@@ -6746,7 +7192,8 @@
             this.update({ partial: text4 });
           },
           onUserTranscript: (text4, audio, timeline) => this.heardTurn(text4, audio, timeline),
-          onAgentTranscript: (text4) => {
+          onAgentTranscript: (text4, reply) => {
+            if (reply?.id) this.replyText.set(reply.id, text4);
             this.askedAt = Date.now();
             this.note("agent", text4);
             this.update({ turns: [...this.current.turns, { who: "agent", text: text4 }] });
@@ -6809,6 +7256,9 @@ ${this.partial}`.trim();
         }
       }
       this.partial = "";
+      const move = this.session.peekMove();
+      this.trust.userTurn(text4, move.kind, askingOf(move));
+      this.answersAtTurn = this.answers();
       this.transcript = `${this.transcript}
 ${text4}`.trim();
       this.note("you", text4);
@@ -6816,9 +7266,10 @@ ${text4}`.trim();
     }
     // ── The tools ──────────────────────────────────────────────────────────────────────
     /** Runs one tool call and returns what goes back to the agent. Public so replays can drive it. */
-    async runTool(name, args) {
+    async runTool(name, args, callId) {
       this.note("tool", `call ${name} ${JSON.stringify(args)}`);
       const result = await this.route(name, args);
+      if (callId) this.trust.toolResult(callId, result);
       this.note("tool", `result ${name} ${JSON.stringify(result)}`);
       for (const miss of missesIn(result)) this.missed.set(miss.fieldId, miss);
       this.refresh();
@@ -6868,6 +7319,50 @@ ${text4}`.trim();
       if (name === SAVE_TOOL_NAME) return (await session.saveForNextTime(args, heard)).result;
       return { error: `Unknown tool "${name}".` };
     }
+    // ── The trust layer ────────────────────────────────────────────────────────────────
+    /** Every answer on the form, as one string — to tell whether a reply changed anything. */
+    answers() {
+      return JSON.stringify(this.session.state().fields.map((f) => f.value));
+    }
+    /**
+     * A reply is over. If it is one worth checking (trust.ts), the judge says what it claimed; every
+     * "put in" that is not in is corrected at once — the agent asked to put it in, quoting the person,
+     * or to say plainly it is not — and the person sees it on screen.
+     */
+    replyOver(id) {
+      const said2 = this.replyText.get(id) ?? "";
+      this.replyText.delete(id);
+      const ask = this.trust.replyDone(id, said2, this.answers() !== this.answersAtTurn);
+      const check = this.options.services.check;
+      if (!ask || !check) return;
+      const all = this.session.state().fields.map((f) => ({ id: f.spec.id, question: fieldName(f.spec) }));
+      const fields = [...all.filter((f) => ask.asking.includes(f.id)), ...all.filter((f) => !ask.asking.includes(f.id))];
+      void check({ said: ask.said, heard: ask.heard, asking: ask.asking, fields }).then((raw) => {
+        const state = this.session.state();
+        const byId = new Map(state.fields.map((f) => [f.spec.id, f]));
+        const claims = validateClaims(raw, ask.said, [...byId.keys()]);
+        const found = mismatches(
+          claims,
+          (field) => byId.get(field)?.value !== null && byId.get(field)?.value !== void 0 && !ask.notIn.includes(field),
+          (field) => {
+            const f = byId.get(field);
+            return f ? fieldName(f.spec) : field;
+          }
+        );
+        if (found.length > 0) this.correct(found);
+      }).catch((cause) => this.note("app", `could not check the reply: ${cause instanceof Error ? cause.message : String(cause)}`));
+    }
+    correct(found) {
+      for (const m of found) {
+        this.session.noteClaimedIn(m.field, m.said);
+        this.missed.set(m.field, { fieldId: m.field, question: m.question, why: "the agent said it went in, but it did not \u2014 it's being put right" });
+      }
+      this.note("app", `said it went in, but it did not: ${found.map((m) => m.field).join(", ")}`);
+      this.refresh();
+      this.sentPrompt = this.session.prompt();
+      this.voice?.setSystemPrompt(this.sentPrompt);
+      this.voice?.createReply(correction(found));
+    }
     // ── Watching the page ──────────────────────────────────────────────────────────────
     /**
      * Changes nobody told us about: a person clicking an option themselves, or typing into a box.
@@ -6886,8 +7381,9 @@ ${text4}`.trim();
       };
       let shapeTimer;
       let typeTimer;
+      const oursOnly = (record) => ours(record.target) || record.type === "childList" && [...record.addedNodes, ...record.removedNodes].length > 0 && [...record.addedNodes, ...record.removedNodes].every((node) => ours(node));
       const observer = new MutationObserver((records) => {
-        if (records.every((record) => ours(record.target))) return;
+        if (records.every(oursOnly)) return;
         if (this.session.isWriting) {
           this.session.noteMoveDuringWrite();
           return;
@@ -6991,6 +7487,8 @@ ${text4}`.trim();
       __publicField(this, "sent", []);
       /** The opening config the call was started with. */
       __publicField(this, "opening", null);
+      __publicField(this, "replies", 0);
+      __publicField(this, "calls", 0);
       __publicField(this, "start", async (options) => {
         this.options = options;
         this.opening = { systemPrompt: options.systemPrompt, greeting: options.greeting, tools: options.tools ?? [], voice: options.voice };
@@ -7001,7 +7499,8 @@ ${text4}`.trim();
           },
           setSystemPrompt: (value) => this.sent.push({ kind: "systemPrompt", value }),
           setTools: (value) => this.sent.push({ kind: "tools", value }),
-          setTranscriptionMode: (value) => this.sent.push({ kind: "transcriptionMode", value })
+          setTranscriptionMode: (value) => this.sent.push({ kind: "transcriptionMode", value }),
+          createReply: (value) => this.sent.push({ kind: "reply", value })
         };
       });
     }
@@ -7022,13 +7521,22 @@ ${text4}`.trim();
     /** The agent calls a tool; resolves with what would go back to it. */
     async toolCall(name, args) {
       if (!this.o.onToolCall) throw new Error("FakeVoice: no tool handler");
-      const result = await this.o.onToolCall(name, args);
+      const callId = `call_${++this.calls}`;
+      this.o.onToolCallStarted?.(callId, name);
+      const result = await this.o.onToolCall(name, args, callId);
       this.o.onResultsSent?.();
       return result;
     }
-    /** The agent said something. */
+    /** The agent said something: one whole reply — started, its words, done. */
     agentSays(text4) {
-      this.o.onAgentTranscript?.(text4);
+      const id = `reply_${++this.replies}`;
+      this.o.onReply?.({ type: "started", id });
+      this.o.onAgentTranscript?.(text4, { id, interrupted: false });
+      this.o.onReply?.({ type: "done", id, status: "completed" });
+    }
+    /** Every reply the conductor asked for, with its instructions. */
+    get asked() {
+      return this.sent.flatMap((s) => s.kind === "reply" ? [s.value] : []);
     }
     /** The latest system prompt the agent has — the opening one until something replaced it. */
     get prompt() {
@@ -7219,6 +7727,9 @@ ${text4}`.trim();
     fallbackMeanings,
     validateMeanings,
     applyMeaningHints,
+    Overlay,
+    reviewList,
+    badgesFor,
     Conductor,
     FakeVoice,
     runScript,

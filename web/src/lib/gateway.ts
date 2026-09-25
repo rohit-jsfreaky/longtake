@@ -97,7 +97,7 @@ export async function chatJSON(request: ChatJSONRequest, fetchImpl: typeof fetch
 }
 
 /** The models to ask, in order, from the environment. */
-export function modelsFor(task: "understand"): string[] {
+export function modelsFor(task: "understand" | "check"): string[] {
   const configured = process.env[`LONGTAKE_${task.toUpperCase()}_MODELS`];
   const list = (configured ?? "qwen3.5-4b-32k-fast").split(",").map((m) => m.trim()).filter(Boolean);
   return list.length > 0 ? list : ["qwen3.5-4b-32k-fast"];

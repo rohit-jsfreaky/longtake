@@ -76,6 +76,9 @@ import {
   fallbackMeanings,
   validateMeanings,
   applyMeaningHints,
+  Overlay,
+  reviewList,
+  badgesFor,
 } from "@longtake/core";
 import { FakeVoice } from "./replay/fake-voice";
 import { runScript } from "./replay/run-script";
@@ -154,6 +157,9 @@ declare global {
       fallbackMeanings: typeof fallbackMeanings;
       validateMeanings: typeof validateMeanings;
       applyMeaningHints: typeof applyMeaningHints;
+      Overlay: typeof Overlay;
+      reviewList: typeof reviewList;
+      badgesFor: typeof badgesFor;
       Conductor: typeof Conductor;
       FakeVoice: typeof FakeVoice;
       runScript: typeof runScript;
@@ -237,6 +243,9 @@ window.__longtake = {
   fallbackMeanings,
   validateMeanings,
   applyMeaningHints,
+  Overlay,
+  reviewList,
+  badgesFor,
   Conductor,
   FakeVoice,
   runScript,

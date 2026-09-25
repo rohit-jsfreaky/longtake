@@ -31,6 +31,8 @@ export type PanelView = {
   heard?: string;
   said?: string;
   notices: string[];
+  /** What to look at before sending, grouped; an item with a field jumps to it on the page. */
+  review?: { title: string; items: { fieldId?: string; question: string; detail: string }[] }[];
 };
 
 export type PanelActions = {
@@ -41,6 +43,8 @@ export type PanelActions = {
   settings: (tab: "memory" | "voice") => void;
   /** Copy what happened this call — every tool call and result — for a bug report. */
   copyLog: () => void;
+  /** Bring a field into view and flash its badge. */
+  focus: (fieldId: string) => void;
 };
 
 const MARK = `<svg viewBox="0 0 32 32" width="22" height="22" aria-hidden="true">
@@ -110,6 +114,14 @@ const CSS = `
   .link:hover { color: #fafafa; }
   .link:focus-visible { outline: 2px solid #43c39b; outline-offset: 2px; border-radius: 4px; }
   .note.miss { border-color: rgba(224,176,96,.35); }
+  .review { border: 1px solid rgba(255,255,255,.08); border-radius: 12px; background: #161718; font-size: 12.5px; max-height: 220px; overflow: auto; }
+  .review summary { cursor: pointer; padding: 8px 10px; color: #fafafa; }
+  .review .rg { padding: 0 10px 8px; }
+  .review .rt { color: #9a9aa2; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; margin: 4px 0; }
+  .review .ri { all: unset; display: block; box-sizing: border-box; width: 100%; padding: 4px 6px; border-radius: 8px; color: #9a9aa2; cursor: default; }
+  .review button.ri { cursor: pointer; }
+  .review button.ri:hover, .review button.ri:focus-visible { background: rgba(255,255,255,.06); }
+  .review .ri b { color: #fafafa; font-weight: 500; }
   kbd { font: 11px ui-monospace, monospace; padding: 1px 5px; border: 1px solid rgba(255,255,255,.14); border-radius: 6px; color: #9a9aa2; }
 `;
 
@@ -139,6 +151,10 @@ export class Panel {
       if (act === "close") this.actions.close();
       if (act === "memory") this.actions.settings("memory");
       if (act === "voice") this.actions.settings("voice");
+      if (act === "focus") {
+        const field = (event.target as HTMLElement).closest<HTMLElement>("[data-field]")?.dataset.field;
+        if (field) this.actions.focus(field);
+      }
       if (act === "log") {
         this.actions.copyLog();
         const link = (event.target as HTMLElement).closest<HTMLElement>("[data-act='log']");
@@ -211,11 +227,13 @@ export class Panel {
           ${view.heard ? `<div class="you"><span class="who">You · </span>${esc(view.heard)}</div>` : ""}
           ${view.said ? `<div class="agent"><span class="who">Longtake · </span>${esc(view.said)}</div>` : ""}
           ${view.notices.map((n) => `<div class="note${n.startsWith('<span class="miss-mark">') ? " miss" : ""}">${n}</div>`).join("")}
+          ${review(view.review, false)}
           <button class="quiet" data-act="stop">Stop</button>`;
         break;
       case "stopped":
         body = `<div class="muted">Stopped.${view.progress ? ` ${esc(view.progress)}.` : ""}</div>
           ${view.notices.map((n) => `<div class="note">${n}</div>`).join("")}
+          ${review(view.review, true)}
           ${start("Start again")}${safety}`;
         break;
       case "error":
@@ -229,6 +247,27 @@ export class Panel {
       </footer>`;
     return `${header}<div class="body">${body}</div>${footer}`;
   }
+}
+
+/**
+ * The review list — before they send it: waiting for a yes, said but not in, from last time, and the
+ * rest. Folded while the call runs, open once it stops. An item with a field jumps to it.
+ */
+function review(groups: PanelView["review"], open: boolean): string {
+  if (!groups || groups.length === 0) return "";
+  const count = groups.reduce((n, group) => n + group.items.length, 0);
+  const items = groups
+    .map(
+      (group) => `<div class="rg"><div class="rt">${esc(group.title)}</div>${group.items
+        .map((item) =>
+          item.fieldId
+            ? `<button class="ri" data-act="focus" data-field="${esc(item.fieldId)}"><b>${esc(item.question)}</b> ${esc(item.detail)}</button>`
+            : `<div class="ri"><b>${esc(item.question)}</b> ${esc(item.detail)}</div>`,
+        )
+        .join("")}</div>`,
+    )
+    .join("");
+  return `<details class="review"${open ? " open" : ""}><summary>Look it over before you send (${count})</summary>${items}</details>`;
 }
 
 /** A notice with its lead words emphasised. Everything else escaped. */

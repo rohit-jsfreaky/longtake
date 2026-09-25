@@ -29,6 +29,7 @@ import { describeMarks } from "@longtake/core";
 
 import { useLongtake } from "@/lib/use-longtake";
 import { KnownPanel } from "@/components/KnownPanel";
+import { ReviewList } from "@/components/ReviewList";
 import { DemoForm } from "./DemoForm";
 
 export default function FillPage() {
@@ -50,6 +51,8 @@ export default function FillPage() {
     start,
     stop,
     profileStore,
+    review,
+    focus,
   } = useLongtake();
 
   // `scrollTop`, not `scrollIntoView` — the latter scrolls every ancestor including the page,
@@ -196,6 +199,8 @@ export default function FillPage() {
           to change it, remove it, keep a copy, or forget the lot — the same view the extension's
           settings page gives.
         */}
+        <ReviewList groups={review} focus={focus} />
+
         <KnownPanel store={profileStore} />
 
         {/*

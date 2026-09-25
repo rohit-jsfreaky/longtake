@@ -19,11 +19,13 @@ import {
   type DictationConfig,
   type DictationResult,
   type FormState,
+  type CheckInput,
   type FormSnapshot,
   type Hesitation,
   type KnownFact,
   type LogEntry,
   type ProfileStore,
+  type ReviewGroup,
   type ShapedAnswer,
   type StartProblem,
   type WriteOutcome,
@@ -90,6 +92,18 @@ async function understand(snapshot: FormSnapshot): Promise<unknown> {
   return payload;
 }
 
+/** The trust layer's judge, from our own route. A failure only means that reply is not judged. */
+async function check(input: CheckInput): Promise<unknown> {
+  const response = await fetch("/api/check", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload.error ?? `check failed (${response.status})`);
+  return payload;
+}
+
 export type UseLongtake = {
   status: Status;
   live: boolean;
@@ -120,6 +134,10 @@ export type UseLongtake = {
   hesitations: Record<string, Hesitation>;
   /** Everything known about the person, newest first. */
   known: KnownFact[];
+  /** What to look at before sending, grouped — the same reading as the badges on the page. */
+  review: ReviewGroup[];
+  /** Bring a field into view and flash its badge. */
+  focus: (fieldId: string) => void;
   /** Answers that came from an earlier form. */
   fromMemory: { fieldId: string; question: string }[];
   log: LogLine[];
@@ -161,7 +179,7 @@ export function useLongtake({
       ignore,
       profile: store(),
       logFrames: true,
-      services: { getToken: siteToken, workletUrl: "/pcm-processor.js", voice: chooseVoice(), dictate, understand },
+      services: { getToken: siteToken, workletUrl: "/pcm-processor.js", voice: chooseVoice(), dictate, understand, check },
     });
     return conductorRef.current;
   }, [ignore, root, store]);
@@ -180,25 +198,10 @@ export function useLongtake({
 
   useEffect(() => () => void conductorRef.current?.stop(), []);
 
-  /**
-   * Mark the fields worth a second look, softly — a thin amber ring. An offer, not a verdict.
-   */
-  const hesitations = view?.hesitations;
-  useEffect(() => {
-    const read = conductorRef.current?.session.read;
-    if (!read || !hesitations) return;
-    const touched: HTMLElement[] = [];
-    for (const fieldId of Object.keys(hesitations)) {
-      const element = read.handles.get(fieldId);
-      if (!element) continue;
-      element.style.boxShadow = "0 0 0 2px rgba(217, 119, 6, 0.45)";
-      element.style.borderRadius = element.style.borderRadius || "6px";
-      touched.push(element);
-    }
-    return () => {
-      for (const element of touched) element.style.boxShadow = "";
-    };
-  }, [hesitations]);
+  // The fields worth a second look are marked by the conductor's badges (core/src/overlay.ts),
+  // beside the field — never by styling the page's own input, which the page, and our own watcher,
+  // would see as the form changing.
+  useEffect(() => () => conductorRef.current?.dispose(), []);
 
   const start = useCallback(() => conductor().start(), [conductor]);
   const stop = useCallback(() => conductor().stop(), [conductor]);
@@ -247,6 +250,8 @@ export function useLongtake({
     shaped: view?.shaped ?? {},
     hesitations: view?.hesitations ?? {},
     known: view?.known ?? [],
+    review: view?.review ?? [],
+    focus: (fieldId: string) => conductor().focus(fieldId),
     log: view?.log ?? [],
     start,
     stop,

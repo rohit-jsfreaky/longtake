@@ -146,3 +146,72 @@ export class ToolResultQueue {
     return this.speaking;
   }
 }
+
+/**
+ * How long a finished tool result may go without the reply it fires, before we stop waiting for it.
+ * The docs: `tool.result` auto-fires the next reply — and a `reply.create` after it is not to be sent.
+ */
+export const REPLY_AFTER_RESULT_MS = 3000;
+
+/** A request older than this is about a moment that has passed, and is dropped unsent. */
+export const REPLY_REQUEST_TTL_MS = 20_000;
+
+/**
+ * When the agent may be asked to speak on our cue (`reply.create`) — the trust layer's correction.
+ *
+ * Never over its own reply (`reply.started` … `reply.done`), never while the person is speaking,
+ * never while a tool call waits for its result, and never in the gap between a result going out and
+ * the reply it fires: the docs say `tool.result` auto-fires the next reply and not to send
+ * `reply.create` after it. One request at a time; a newer one replaces an older.
+ *
+ * Pure, with time passed in, like `ToolResultQueue`.
+ */
+export class ReplyRequestQueue {
+  private speaking = false;
+  private listening = false;
+  private calls = new Set<string>();
+  /** A tool result went out: its reply is coming. Since when. */
+  private expecting: number | null = null;
+  private pending: { instructions: string; at: number } | null = null;
+
+  /** Tell it what happened: every incoming event, and our own `tool.result` sends. */
+  note(type: string, now: number, callId?: string): void {
+    if (type === "reply.started") {
+      this.speaking = true;
+      this.expecting = null;
+    } else if (type === "reply.done") {
+      this.speaking = false;
+    } else if (type === "input.speech.started") {
+      this.listening = true;
+    } else if (type === "transcript.user") {
+      this.listening = false;
+    } else if (type === "tool.call" && callId) {
+      this.calls.add(callId);
+    } else if (type === "tool.result" && callId) {
+      this.calls.delete(callId);
+      this.expecting = now;
+    }
+  }
+
+  add(instructions: string, now: number): void {
+    this.pending = { instructions, at: now };
+  }
+
+  /** The instructions to send now, removed — or null while it is not the moment. */
+  due(now: number): string | null {
+    if (!this.pending) return null;
+    if (now - this.pending.at > REPLY_REQUEST_TTL_MS) {
+      this.pending = null;
+      return null;
+    }
+    if (this.expecting !== null && now - this.expecting > REPLY_AFTER_RESULT_MS) this.expecting = null;
+    if (this.speaking || this.listening || this.calls.size > 0 || this.expecting !== null) return null;
+    const { instructions } = this.pending;
+    this.pending = null;
+    return instructions;
+  }
+
+  get waiting(): boolean {
+    return this.pending !== null;
+  }
+}

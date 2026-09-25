@@ -355,6 +355,10 @@ export function brief(state: FormState, move: Move): string {
     );
   }
 
+  for (const f of state.fields.filter((f) => f.claimedIn)) {
+    lines.push(`You told them "${factsOf(f.spec, specs).question}" went in ("${f.claimedIn}"); it did not. Put it in with their words, or say plainly it isn't in.`);
+  }
+
   const problems = state.fields.filter((f) => f.error && f.value !== null);
   for (const f of problems) {
     lines.push(`The form rejects: ${factsOf(f.spec, specs).question} = "${shown(f.value)}" — "${f.error}"`);
