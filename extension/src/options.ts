@@ -26,6 +26,7 @@ import {
 } from "@longtake/core";
 
 import { profileClient } from "./profile-client";
+import { cue } from "./sound";
 
 const DEFAULT_VOICE = "charles";
 
@@ -359,3 +360,12 @@ async function renderVoices(): Promise<void> {
 }
 
 void renderVoices();
+
+// ── Interface sounds ────────────────────────────────────────────────────────────────────
+
+const sounds = $<HTMLInputElement>("sounds");
+void chrome.storage.local.get("sounds").then(({ sounds: saved }) => (sounds.checked = saved !== false));
+sounds.addEventListener("change", async () => {
+  await chrome.storage.local.set({ sounds: sounds.checked });
+  if (sounds.checked) cue("toggle", 0.35);
+});

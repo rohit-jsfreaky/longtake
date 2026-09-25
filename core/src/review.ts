@@ -29,6 +29,14 @@ const TITLES: Record<ReviewKind, string> = {
 
 const quote = (text: string, max = 70) => (text.length > max ? `“${text.slice(0, max)}…”` : `“${text}”`);
 
+/**
+ * Where an answer from their last form came from, in words. Not their quote: an answer they said
+ * yes to carries "<the saved answer> — <their yes>" as its evidence, and shown as "you said …" that
+ * read as nonsense ("you said “63997883500 — the all the other things are right”").
+ */
+const fromLastTime = (field: FormState["fields"][number]) =>
+  field.recalled && !field.recalled.sure ? "from your last form — you said yes" : "from your last form";
+
 /** The groups, in the order a person should work through them. Empty groups are left out. */
 export function reviewList(form: FormState, missed: Missed[] = []): ReviewGroup[] {
   const groups: Record<ReviewKind, ReviewItem[]> = { waiting: [], not_in: [], memory: [], spoken: [], typed: [], theirs: [] };
@@ -42,7 +50,7 @@ export function reviewList(form: FormState, missed: Missed[] = []): ReviewGroup[
     } else if (field.value === null && (missing.has(fieldId) || field.claimedIn)) {
       groups.not_in.push({ fieldId, question, detail: missing.get(fieldId)?.why ?? "the agent said it went in, but it did not" });
     } else if (field.source === "memory") {
-      groups.memory.push({ fieldId, question, detail: field.evidence ? `you said ${quote(field.evidence)}` : "from your last form" });
+      groups.memory.push({ fieldId, question, detail: fromLastTime(field) });
     } else if (field.source === "spoken") {
       groups.spoken.push({ fieldId, question, detail: field.evidence ? `you said ${quote(field.evidence)}` : "" });
     } else if (field.source === "typed") {
@@ -71,7 +79,8 @@ export function badgesFor(form: FormState, missed: Missed[] = [], hesitations: R
     } else if (field.source === "spoken") {
       badges.push({ fieldId, state: "spoken", detail: field.evidence ? `You said ${quote(field.evidence, 120)}.` : "You said it." });
     } else if (field.source === "memory") {
-      badges.push({ fieldId, state: "memory", detail: field.evidence ? `From your last form — you said ${quote(field.evidence, 120)}.` : "From your last form." });
+      const where = fromLastTime(field);
+      badges.push({ fieldId, state: "memory", detail: `${where.charAt(0).toUpperCase()}${where.slice(1)}.` });
     } else if (field.source === "typed") {
       badges.push({ fieldId, state: "typed", detail: "Typed by you." });
     } else if (field.source === "page") {

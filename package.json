@@ -32,5 +32,8 @@
     "@types/chrome": "^0.3.0",
     "@types/ws": "^8.18.1",
     "ws": "^8.21.3"
+  },
+  "dependencies": {
+    "cuelume": "^0.2.2"
   }
 }

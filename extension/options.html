@@ -24,24 +24,45 @@
       h1 { font-size: 22px; margin: 0; letter-spacing: -0.02em; }
       h2 { font-size: 12px; font-weight: 600; color: #9a9aa2; text-transform: uppercase; letter-spacing: .06em; margin: 26px 0 8px 4px; }
       .sub { color: #9a9aa2; font-size: 13px; }
-      nav { display: flex; gap: 6px; margin-bottom: 20px; }
-      nav button { all: unset; cursor: pointer; padding: 7px 14px; border-radius: 12px; color: #9a9aa2; border: 1px solid transparent; }
-      nav button[aria-selected="true"] { color: #fafafa; background: #161718; border-color: rgba(255,255,255,.1); }
+      /* A segmented control, the way macOS draws one: a well, and the chosen segment raised out of it. */
+      nav {
+        display: inline-flex; gap: 2px; padding: 3px; margin-bottom: 20px; border-radius: 12px; background: rgba(0,0,0,.35);
+        box-shadow: inset 0 1px 2px rgba(0,0,0,.6), inset 0 0 0 1px rgba(255,255,255,.05), 0 1px 0 rgba(255,255,255,.03);
+      }
+      nav button { all: unset; cursor: pointer; padding: 6px 14px; border-radius: 9px; color: #9a9aa2; transition: color 160ms ease, background 160ms ease; }
+      nav button:hover { color: #d4d4d8; }
+      nav button[aria-selected="true"] {
+        color: #fafafa; background: linear-gradient(180deg, #27282c 0%, #1c1d20 100%);
+        box-shadow: inset 0 1px 0 rgba(255,255,255,.08), 0 0 0 1px rgba(0,0,0,.6), 0 1px 2px rgba(0,0,0,.45);
+      }
       nav button:focus-visible { outline: 2px solid #43c39b; outline-offset: 2px; }
       section[hidden] { display: none; }
       .lead { color: #9a9aa2; margin: 0 0 18px; max-width: 60ch; }
       .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 6px; }
       .toolbar .count { color: #6e6e77; font-size: 12.5px; margin-right: auto; }
-      .card { border: 1px solid rgba(255,255,255,.08); border-radius: 20px; background: #0e0f10; overflow: hidden; }
-      .row { display: grid; grid-template-columns: 1fr auto; gap: 12px; padding: 14px 18px; border-top: 1px solid rgba(255,255,255,.06); align-items: start; }
-      .row:first-child { border-top: 0; }
+      .card {
+        border-radius: 18px; overflow: hidden; background: linear-gradient(180deg, #131417 0%, #0d0e10 100%);
+        box-shadow: 0 0 0 .5px rgba(0,0,0,.9), 0 1px 2px rgba(0,0,0,.3), 0 12px 32px -12px rgba(0,0,0,.6),
+          inset 0 1px 0 rgba(255,255,255,.06), inset 0 0 0 1px rgba(255,255,255,.04);
+      }
+      /* Rows parted by a groove: a dark line with a faint light one under it. */
+      .row {
+        display: grid; grid-template-columns: 1fr auto; gap: 12px; padding: 14px 18px; align-items: start;
+        border-top: 1px solid rgba(0,0,0,.45); box-shadow: inset 0 1px 0 rgba(255,255,255,.03);
+      }
+      .row:first-child { border-top: 0; box-shadow: none; }
       .what { font-size: 12px; color: #9a9aa2; margin-bottom: 4px; display: flex; gap: 8px; align-items: center; }
       .chip { font-size: 10.5px; color: #e0b060; border: 1px solid rgba(224,176,96,.35); border-radius: 999px; padding: 0 7px; }
+      /* Fields are pressed into the card. */
       .value input, .value select, .value textarea {
-        width: 100%; background: #161718; color: #fafafa; border: 1px solid rgba(255,255,255,.1);
+        width: 100%; background: #0a0b0c; color: #fafafa; border: 0;
         border-radius: 10px; padding: 8px 10px; font: inherit; resize: vertical;
+        box-shadow: inset 0 1px 2px rgba(0,0,0,.6), inset 0 0 0 1px rgba(255,255,255,.07), 0 1px 0 rgba(255,255,255,.03);
+        transition: box-shadow 160ms ease;
       }
-      .value input:focus, .value select:focus, .value textarea:focus { outline: none; border-color: #43c39b; }
+      .value input:focus, .value select:focus, .value textarea:focus {
+        outline: none; box-shadow: inset 0 1px 2px rgba(0,0,0,.6), inset 0 0 0 1px #43c39b, 0 0 0 3px rgba(67,195,155,.18);
+      }
       .meta { font-size: 12px; color: #6e6e77; margin-top: 6px; }
       .meta q { color: #9a9aa2; }
       details.history { margin-top: 6px; font-size: 12px; }
@@ -51,16 +72,22 @@
       .told .was { color: #d4d4d8; }
       .told .meta { margin-top: 2px; }
       .actions { display: flex; gap: 6px; }
+      /* Keys: raised, lit along the top, sinking when pressed. */
       button.small {
-        all: unset; cursor: pointer; font-size: 12.5px; padding: 6px 12px; border-radius: 10px;
-        border: 1px solid rgba(255,255,255,.14); color: #fafafa;
-        transition: transform 160ms var(--ease-out), border-color 160ms ease;
+        all: unset; cursor: pointer; font-size: 12.5px; padding: 6px 12px; border-radius: 10px; color: #e8e8ea; font-weight: 500;
+        background: linear-gradient(180deg, #25262a 0%, #1b1c1f 100%);
+        box-shadow: inset 0 1px 0 rgba(255,255,255,.08), 0 0 0 1px rgba(0,0,0,.65), 0 1px 2px rgba(0,0,0,.45);
+        transition: transform 160ms var(--ease-out), box-shadow 160ms ease, background 160ms ease;
       }
-      button.small:hover { border-color: rgba(255,255,255,.3); }
-      button.small:active { transform: scale(0.97); }
+      button.small:hover { background: linear-gradient(180deg, #2b2c30 0%, #202124 100%); }
+      button.small:active { transform: scale(0.97); box-shadow: inset 0 1px 3px rgba(0,0,0,.6), 0 0 0 1px rgba(0,0,0,.65); }
       button.small:focus-visible { outline: 2px solid #43c39b; outline-offset: 2px; }
       button.small:disabled { opacity: .35; cursor: default; }
-      button.small.go { background: #43c39b; color: #04120d; border-color: #43c39b; font-weight: 600; }
+      button.small.go {
+        color: #03140e; font-weight: 600; text-shadow: 0 1px 0 rgba(255,255,255,.25);
+        background: linear-gradient(180deg, #62ddb7 0%, #45c59d 55%, #39b38d 100%);
+        box-shadow: inset 0 1px 0 rgba(255,255,255,.45), inset 0 -1px 0 rgba(0,0,0,.18), 0 0 0 1px rgba(16,84,63,.7), 0 4px 12px -4px rgba(67,195,155,.45);
+      }
       .empty { padding: 28px 18px; color: #9a9aa2; text-align: center; }
       .preview { margin: 10px 0; padding: 12px 16px; border-radius: 16px; border: 1px solid rgba(67,195,155,.35); background: #0f2a22; }
       .preview p { margin: 0 0 10px; }
@@ -73,22 +100,34 @@
       .voices { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
       .voice {
         display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-radius: 16px; cursor: pointer;
-        border: 1px solid rgba(255,255,255,.08); background: #0e0f10;
-        transition: border-color 160ms ease;
+        background: linear-gradient(180deg, #131417 0%, #0e0f11 100%);
+        box-shadow: 0 0 0 .5px rgba(0,0,0,.9), 0 1px 2px rgba(0,0,0,.3), inset 0 1px 0 rgba(255,255,255,.06), inset 0 0 0 1px rgba(255,255,255,.05);
+        transition: box-shadow 160ms ease, transform 160ms var(--ease-out);
       }
-      .voice:hover { border-color: rgba(255,255,255,.2); }
-      .voice[aria-checked="true"] { border-color: #43c39b; background: #0f2a22; }
+      .voice:hover { box-shadow: 0 0 0 .5px rgba(0,0,0,.9), 0 1px 2px rgba(0,0,0,.3), inset 0 1px 0 rgba(255,255,255,.08), inset 0 0 0 1px rgba(255,255,255,.12); }
+      .voice:active { transform: scale(0.99); }
+      .voice[aria-checked="true"] {
+        background: linear-gradient(180deg, #11312a 0%, #0c231d 100%);
+        box-shadow: 0 0 0 .5px rgba(0,0,0,.9), 0 4px 14px -6px rgba(67,195,155,.4), inset 0 1px 0 rgba(255,255,255,.07), inset 0 0 0 1px rgba(67,195,155,.7);
+      }
       .voice .name { font-weight: 600; text-transform: capitalize; }
       .voice .accent { font-size: 12px; color: #9a9aa2; }
       .voice .grow { flex: 1; }
       .play {
-        all: unset; cursor: pointer; width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center;
-        border: 1px solid rgba(255,255,255,.14); flex: none;
-        transition: transform 160ms var(--ease-out);
+        all: unset; cursor: pointer; width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; flex: none;
+        background: linear-gradient(180deg, #27282c 0%, #1c1d20 100%);
+        box-shadow: inset 0 1px 0 rgba(255,255,255,.09), 0 0 0 1px rgba(0,0,0,.65), 0 1px 3px rgba(0,0,0,.5);
+        transition: transform 160ms var(--ease-out), box-shadow 160ms ease;
       }
-      .play:active { transform: scale(0.94); }
+      .play:active { transform: scale(0.94); box-shadow: inset 0 1px 3px rgba(0,0,0,.6), 0 0 0 1px rgba(0,0,0,.65); }
       .play:focus-visible, .voice:focus-visible { outline: 2px solid #43c39b; outline-offset: 2px; }
       .note { font-size: 12.5px; color: #6e6e77; margin-top: 14px; }
+      /* Scrollbars that belong to the page: thin, rounded, no arrows. */
+      ::-webkit-scrollbar { width: 12px; height: 12px; }
+      ::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: transparent; }
+      ::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
+      ::-webkit-scrollbar-thumb { border-radius: 999px; border: 3px solid transparent; background-clip: padding-box; background-color: rgba(255,255,255,.14); min-height: 32px; }
+      ::-webkit-scrollbar-thumb:hover { background-color: rgba(255,255,255,.28); }
       @media (max-width: 560px) {
         .row { grid-template-columns: 1fr; }
       }
@@ -134,6 +173,10 @@
         <p class="lead">The voice Longtake speaks in. Press ▶ to hear it; click a voice to choose it.</p>
         <div class="voices" id="voices" role="radiogroup" aria-label="Voice"></div>
         <p class="note">A new voice is used from your next call — a call already running keeps its voice.</p>
+        <label class="setting">
+          <input type="checkbox" id="sounds" />
+          <span><b>Interface sounds.</b> A soft click when you press something in the Longtake window.</span>
+        </label>
       </section>
     </main>
     <script src="dist/options.js"></script>

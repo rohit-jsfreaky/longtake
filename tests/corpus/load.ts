@@ -21,6 +21,8 @@ import { PROBE } from "../helpers";
 export const CORPUS = resolve(process.cwd(), process.env.CORPUS_DIR ?? "corpus");
 /** One JSON per form per scorer, read by the report. Cleared at the start of every run. */
 export const RESULTS = resolve(process.cwd(), process.env.CORPUS_RESULTS ?? "corpus-results");
+/** The day the corpus lives on — the day its conversations were written ("aaj 25 September 2026 hai"). Noon IST. */
+export const CORPUS_TODAY = Date.parse("2026-09-25T12:00:00+05:30");
 
 export type CorpusForm = { id: string; dir: string; meta: Meta; ax: AxCapture; truth: Truth | null; fill: FillPlan | null; talk: Conversation | null };
 
@@ -110,6 +112,24 @@ export async function openForm(page: Page, form: CorpusForm): Promise<Sent> {
     // Analytics beacons post on their own; a navigation that posts is a form being sent.
     if (request.method() === "POST" && request.isNavigationRequest()) sent.posts.push(request.url());
   });
+  // Every page lives on the day its conversations were written. A Jotform fills "Today's Date" from
+  // the clock, and the scripts say "aaj 25 September 2026 hai": at midnight the corpus "got worse"
+  // with nothing changed. The date is shifted, not frozen — time still passes, so everything that
+  // measures how long something took (reply queues, the trust layer) sees real durations.
+  await page.addInitScript((today) => {
+    const RealDate = Date;
+    const offset = today - RealDate.now();
+    class CorpusDate extends RealDate {
+      constructor(...args: ConstructorParameters<DateConstructor> | []) {
+        if (args.length === 0) super(RealDate.now() + offset);
+        else super(...(args as [string]));
+      }
+      static now(): number {
+        return RealDate.now() + offset;
+      }
+    }
+    window.Date = CorpusDate as DateConstructor;
+  }, CORPUS_TODAY);
   await page.addInitScript(() => {
     const seen: string[] = (window.__corpusSent = []);
     const describe = (form: HTMLFormElement | null) => form?.action || form?.id || "form";

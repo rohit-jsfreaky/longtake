@@ -34,7 +34,11 @@ const CARRY_OVER_MS = 60_000;
 /** The site's server routes a content script may reach through here, and no others. */
 const API_PATHS = new Set(["/api/understand", "/api/check"]);
 
-type Live = { frameId: number; origin: string; at: number };
+/**
+ * A tab with a call in it. `sessionId` and `pending` are what the next page needs to carry the
+ * same conversation on: the session to resume, and the tool calls the page went before answering.
+ */
+type Live = { frameId: number; origin: string; at: number; sessionId?: string; pending?: { callId: string; name: string }[] };
 
 async function site(): Promise<string> {
   const { site: override } = (await chrome.storage.local.get("site")) as { site?: string };
@@ -176,11 +180,30 @@ async function explain(tabId: number, why: string): Promise<void> {
 async function liveTabs(): Promise<Record<number, Live>> {
   return ((await chrome.storage.session.get("live")) as { live?: Record<number, Live> }).live ?? {};
 }
-async function setLive(tabId: number, value: Live | null): Promise<void> {
-  const live = await liveTabs();
-  if (value) live[tabId] = value;
-  else delete live[tabId];
-  await chrome.storage.session.set({ live });
+/**
+ * Every change to the live tabs, one after another. Each is a read and a write of the same record,
+ * and a page's last word (its session, the Next it was pressing) arrives as the next page is
+ * already asking for it: run side by side, the newer read could miss the older write.
+ */
+let liveChain: Promise<unknown> = Promise.resolve();
+function changeLive(tabId: number, change: (was: Live | undefined) => Live | null): Promise<void> {
+  const next = liveChain.then(async () => {
+    const live = await liveTabs();
+    const value = change(live[tabId]);
+    if (value) live[tabId] = value;
+    else delete live[tabId];
+    await chrome.storage.session.set({ live });
+  });
+  liveChain = next.catch(() => undefined);
+  return next;
+}
+function setLive(tabId: number, value: Live | null): Promise<void> {
+  return changeLive(tabId, () => value);
+}
+/** The tab's live record, after every change already asked for. */
+async function liveTab(tabId: number): Promise<Live | undefined> {
+  await liveChain;
+  return (await liveTabs())[tabId];
 }
 
 // ── Messages ────────────────────────────────────────────────────────────────────────────
@@ -191,7 +214,7 @@ type Message =
   | { type: "longtake:profile"; op: "load" }
   | { type: "longtake:profile"; op: "apply"; changes: ProfileChange[] }
   | { type: "longtake:settings"; tab?: string }
-  | { type: "longtake:active"; active: boolean }
+  | { type: "longtake:active"; active: boolean; sessionId?: string; pending?: { callId: string; name: string }[] }
   | { type: "longtake:loaded"; top: boolean };
 
 chrome.runtime.onMessage.addListener((message: Message, sender, reply) => {
@@ -255,28 +278,37 @@ chrome.runtime.onMessage.addListener((message: Message, sender, reply) => {
 
   if (message?.type === "longtake:active" && tabId !== undefined) {
     const origin = sender.origin ?? (sender.url ? new URL(sender.url).origin : "");
-    void setLive(tabId, message.active ? { frameId: sender.frameId ?? 0, origin, at: Date.now() } : null);
+    if (!message.active) {
+      void setLive(tabId, null);
+      return;
+    }
+    void changeLive(tabId, (was) => {
+      const sessionId = message.sessionId ?? was?.sessionId;
+      return { frameId: sender.frameId ?? 0, origin, at: Date.now(), ...(sessionId ? { sessionId } : {}), pending: message.pending ?? [] };
+    });
     return;
   }
 
   if (message?.type === "longtake:loaded" && tabId !== undefined && message.top) {
     // The top frame of a new page. If this tab was live on the same site a moment ago, carry on.
     (async () => {
-      const was = (await liveTabs())[tabId];
+      if (!(await liveTab(tabId))) return;
+      await new Promise((resolve) => setTimeout(resolve, 800)); // let the frames load
+      // Read after the wait: the page that went may still be saying what it was in the middle of.
+      const was = await liveTab(tabId);
       if (!was) return;
       const origin = sender.origin ?? (sender.url ? new URL(sender.url).origin : "");
       if (Date.now() - was.at > CARRY_OVER_MS) {
         await setLive(tabId, null);
         return;
       }
-      await new Promise((resolve) => setTimeout(resolve, 800)); // let the frames load
       const frameId = await formFrame(tabId);
       const sameSite = origin === was.origin || frameId !== 0;
       if (frameId === null || !sameSite) {
         await setLive(tabId, null);
         return;
       }
-      await chrome.tabs.sendMessage(tabId, { type: "longtake:resume" }, { frameId }).catch(() => {});
+      await chrome.tabs.sendMessage(tabId, { type: "longtake:resume", sessionId: was.sessionId, pending: was.pending ?? [] }, { frameId }).catch(() => {});
     })();
   }
   return;

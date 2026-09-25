@@ -22,8 +22,10 @@ import {
   buildConfirmTool,
   buildFillTool,
   buildLaterTool,
+  buildLeaveTool,
   buildPressTool,
   buildSaveTool,
+  PRESS_TOOL_NAME,
   validateTool,
   type VoiceAgentTool,
 } from "./binder";
@@ -161,7 +163,7 @@ export class LongtakeSession {
   tools(): VoiceAgentTool[] {
     const specs = this.current?.specs ?? [];
     const press = this.current ? buildPressTool(this.buttons().actions) : null;
-    const always = [buildFillTool(specs), buildConfirmTool(specs), buildClearTool(specs), buildLaterTool(specs), buildSaveTool(specs)];
+    const always = [buildFillTool(specs), buildConfirmTool(specs), buildClearTool(specs), buildLaterTool(specs), buildLeaveTool(specs), buildSaveTool(specs)];
     return press ? [...always, press] : always;
   }
 
@@ -224,6 +226,38 @@ export class LongtakeSession {
    * The `skip_for_now` tool: "leave that, we'll do it at the end". Needs their words, like
    * everything else; changes nothing on the page — only the order things are asked in.
    */
+  /**
+   * The `leave_empty` tool: they said a question doesn't apply to them, or they'd rather not answer
+   * it. It stays empty and is not asked again (ledger: declined). A field that already has an answer
+   * is left as it is — emptying one is `clear_fields`, which undoes and asks about next time.
+   */
+  leaveEmpty(args: Record<string, unknown>, heard: string): Done<Record<string, unknown>> {
+    const read = this.current;
+    if (!read) return { result: { error: "The form has not been read yet." }, outcomes: [], spoken: [] };
+    const fields = Array.isArray(args.fields) ? args.fields.map(String) : [];
+    const evidence = typeof args.evidence === "string" ? args.evidence : "";
+    if (!checkEvidence(heard, evidence).ok) {
+      return { result: { left_empty: [], why: "quote_not_found", submitted: false }, outcomes: [], spoken: [] };
+    }
+    const byId = new Map(read.specs.map((spec) => [spec.id, spec]));
+    const values = new Map(this.state().fields.map((f) => [f.spec.id, f.value]));
+    const known = fields.filter((id) => byId.has(id));
+    const answered = known.filter((id) => values.get(id) !== null && values.get(id) !== undefined);
+    const left = known.filter((id) => !answered.includes(id));
+    for (const id of left) this.ledger.decline(id);
+    const name = (id: string) => fieldName(byId.get(id)!);
+    const state = this.state();
+    const result = {
+      left_empty: left.map(name),
+      ...(answered.length ? { has_an_answer: answered.map(name) } : {}),
+      progress: state.progress,
+      do_next: doNext(this.move()),
+      submitted: false,
+    };
+    this.options.onChange?.();
+    return { result, outcomes: [], spoken: [] };
+  }
+
   setAside(args: Record<string, unknown>, heard: string): Done<Record<string, unknown>> {
     const read = this.current;
     if (!read) return { result: { error: "The form has not been read yet." }, outcomes: [], spoken: [] };
@@ -257,6 +291,25 @@ export class LongtakeSession {
    * Needs the person's words like everything else. After a Next the form is a new page: the
    * optional offer is owed again, and the agent gets new tools and a new brief straight away.
    */
+  /**
+   * The answer to a tool call this page's last document made and never answered: it went when the
+   * page did. A Next that loaded this page is answered as pressed, with this page's questions — so
+   * the agent says where it is and asks for them. Anything else did not finish.
+   */
+  carriedResult(name: string): Record<string, unknown> {
+    const state = this.state();
+    if (name === PRESS_TOOL_NAME) {
+      return {
+        pressed: true,
+        form_changed: { new_page: true, new_questions: state.fields.map((f) => fieldName(f.spec)).slice(0, 15) },
+        progress: state.progress,
+        do_next: doNext(this.move()),
+        submitted: false,
+      };
+    }
+    return { error: "The page changed before this finished, so nothing from it is on this page. FORM NOW is the new page.", submitted: false };
+  }
+
   async press(args: Record<string, unknown>, heard: string): Promise<Done<Record<string, unknown>>> {
     const id = typeof args.action === "string" ? args.action : "";
     const evidence = typeof args.evidence === "string" ? args.evidence : "";

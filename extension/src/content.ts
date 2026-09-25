@@ -15,7 +15,7 @@
  * Built by `npm run build:extension` into `extension/dist/content.js`.
  */
 
-import { Conductor, readForm, type CheckInput, type ConductorView, type FormSnapshot } from "@longtake/core";
+import { Conductor, readForm, type CarriedCall, type CheckInput, type ConductorView, type FormSnapshot } from "@longtake/core";
 
 import { miss, notice, Panel, type PanelView } from "./panel";
 import { profileClient } from "./profile-client";
@@ -51,6 +51,8 @@ let panel: Panel | null = null;
 let panelView: PanelView = { state: { kind: "ready", questions: 0 }, notices: [] };
 let conductor: Conductor | null = null;
 let unsubscribe: (() => void) | null = null;
+/** A call from this tab's last page, to carry on here — until it has started, or needs a click. */
+let carry: CarriedCall | null = null;
 
 const draw = () => panel?.render(panelView);
 
@@ -84,7 +86,10 @@ function closePanel(): void {
 /** The conductor's view, as the panel draws it. */
 function toPanel(view: ConductorView): PanelView {
   const state: PanelView["state"] =
-    view.status === "error"
+    // Carried onto this page, and the browser wants a click before it plays sound: one button.
+    view.status === "error" && view.problem === "needs-click"
+      ? { kind: "ready", questions: countQuestions(), carrying: true }
+      : view.status === "error"
       ? { kind: "error", message: view.error ?? "Something went wrong." }
       : view.status === "idle"
         ? panelView.state
@@ -132,18 +137,25 @@ async function begin(): Promise<void> {
       check: (input: CheckInput) => siteApi("/api/check", input),
     },
     onActive: (active) => tellBackground({ type: "longtake:active", active }),
+    onSession: (sessionId) => tellBackground({ type: "longtake:active", active: true, sessionId }),
   });
   unsubscribe ??= conductor.subscribe((view) => {
     panelView = toPanel(view);
     draw();
   });
-  await conductor.start();
+  const carried = carry;
+  await conductor.start(carried ?? undefined);
+  // Started, or failed for a reason a click will not fix: nothing left to carry. A click it wants
+  // keeps it, so the button carries the same conversation on.
+  if (conductor.view().problem !== "needs-click") carry = null;
 }
 
 // A page that unloads mid-call (a form that posts each page) marks the moment, so the next page
 // offers to carry on however long the call had been running.
 window.addEventListener("pagehide", () => {
-  if (conductor?.running) tellBackground({ type: "longtake:active", active: true });
+  if (!conductor?.running) return;
+  // The session to resume, and what the agent is still waiting on — a Next it pressed, most often.
+  tellBackground({ type: "longtake:active", active: true, ...(conductor.sessionId ? { sessionId: conductor.sessionId } : {}), pending: conductor.pendingCalls() });
 });
 
 // ── Messages from the background worker ─────────────────────────────────────────────────
@@ -176,9 +188,15 @@ function listen(): void {
       return;
     }
     if (message?.type === "longtake:resume") {
-      // This tab was mid-call when the page changed under it. Offer to carry on — one click, since
-      // the browser will not start a page's audio without one.
+      // This tab was mid-call when the page changed under it — a form that loads each page afresh.
+      // Carry on at once: the same session, so the agent keeps the conversation. A browser that
+      // wants a click before it plays sound here gets one button (toPanel, "needs-click").
+      const { sessionId, pending } = message as { sessionId?: string; pending?: CarriedCall["pending"] };
       if (!panel) openPanel(true);
+      if (sessionId && !conductor?.running) {
+        carry = { sessionId, pending: pending ?? [] };
+        void begin();
+      }
       reply({ ok: true });
     }
   });

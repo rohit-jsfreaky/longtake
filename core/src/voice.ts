@@ -64,7 +64,7 @@ export type AgentMessage = {
 // Why a call could not start, in words a person can act on
 // ═══════════════════════════════════════════════════════════════════════════════════════
 
-export type StartProblem = "mic-denied" | "no-mic" | "mic-busy" | "insecure" | "unsupported" | "token" | "other";
+export type StartProblem = "mic-denied" | "no-mic" | "mic-busy" | "insecure" | "unsupported" | "token" | "needs-click" | "other";
 
 /**
  * A call that could not start, with what kind of problem it was.
@@ -92,6 +92,9 @@ const PROBLEM_WORDS: Record<StartProblem, string> = {
   insecure: "The microphone only works on a secure page. Open this page over https.",
   unsupported: "This browser cannot record audio here. Try a recent Chrome, Edge, Firefox or Safari.",
   token: "Could not start a voice session.",
+  // A call carried onto a new page starts itself — unless the browser wants a click before it
+  // plays any sound there.
+  "needs-click": "Click to carry on — the browser wants a click before this page plays sound.",
   other: "The microphone could not be started.",
 };
 
@@ -168,6 +171,16 @@ export type VoiceSessionOptions = {
   onReply?: (event: { type: "started" | "done"; id: string; status?: string }) => void;
   /** A tool call arrived, before its handler runs. */
   onToolCallStarted?: (callId: string, name: string) => void;
+  /**
+   * Carry on the call this page's last document was in. A form that loads each page afresh ends
+   * the page's scripts — and the call with them — at every Next. The server keeps a dropped session
+   * for 30 s, so the first connection resumes it (the agent keeps the whole conversation), is caught
+   * up from `freshStart`, and is handed `answers` for the tool calls the old page never answered —
+   * the Next it pressed, above all. Gone by then → a fresh session from `freshStart`.
+   */
+  resume?: { sessionId: string; answers?: () => { callId: string; result: unknown }[] };
+  /** Each session the call is in, as it opens — the first, a resumed one, a fresh one. */
+  onSession?: (sessionId: string) => void;
   /** Fired the moment the person starts speaking a turn. */
   onSpeechStart?: () => void;
   /**
@@ -262,6 +275,7 @@ export async function startVoiceSession(options: VoiceSessionOptions): Promise<V
     onReply,
     onToolCallStarted,
     onSpeechStart,
+    onSession,
     onLocalSpeech,
     onError,
     onClosed,
@@ -290,7 +304,11 @@ export async function startVoiceSession(options: VoiceSessionOptions): Promise<V
       // The context keeps the device rate and the worklet resamples, so Firefox keeps its echo
       // canceller and Safari does not silently run at the wrong rate.
       audioCtx = new AudioContext();
-      await audioCtx.resume();
+      // Inside a click this is immediate. A call carried onto a new page starts with no click, and a
+      // browser that will not play sound there leaves the context suspended — waiting for it would
+      // hang the start, so it is asked once, briefly, and a click is asked for instead.
+      await Promise.race([audioCtx.resume(), new Promise((settle) => setTimeout(settle, 1500))]);
+      if (audioCtx.state !== "running") throw new VoiceStartError("needs-click", PROBLEM_WORDS["needs-click"]);
       await audioCtx.audioWorklet.addModule(workletUrl);
 
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -309,7 +327,7 @@ export async function startVoiceSession(options: VoiceSessionOptions): Promise<V
       return { audioCtx, stream, source, worklet };
     } catch (cause) {
       void audioCtx?.close();
-      throw explainMicFailure(cause);
+      throw cause instanceof VoiceStartError ? cause : explainMicFailure(cause);
     }
   })();
 
@@ -631,6 +649,7 @@ export async function startVoiceSession(options: VoiceSessionOptions): Promise<V
         ended = false;
         const how = opening;
         drop = null;
+        if (sessionId) onSession?.(sessionId);
 
         // Whatever the agent was saying when the line went is not carrying on. A result held back
         // for the end of that reply would otherwise wait out the queue's whole deadline.
@@ -642,6 +661,9 @@ export async function startVoiceSession(options: VoiceSessionOptions): Promise<V
           const now = freshStart();
           send({ type: "session.update", session: { system_prompt: now.systemPrompt, tools: now.tools } });
         }
+        // Carried onto a new page: what the old page was doing when it went, answered from this one.
+        if (how === "resumed" && carried) for (const answer of carried()) results.add({ call_id: answer.callId, result: answer.result }, Date.now());
+        carried = null;
 
         const heldSamples = flushPrebuffer();
         if (heldSamples > 0) {
@@ -797,7 +819,17 @@ export async function startVoiceSession(options: VoiceSessionOptions): Promise<V
     void audioCtx.close();
   };
 
-  await connect("first", token);
+  /** The old page's unanswered tool calls, for the resumed session only; a fresh one never had them. */
+  let carried: (() => { callId: string; result: unknown }[]) | null = null;
+  if (options.resume) {
+    // Treated as a line that dropped a moment ago: resumed if the server still has it, fresh if not.
+    sessionId = options.resume.sessionId;
+    carried = options.resume.answers ?? null;
+    drop = { sessionId, droppedAt: Date.now(), attempts: 0, ended: false };
+    await connect("resumed", token);
+  } else {
+    await connect("first", token);
+  }
 
   return {
     setTranscriptionMode: (next: TranscriptionMode) => {

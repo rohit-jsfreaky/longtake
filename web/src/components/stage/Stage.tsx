@@ -7,6 +7,7 @@ import { Container, Eyebrow, Section } from "@/components/chrome";
 import { RecordDot } from "@/components/RecordDot";
 import { Reveal } from "@/components/motion";
 import { Waveform } from "@/components/Waveform";
+import { cue } from "@/lib/sound";
 import { useLongtake } from "@/lib/use-longtake";
 import type { StartProblem } from "@longtake/core";
 import { BrowserChrome } from "./BrowserChrome";
@@ -197,6 +198,7 @@ export function Stage() {
                     role="tab"
                     aria-selected={which === key}
                     disabled={live && which !== key}
+                    onPointerDown={(event) => event.button === 0 && cue("tick", 0.22)}
                     onClick={() => setWhich(key)}
                     className={`press rounded-full px-4 py-2 text-[13px] ${
                       which === key ? "btn-solid" : "btn-ghost"
@@ -235,6 +237,7 @@ export function Stage() {
                         key={tab}
                         role="tab"
                         aria-selected={showing === tab}
+                        onPointerDown={(event) => event.button === 0 && cue("toggle", 0.25)}
                         onClick={() => setPicked(tab)}
                         className={`press rounded-full px-3 py-1 transition-colors ${
                           showing === tab ? "bg-ink text-paper" : "text-faint hover:text-dim"
@@ -394,6 +397,7 @@ export function Stage() {
                 </div>
 
                 <button
+                  onPointerDown={(event) => event.button === 0 && cue("press")}
                   onClick={() => {
                     if (!live) setPicked(null);
                     void (live ? stop() : start());

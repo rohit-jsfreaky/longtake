@@ -165,6 +165,52 @@ test.describe("2 · 'skip this, do the rest first'", () => {
   });
 });
 
+// Live, on the Google Form: "If you are below 18 years of age, have you had your parents fill out the
+// Parental Consent Form?" — "I'm over 18" — "Understood", nothing recorded, asked again a turn later.
+test.describe("2b · 'that doesn't apply to me'", () => {
+  const CONSENT = `
+    <h1>Volunteer sign-up</h1>
+    <label for="fn">First Name*</label><input id="fn" required>
+    <fieldset><legend>If you are below 18 years of age, have you had your parents fill out the Parental Consent Form?</legend>
+      <label><input type="radio" name="pc" value="Yes">Yes</label><label><input type="radio" name="pc" value="No">No</label></fieldset>`;
+
+  test("a question they say doesn't apply stays empty, is never asked again, and the agent is told so", async ({ page }) => {
+    await session(page, CONSENT);
+    const r = await page.evaluate(async () => {
+      const s = (window as unknown as { __s: S }).__s;
+      const heard = "Rohit. And I'm over 18 years old.";
+      await s.fill({ first_name: { value: "Rohit", evidence: "Rohit", how: "named" } }, heard);
+      const consent = s.state().fields.find((f) => f.spec.kind === "radio")!.spec.id;
+      const asked = String((await s.fill({}, heard)).result.do_next);
+      const left = s.leaveEmpty({ fields: [consent], evidence: "I'm over 18 years old" }, heard).result;
+      const after = s.state().fields.find((f) => f.spec.id === consent)!;
+      return { asked, left, value: after.value, declined: after.declined, prompt: s.prompt(), tools: s.tools().map((t) => t.name) };
+    });
+    expect(r.asked).toContain("Parental Consent");
+    expect(r.left.left_empty).toEqual(["If you are below 18 years of age, have you had your parents fill out the Parental Consent Form?"]);
+    expect(String(r.left.do_next)).not.toContain("Parental Consent"); // not asked again
+    expect(r).toMatchObject({ value: null, declined: true });
+    expect(r.prompt).toContain("Left empty on purpose (do not ask again)");
+    expect(r.tools).toContain("leave_empty");
+  });
+
+  test("leaving one empty needs their words, and never empties an answer", async ({ page }) => {
+    await session(page, FORM);
+    const r = await page.evaluate(async () => {
+      const s = (window as unknown as { __s: S }).__s;
+      const unsaid = s.leaveEmpty({ fields: ["preferred_first_name"], evidence: "doesn't apply" }, "my name is Rohit").result;
+      const heard = "my name is Rohit, I don't have a preferred name, and skip the first name box";
+      await s.fill({ first_name: { value: "Rohit", evidence: "my name is Rohit", how: "named" } }, heard);
+      const both = s.leaveEmpty({ fields: ["preferred_first_name", "first_name"], evidence: "I don't have a preferred name" }, heard).result;
+      return { unsaid, both, first: s.state().fields.find((f) => f.spec.id === "first_name")!.value };
+    });
+    expect(r.unsaid).toMatchObject({ left_empty: [], why: "quote_not_found" });
+    expect(r.both.left_empty).toEqual(["Preferred First Name"]);
+    expect(r.both.has_an_answer).toEqual(["First Name"]);
+    expect(r.first).toBe("Rohit");
+  });
+});
+
 test.describe("3 · the opening line names what memory put in", () => {
   test("name and email in, optional Preferred First Name empty: both are named", async ({ page }) => {
     await session(

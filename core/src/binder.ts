@@ -340,6 +340,43 @@ export function buildLaterTool(specs: FieldSpec[]): VoiceAgentTool {
   };
 }
 
+export const LEAVE_TOOL_NAME = "leave_empty";
+
+/**
+ * "That doesn't apply to me." "I'd rather not say." A question answered by saying it isn't theirs
+ * to answer is answered: it stays empty and is not asked again. Without this, live — "If you are
+ * below 18, have you had your parents fill out the consent form?" / "I'm over 18" — the agent said
+ * "Understood", nothing was recorded, and the same question came back a turn later. The agent
+ * judges what they meant, in any words; code checks only that the quote was said.
+ */
+export function buildLeaveTool(specs: FieldSpec[]): VoiceAgentTool {
+  const ids = specs.filter((spec) => !spec.suspectedHoneypot && spec.kind !== "file").map((spec) => spec.id);
+  return {
+    type: "function",
+    name: LEAVE_TOOL_NAME,
+    description:
+      "Leave fields empty for good when the person says a question doesn't apply to them (\"I'm over 18\" to one for under-18s) or they'd rather not answer it. Nothing is written, and it isn't asked again; say in a few words that it stays blank. You judge what they meant, in any words. A field with an answer in it is emptied with clear_fields instead.",
+    parameters: {
+      type: "object",
+      properties: {
+        fields: {
+          type: "array",
+          description: "The fields to leave empty.",
+          items: ids.length > 0 ? { type: "string", enum: ids } : { type: "string" },
+        },
+        evidence: {
+          type: "string",
+          description: "The person's own words saying it doesn't apply or they'd rather not, quoted exactly.",
+        },
+      },
+      required: ["fields", "evidence"],
+      additionalProperties: false,
+    },
+    execution_mode: EXECUTION_MODE,
+    timeout_seconds: TIMEOUT_SECONDS,
+  };
+}
+
 export const SAVE_TOOL_NAME = "save_for_next_time";
 
 /**

@@ -2,6 +2,8 @@
 
 import type { ReviewGroup } from "@longtake/core";
 
+import { cue } from "@/lib/sound";
+
 /**
  * Look it over before you send — the demo's side panel, once the call has stopped.
  *
@@ -21,6 +23,7 @@ export function StageReview({ groups, focus }: { groups: ReviewGroup[]; focus: (
               <li key={item.fieldId ?? `${group.kind}-${i}`}>
                 {item.fieldId ? (
                   <button
+                    onPointerDown={(event) => event.button === 0 && cue("tick", 0.22)}
                     onClick={() => focus(item.fieldId!)}
                     className="press block w-full rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-ink"
                   >

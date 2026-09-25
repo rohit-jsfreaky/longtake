@@ -206,16 +206,22 @@ test.describe("the extension on someone else's page", () => {
       await expect(page.locator("#n")).toHaveValue("Rohit Kashyap");
       serve(before, { type: "tool.call", call_id: "c2", name: "press_form_button", arguments: { action: "next_next", evidence: "next page" } });
 
-      // The page reloads; the next one offers to carry on, and one Enter starts its own call,
-      // told about the new page's questions.
+      // The page reloads, and the call carries on by itself — no click: the same session resumed,
+      // so the agent keeps the conversation (live, a Google Form's Next closed the call and it had
+      // to be started again).
       await page.waitForURL(/\/page2/, { timeout: 10_000 });
       await expect(page.locator("longtake-panel")).toHaveCount(1, { timeout: 10_000 });
-      await page.waitForTimeout(300);
-      await page.keyboard.press("Enter");
-      await expect.poll(() => agent.received[before + 1]?.[0]?.type ?? null, { timeout: 20_000 }).toBe("session.update");
-      const next = agent.received[before + 1]![0] as unknown as { session: { tools: { name: string; parameters: { properties: object } }[] } };
-      const fill = next.session.tools.find((t) => t.name === "fill_fields")!;
+      await expect.poll(() => agent.received[before + 1]?.[0] ?? null, { timeout: 20_000 }).toEqual({ type: "session.resume", session_id: "sess_p1" });
+      serve(before + 1, { type: "session.ready", session_id: "sess_p1" });
+
+      // Caught up with the new page's form, and the Next it pressed answered from this page.
+      await expect.poll(() => agent.received[before + 1]!.some((m) => m.type === "tool.result"), { timeout: 10_000 }).toBe(true);
+      const update = agent.received[before + 1]!.find((m) => m.type === "session.update") as unknown as { session: { tools: { name: string; parameters: { properties: object } }[] } };
+      const fill = update.session.tools.find((t) => t.name === "fill_fields")!;
       expect(Object.keys(fill.parameters.properties)).toEqual(["city"]);
+      const answered = agent.received[before + 1]!.find((m) => m.type === "tool.result")!;
+      expect(answered.call_id).toBe("c2");
+      expect(JSON.parse(String(answered.result))).toMatchObject({ pressed: true, form_changed: { new_page: true, new_questions: ["City"] }, submitted: false });
       await expect(page.locator("longtake-panel")).toHaveCount(1);
     } finally {
       await context.close();

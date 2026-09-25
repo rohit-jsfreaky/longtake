@@ -18,7 +18,7 @@
 
 import { checkEvidence } from "./evidence";
 import { clipFor, type TimelinePoint } from "./clip";
-import { CLEAR_TOOL_NAME, CONFIRM_TOOL_NAME, FILL_TOOL_NAME, LATER_TOOL_NAME, PRESS_TOOL_NAME, SAVE_TOOL_NAME } from "./binder";
+import { CLEAR_TOOL_NAME, CONFIRM_TOOL_NAME, FILL_TOOL_NAME, LATER_TOOL_NAME, LEAVE_TOOL_NAME, PRESS_TOOL_NAME, SAVE_TOOL_NAME } from "./binder";
 import { configForField, fieldsWorthShaping, shapeResult, type DictationConfig, type DictationResult, type ShapedAnswer } from "./dictation";
 import type { FormState } from "./form-state";
 import { readHesitation, type Hesitation } from "./hesitation";
@@ -95,6 +95,16 @@ export type ConductorServices = {
   startVoice?: (options: VoiceSessionOptions) => Promise<VoiceSession>;
 };
 
+/**
+ * A call the page's last document was in, to carry on here: the session to resume, and the tool
+ * calls it made that the page never answered (a Next that loaded this page, above all).
+ */
+export type CarriedCall = { sessionId: string; pending: { callId: string; name: string }[] };
+
+/** What the agent is asked to say when the page changed and no pressed Next of its own says so. */
+const PAGE_TURNED =
+  "The form has moved on to a new page (they may have pressed Next themselves). In a few words say you're on the next page, then do what DO NEXT says. Don't repeat anything from before.";
+
 export type ConductorOptions = {
   root: () => Document | Element;
   ignore: string;
@@ -105,6 +115,8 @@ export type ConductorOptions = {
   logFrames?: boolean;
   /** A call started or ended — the extension tells its background worker, so a page load can carry it on. */
   onActive?: (active: boolean) => void;
+  /** The voice session the call is in, as each opens — kept by the extension to carry the call on. */
+  onSession?: (sessionId: string) => void;
   /** Badges beside each field on the page (overlay.ts). On unless turned off. */
   badges?: boolean;
 };
@@ -180,6 +192,9 @@ export class Conductor {
   private askedAt: number | null = null;
   /** The trust layer: what the agent says, against what went in (trust.ts). One per call. */
   private trust = new TrustWatch();
+  /** The voice session the call is in now, and the tool calls not answered yet. */
+  private currentSession: string | null = null;
+  private openCalls = new Map<string, string>();
   /** What each reply said, until it is done. */
   private replyText = new Map<string, string>();
   /** The form's answers when the person last spoke — to tell whether a reply changed anything. */
@@ -317,11 +332,23 @@ export class Conductor {
     return !this.stopped;
   }
 
+  /** The voice session the call is in now, if one has opened. */
+  get sessionId(): string | null {
+    return this.currentSession;
+  }
+
+  /** Tool calls the agent made that have not been answered yet — what a page load would cut off. */
+  pendingCalls(): { callId: string; name: string }[] {
+    return [...this.openCalls].map(([callId, name]) => ({ callId, name }));
+  }
+
   // ── The call ───────────────────────────────────────────────────────────────────────
 
-  async start(): Promise<void> {
+  async start(carry?: CarriedCall): Promise<void> {
     if (!this.stopped) return;
     this.stopped = false;
+    this.currentSession = null;
+    this.openCalls = new Map();
     this.transcript = "";
     this.partial = "";
     this.switchedMode = false;
@@ -350,6 +377,8 @@ export class Conductor {
 
       const { services } = this.options;
       const startVoice = services.startVoice ?? startVoiceSession;
+      /** Carrying a call from the last page, until its session is back. */
+      let carrying = Boolean(carry);
       this.sentPrompt = this.session.prompt();
       const voice = await startVoice({
         voice: services.voice ?? "charles",
@@ -364,7 +393,22 @@ export class Conductor {
           this.sentPrompt = this.session.prompt();
           return { systemPrompt: this.sentPrompt, greeting: this.session.resumeGreeting(), tools: this.session.tools() };
         },
-        onToolCall: (name, args, callId) => this.runTool(name, args, callId),
+        onToolCall: async (name, args, callId) => {
+          if (callId) this.openCalls.set(callId, name);
+          try {
+            return await this.runTool(name, args, callId);
+          } finally {
+            if (callId) this.openCalls.delete(callId);
+          }
+        },
+        // Carried from the page before: the same conversation, and its unanswered calls answered.
+        ...(carry
+          ? { resume: { sessionId: carry.sessionId, answers: () => carry.pending.map((call) => ({ callId: call.callId, result: this.session.carriedResult(call.name) })) } }
+          : {}),
+        onSession: (id) => {
+          this.currentSession = id;
+          this.options.onSession?.(id);
+        },
         onToolCallStarted: (callId, name) => this.trust.toolCall(callId, name),
         onReply: (event) => {
           if (event.type === "started") this.trust.replyStarted(event.id);
@@ -389,6 +433,18 @@ export class Conductor {
         },
         onReconnected: (how) => {
           this.update({ status: "live" });
+          if (carrying) {
+            carrying = false;
+            this.note("app", how === "resumed" ? "carried on from the last page — same conversation" : "the last page's call was gone — new session, picked up from the form");
+            // A Next the agent pressed is answered as pressed, and its reply says where they are;
+            // a page they moved on themselves has nobody saying so — so the agent is asked to.
+            if (how === "resumed" && !carry!.pending.some((call) => call.name === PRESS_TOOL_NAME)) {
+              const say = () => this.voice?.createReply(PAGE_TURNED);
+              if (this.voice) say();
+              else setTimeout(say, 0);
+            }
+            return;
+          }
           this.note("app", how === "resumed" ? "reconnected — same conversation" : "reconnected — new session, picked up from the form");
         },
         onUserPartial: (text) => {
@@ -541,6 +597,7 @@ export class Conductor {
     // extension's background remembers the tab was live, and the next page offers to carry on.
     if (name === PRESS_TOOL_NAME) return (await session.press(args, heard)).result;
     if (name === LATER_TOOL_NAME) return session.setAside(args, heard).result;
+    if (name === LEAVE_TOOL_NAME) return session.leaveEmpty(args, heard).result;
     if (name === SAVE_TOOL_NAME) return (await session.saveForNextTime(args, heard)).result;
     return { error: `Unknown tool "${name}".` };
   }

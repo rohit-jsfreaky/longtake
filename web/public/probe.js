@@ -2972,6 +2972,33 @@
       timeout_seconds: TIMEOUT_SECONDS
     };
   }
+  var LEAVE_TOOL_NAME = "leave_empty";
+  function buildLeaveTool(specs) {
+    const ids = specs.filter((spec) => !spec.suspectedHoneypot && spec.kind !== "file").map((spec) => spec.id);
+    return {
+      type: "function",
+      name: LEAVE_TOOL_NAME,
+      description: `Leave fields empty for good when the person says a question doesn't apply to them ("I'm over 18" to one for under-18s) or they'd rather not answer it. Nothing is written, and it isn't asked again; say in a few words that it stays blank. You judge what they meant, in any words. A field with an answer in it is emptied with clear_fields instead.`,
+      parameters: {
+        type: "object",
+        properties: {
+          fields: {
+            type: "array",
+            description: "The fields to leave empty.",
+            items: ids.length > 0 ? { type: "string", enum: ids } : { type: "string" }
+          },
+          evidence: {
+            type: "string",
+            description: "The person's own words saying it doesn't apply or they'd rather not, quoted exactly."
+          }
+        },
+        required: ["fields", "evidence"],
+        additionalProperties: false
+      },
+      execution_mode: EXECUTION_MODE,
+      timeout_seconds: TIMEOUT_SECONDS
+    };
+  }
   var SAVE_TOOL_NAME = "save_for_next_time";
   function buildSaveTool(specs) {
     const ids = specs.filter((spec) => !spec.suspectedHoneypot && spec.kind !== "file").map((spec) => spec.id);
@@ -4896,9 +4923,9 @@
       return state.submitLabel ? { kind: "optional", fields: optional, submit: state.submitLabel, ...keep } : { kind: "optional", fields: optional, ...keep };
     }
     if (next) return { kind: "next_page", label: next.label, ...keep };
-    const fromLastTime = state.fields.filter((f) => f.source === "memory").length;
+    const fromLastTime2 = state.fields.filter((f) => f.source === "memory").length;
     const typed = state.fields.filter((f) => f.source === "typed").length;
-    const review = fromLastTime + typed > 0 ? { review: { fromLastTime, typed } } : {};
+    const review = fromLastTime2 + typed > 0 ? { review: { fromLastTime: fromLastTime2, typed } } : {};
     return state.submitLabel ? { kind: "handover", theirs: state.theirs, submit: state.submitLabel, ...keep, ...review } : { kind: "handover", theirs: state.theirs, ...keep, ...review };
   }
   var SOURCE_WORDS = {
@@ -5344,7 +5371,7 @@
     tools() {
       const specs = this.current?.specs ?? [];
       const press2 = this.current ? buildPressTool(this.buttons().actions) : null;
-      const always = [buildFillTool(specs), buildConfirmTool(specs), buildClearTool(specs), buildLaterTool(specs), buildSaveTool(specs)];
+      const always = [buildFillTool(specs), buildConfirmTool(specs), buildClearTool(specs), buildLaterTool(specs), buildLeaveTool(specs), buildSaveTool(specs)];
       return press2 ? [...always, press2] : always;
     }
     /**
@@ -5400,6 +5427,37 @@
      * The `skip_for_now` tool: "leave that, we'll do it at the end". Needs their words, like
      * everything else; changes nothing on the page — only the order things are asked in.
      */
+    /**
+     * The `leave_empty` tool: they said a question doesn't apply to them, or they'd rather not answer
+     * it. It stays empty and is not asked again (ledger: declined). A field that already has an answer
+     * is left as it is — emptying one is `clear_fields`, which undoes and asks about next time.
+     */
+    leaveEmpty(args, heard) {
+      const read = this.current;
+      if (!read) return { result: { error: "The form has not been read yet." }, outcomes: [], spoken: [] };
+      const fields = Array.isArray(args.fields) ? args.fields.map(String) : [];
+      const evidence = typeof args.evidence === "string" ? args.evidence : "";
+      if (!checkEvidence(heard, evidence).ok) {
+        return { result: { left_empty: [], why: "quote_not_found", submitted: false }, outcomes: [], spoken: [] };
+      }
+      const byId = new Map(read.specs.map((spec) => [spec.id, spec]));
+      const values = new Map(this.state().fields.map((f) => [f.spec.id, f.value]));
+      const known = fields.filter((id) => byId.has(id));
+      const answered = known.filter((id) => values.get(id) !== null && values.get(id) !== void 0);
+      const left = known.filter((id) => !answered.includes(id));
+      for (const id of left) this.ledger.decline(id);
+      const name = (id) => fieldName(byId.get(id));
+      const state = this.state();
+      const result = {
+        left_empty: left.map(name),
+        ...answered.length ? { has_an_answer: answered.map(name) } : {},
+        progress: state.progress,
+        do_next: doNext(this.move()),
+        submitted: false
+      };
+      this.options.onChange?.();
+      return { result, outcomes: [], spoken: [] };
+    }
     setAside(args, heard) {
       const read = this.current;
       if (!read) return { result: { error: "The form has not been read yet." }, outcomes: [], spoken: [] };
@@ -5434,6 +5492,24 @@
      * Needs the person's words like everything else. After a Next the form is a new page: the
      * optional offer is owed again, and the agent gets new tools and a new brief straight away.
      */
+    /**
+     * The answer to a tool call this page's last document made and never answered: it went when the
+     * page did. A Next that loaded this page is answered as pressed, with this page's questions — so
+     * the agent says where it is and asks for them. Anything else did not finish.
+     */
+    carriedResult(name) {
+      const state = this.state();
+      if (name === PRESS_TOOL_NAME) {
+        return {
+          pressed: true,
+          form_changed: { new_page: true, new_questions: state.fields.map((f) => fieldName(f.spec)).slice(0, 15) },
+          progress: state.progress,
+          do_next: doNext(this.move()),
+          submitted: false
+        };
+      }
+      return { error: "The page changed before this finished, so nothing from it is on this page. FORM NOW is the new page.", submitted: false };
+    }
     async press(args, heard) {
       const id = typeof args.action === "string" ? args.action : "";
       const evidence = typeof args.evidence === "string" ? args.evidence : "";
@@ -5866,14 +5942,14 @@
       const cleared = results.filter((r) => r.status === "cleared").map((r) => r.fieldId);
       const keys = factKeys(read.specs, this.meanings);
       const undo = [];
-      const fromLastTime = [];
+      const fromLastTime2 = [];
       for (const id of cleared) {
         const entry = this.ledger.entry(id);
         this.ledger.decline(id);
         if (this.ledger.askFor(id)?.kind !== "forget") this.ledger.settle(id);
         if (entry?.source === "memory" && entry.factId) {
           this.ledger.ask(id, { kind: "forget", factId: entry.factId, was: this.profile.facts[entry.factId]?.value ?? entry.value });
-          fromLastTime.push({ field: id, question: question(id) });
+          fromLastTime2.push({ field: id, question: question(id) });
         } else if (entry?.source === "spoken") {
           const key = keys.get(id);
           if (key) undo.push({ type: "unobserve", id: factId(key), session: this.call, field: id });
@@ -5888,7 +5964,7 @@
       const result = {
         cleared: cleared.map((id) => ({ field: id, question: question(id) })),
         not_cleared: results.filter((r) => r.status === "cannot-clear").map((r) => ({ field: r.fieldId, question: question(r.fieldId), why: r.reason })),
-        ...fromLastTime.length > 0 ? { was_from_last_time: fromLastTime } : {},
+        ...fromLastTime2.length > 0 ? { was_from_last_time: fromLastTime2 } : {},
         progress: state.progress,
         ...reshaped ? { form_changed: this.changeFacts(reshaped) } : {},
         do_next: doNext(move2),
@@ -6288,6 +6364,9 @@
     insecure: "The microphone only works on a secure page. Open this page over https.",
     unsupported: "This browser cannot record audio here. Try a recent Chrome, Edge, Firefox or Safari.",
     token: "Could not start a voice session.",
+    // A call carried onto a new page starts itself — unless the browser wants a click before it
+    // plays any sound there.
+    "needs-click": "Click to carry on \u2014 the browser wants a click before this page plays sound.",
     other: "The microphone could not be started."
   };
   function explainMicFailure(cause, secure = true) {
@@ -6343,6 +6422,7 @@
       onReply,
       onToolCallStarted,
       onSpeechStart,
+      onSession,
       onLocalSpeech,
       onError,
       onClosed,
@@ -6360,7 +6440,8 @@
       let audioCtx2 = null;
       try {
         audioCtx2 = new AudioContext();
-        await audioCtx2.resume();
+        await Promise.race([audioCtx2.resume(), new Promise((settle) => setTimeout(settle, 1500))]);
+        if (audioCtx2.state !== "running") throw new VoiceStartError("needs-click", PROBLEM_WORDS["needs-click"]);
         await audioCtx2.audioWorklet.addModule(workletUrl);
         const stream2 = await navigator.mediaDevices.getUserMedia({
           audio: {
@@ -6379,7 +6460,7 @@
         return { audioCtx: audioCtx2, stream: stream2, source: source2, worklet: worklet2 };
       } catch (cause) {
         void audioCtx2?.close();
-        throw explainMicFailure(cause);
+        throw cause instanceof VoiceStartError ? cause : explainMicFailure(cause);
       }
     })();
     const firstToken = getToken().catch((cause) => {
@@ -6622,11 +6703,14 @@
           ended = false;
           const how = opening;
           drop = null;
+          if (sessionId) onSession?.(sessionId);
           if (how !== "first") results.note("reply.done");
           if (how === "resumed" && freshStart) {
             const now = freshStart();
             send({ type: "session.update", session: { system_prompt: now.systemPrompt, tools: now.tools } });
           }
+          if (how === "resumed" && carried) for (const answer of carried()) results.add({ call_id: answer.callId, result: answer.result }, Date.now());
+          carried = null;
           const heldSamples = flushPrebuffer();
           if (heldSamples > 0) {
             onEvent?.("out", {
@@ -6759,7 +6843,15 @@
       for (const track of stream.getTracks()) track.stop();
       void audioCtx.close();
     };
-    await connect("first", token);
+    let carried = null;
+    if (options.resume) {
+      sessionId = options.resume.sessionId;
+      carried = options.resume.answers ?? null;
+      drop = { sessionId, droppedAt: Date.now(), attempts: 0, ended: false };
+      await connect("resumed", token);
+    } else {
+      await connect("first", token);
+    }
     return {
       setTranscriptionMode: (next) => {
         transcriptionMode = next;
@@ -7106,6 +7198,7 @@
     theirs: "Yours to do"
   };
   var quote = (text4, max = 70) => text4.length > max ? `\u201C${text4.slice(0, max)}\u2026\u201D` : `\u201C${text4}\u201D`;
+  var fromLastTime = (field) => field.recalled && !field.recalled.sure ? "from your last form \u2014 you said yes" : "from your last form";
   function reviewList(form, missed = []) {
     const groups = { waiting: [], not_in: [], memory: [], spoken: [], typed: [], theirs: [] };
     const missing = new Map(missed.map((m) => [m.fieldId, m]));
@@ -7117,7 +7210,7 @@
       } else if (field.value === null && (missing.has(fieldId) || field.claimedIn)) {
         groups.not_in.push({ fieldId, question, detail: missing.get(fieldId)?.why ?? "the agent said it went in, but it did not" });
       } else if (field.source === "memory") {
-        groups.memory.push({ fieldId, question, detail: field.evidence ? `you said ${quote(field.evidence)}` : "from your last form" });
+        groups.memory.push({ fieldId, question, detail: fromLastTime(field) });
       } else if (field.source === "spoken") {
         groups.spoken.push({ fieldId, question, detail: field.evidence ? `you said ${quote(field.evidence)}` : "" });
       } else if (field.source === "typed") {
@@ -7141,7 +7234,8 @@
       } else if (field.source === "spoken") {
         badges.push({ fieldId, state: "spoken", detail: field.evidence ? `You said ${quote(field.evidence, 120)}.` : "You said it." });
       } else if (field.source === "memory") {
-        badges.push({ fieldId, state: "memory", detail: field.evidence ? `From your last form \u2014 you said ${quote(field.evidence, 120)}.` : "From your last form." });
+        const where = fromLastTime(field);
+        badges.push({ fieldId, state: "memory", detail: `${where.charAt(0).toUpperCase()}${where.slice(1)}.` });
       } else if (field.source === "typed") {
         badges.push({ fieldId, state: "typed", detail: "Typed by you." });
       } else if (field.source === "page") {
@@ -7172,6 +7266,7 @@
   }
 
   // core/src/conductor.ts
+  var PAGE_TURNED = "The form has moved on to a new page (they may have pressed Next themselves). In a few words say you're on the next page, then do what DO NEXT says. Don't repeat anything from before.";
   var EMPTY_FORM = {
     title: "",
     fields: [],
@@ -7234,6 +7329,9 @@
       this.askedAt = null;
       /** The trust layer: what the agent says, against what went in (trust.ts). One per call. */
       this.trust = new TrustWatch();
+      /** The voice session the call is in now, and the tool calls not answered yet. */
+      this.currentSession = null;
+      this.openCalls = /* @__PURE__ */ new Map();
       /** What each reply said, until it is done. */
       this.replyText = /* @__PURE__ */ new Map();
       /** The form's answers when the person last spoke — to tell whether a reply changed anything. */
@@ -7349,10 +7447,20 @@
     get running() {
       return !this.stopped;
     }
+    /** The voice session the call is in now, if one has opened. */
+    get sessionId() {
+      return this.currentSession;
+    }
+    /** Tool calls the agent made that have not been answered yet — what a page load would cut off. */
+    pendingCalls() {
+      return [...this.openCalls].map(([callId, name]) => ({ callId, name }));
+    }
     // ── The call ───────────────────────────────────────────────────────────────────────
-    async start() {
+    async start(carry) {
       if (!this.stopped) return;
       this.stopped = false;
+      this.currentSession = null;
+      this.openCalls = /* @__PURE__ */ new Map();
       this.transcript = "";
       this.partial = "";
       this.switchedMode = false;
@@ -7377,6 +7485,7 @@
         this.update({ status: "connecting" });
         const { services } = this.options;
         const startVoice = services.startVoice ?? startVoiceSession;
+        let carrying = Boolean(carry);
         this.sentPrompt = this.session.prompt();
         const voice = await startVoice({
           voice: services.voice ?? "charles",
@@ -7391,7 +7500,20 @@
             this.sentPrompt = this.session.prompt();
             return { systemPrompt: this.sentPrompt, greeting: this.session.resumeGreeting(), tools: this.session.tools() };
           },
-          onToolCall: (name, args, callId) => this.runTool(name, args, callId),
+          onToolCall: async (name, args, callId) => {
+            if (callId) this.openCalls.set(callId, name);
+            try {
+              return await this.runTool(name, args, callId);
+            } finally {
+              if (callId) this.openCalls.delete(callId);
+            }
+          },
+          // Carried from the page before: the same conversation, and its unanswered calls answered.
+          ...carry ? { resume: { sessionId: carry.sessionId, answers: () => carry.pending.map((call) => ({ callId: call.callId, result: this.session.carriedResult(call.name) })) } } : {},
+          onSession: (id) => {
+            this.currentSession = id;
+            this.options.onSession?.(id);
+          },
           onToolCallStarted: (callId, name) => this.trust.toolCall(callId, name),
           onReply: (event) => {
             if (event.type === "started") this.trust.replyStarted(event.id);
@@ -7414,6 +7536,16 @@
           },
           onReconnected: (how) => {
             this.update({ status: "live" });
+            if (carrying) {
+              carrying = false;
+              this.note("app", how === "resumed" ? "carried on from the last page \u2014 same conversation" : "the last page's call was gone \u2014 new session, picked up from the form");
+              if (how === "resumed" && !carry.pending.some((call) => call.name === PRESS_TOOL_NAME)) {
+                const say = () => this.voice?.createReply(PAGE_TURNED);
+                if (this.voice) say();
+                else setTimeout(say, 0);
+              }
+              return;
+            }
             this.note("app", how === "resumed" ? "reconnected \u2014 same conversation" : "reconnected \u2014 new session, picked up from the form");
           },
           onUserPartial: (text4) => {
@@ -7548,6 +7680,7 @@ ${text4}`.trim();
       }
       if (name === PRESS_TOOL_NAME) return (await session.press(args, heard)).result;
       if (name === LATER_TOOL_NAME) return session.setAside(args, heard).result;
+      if (name === LEAVE_TOOL_NAME) return session.leaveEmpty(args, heard).result;
       if (name === SAVE_TOOL_NAME) return (await session.saveForNextTime(args, heard)).result;
       return { error: `Unknown tool "${name}".` };
     }
