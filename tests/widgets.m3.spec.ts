@@ -353,3 +353,59 @@ test.describe("validation errors the form shows", () => {
     expect(errors).toEqual([null, "Second is required"]);
   });
 });
+
+/**
+ * Ashby asks every yes-or-no as two toggle buttons — `aria-pressed` — with the state in a hidden
+ * checkbox. Read as buttons, they were no question at all, and the agent never asked them.
+ */
+test.describe("toggle buttons that answer one question", () => {
+  const YES_NO = `
+    <style>.required::after { content: " *" }</style>
+    <div>
+      <label class="required" for="anchor">Can you work from our office on Anchor Days?</label>
+      <div class="yesno">
+        <button type="button" aria-pressed="false">Yes</button>
+        <button type="button" aria-pressed="false">No</button>
+        <input type="checkbox" name="anchor" tabindex="-1" style="position:absolute;opacity:0;width:1px;height:1px">
+      </div>
+    </div>
+    <script>
+      const buttons = [...document.querySelectorAll('.yesno button')];
+      for (const b of buttons) b.addEventListener('click', () => {
+        for (const other of buttons) other.setAttribute('aria-pressed', String(other === b));
+        document.querySelector('input[name=anchor]').checked = b.textContent === 'Yes';
+      });
+    </script>`;
+
+  test("are read as one question, with its choices and its star", async ({ page }) => {
+    await load(page, YES_NO);
+    const spec = await page.evaluate(() => window.__longtake.readForm().specs[0]!);
+    expect(spec).toMatchObject({ label: "Can you work from our office on Anchor Days?", kind: "radio", required: true });
+    expect(spec.options!.map((o) => o.label)).toEqual(["Yes", "No"]);
+  });
+
+  test("the named one is pressed, and reads back as the answer", async ({ page }) => {
+    await load(page, YES_NO);
+    const id = await page.evaluate(() => window.__longtake.readForm().specs[0]!.id);
+    const r = await harvestAndWrite(page, id, "No", "nahi");
+    expect(r.outcome.status).toBe("written");
+    expect(r.value).toBe("No");
+    expect(await page.getAttribute(".yesno button:nth-of-type(2)", "aria-pressed")).toBe("true");
+  });
+});
+
+// Greenhouse's multi-selects are React-Select: an input, with the picks shown as chips beside it.
+// Read as a checkbox group, every good write read back empty.
+test("a tag picker built on an input reads back its picks", async ({ page }) => {
+  await load(
+    page,
+    TAGS.replace(
+      `<div style="position:relative"><div id="t" role="combobox" aria-labelledby="t_label" aria-expanded="false"
+       tabindex="0" style="width:300px;height:30px;border:1px solid"><span class="tags"></span></div></div>`,
+      `<div style="position:relative;width:300px"><span class="tags"></span><input id="t" role="combobox" aria-labelledby="t_label" aria-expanded="false" style="width:120px;height:24px"></div>`,
+    ).replace("const tags = trigger.querySelector('.tags');", "const tags = trigger.parentElement.querySelector('.tags');"),
+  );
+  const r = await harvestAndWrite(page, "languages", ["Python", "Go"]);
+  expect(r.outcome.status).toBe("written");
+  expect([...(r.value as string[])].sort()).toEqual(["Go", "Python"]);
+});

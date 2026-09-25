@@ -128,6 +128,12 @@ test("an input whose type names the answer keeps it, whatever list it opens", as
   expect(only(await read(page)).kind).toBe("tel");
 });
 
+// Slate's Street: a textarea that suggests addresses. Typed, whatever it suggests.
+test("a textarea stays a textarea, whatever list it opens", async ({ page }) => {
+  await load(page, `<label for="s">Street</label><textarea id="s" role="combobox"></textarea>`);
+  expect(only(await read(page)).kind).toBe("textarea");
+});
+
 // A choice is something a person can pick that answers the question. Jotform, Lever and Slate open
 // every select with `<option value="">Please Select</option>` — it submits nothing — and it was in
 // the agent's list of answers.

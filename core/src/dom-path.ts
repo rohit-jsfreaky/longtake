@@ -242,6 +242,21 @@ export function choiceGroup(el: Element): HTMLInputElement[] {
   return onlyBoxes && controls.length > 1 ? (controls as HTMLInputElement[]) : byName;
 }
 
+/**
+ * Toggle buttons side by side — `aria-pressed` on each — that answer one question together, one of
+ * them pressed. Ashby asks every yes-or-no this way. Shared by the reader, which reads them as one
+ * question, and the writer, which presses the named one. A lone toggle is an action (bold, mute),
+ * never an answer: fewer than two is no group. Given a toggle, its siblings; given the element
+ * that holds them — the field's own handle, as it holds the answer's state too — its children.
+ */
+export function toggleGroup(el: Element): HTMLElement[] {
+  const holder = el.hasAttribute("aria-pressed") ? el.parentElement : el;
+  const toggles = Array.from(holder?.children ?? []).filter(
+    (node) => node.hasAttribute("aria-pressed") && (node.localName === "button" || node.getAttribute("role") === "button"),
+  ) as HTMLElement[];
+  return toggles.length >= 2 ? toggles : [];
+}
+
 /** Everything in a group that takes an answer — what a set of checkboxes must be alone in. */
 const ANSWERING =
   "input:not([type='hidden']), select, textarea, [role='checkbox'], [role='radio'], [role='switch'], [role='combobox'], [role='listbox'], [role='textbox'], [contenteditable='true']";

@@ -292,3 +292,19 @@ test.describe("several fields at once", () => {
     expect(await valueOf(page, "#c")).toBe("a@b.c");
   });
 });
+
+// Jotform's phone boxes carry a mask, "(000) 000-0000", that takes keystrokes, not a pasted number.
+test.describe("a number shaped to the box's own placeholder", () => {
+  test("digits that fit the shape are put in it", async ({ page }) => {
+    await load(page, `<label for="p">Mobile</label><input id="p" type="tel" placeholder="(000) 000-0000">`);
+    const [outcome] = await readThenWrite(page, [{ fieldId: "mobile", value: "98765 43210", evidence: "98765 43210" }]);
+    expect(outcome!.status).toBe("written");
+    expect(await valueOf(page, "#p")).toBe("(987) 654-3210");
+  });
+
+  test("…and a number that does not fit is left as said, for the page to judge", async ({ page }) => {
+    await load(page, `<label for="p">Mobile</label><input id="p" type="tel" placeholder="(000) 000-0000">`);
+    await readThenWrite(page, [{ fieldId: "mobile", value: "+91 98765 43210", evidence: "+91 98765 43210" }]);
+    expect(await valueOf(page, "#p")).toBe("+91 98765 43210");
+  });
+});

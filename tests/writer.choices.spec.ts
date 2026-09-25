@@ -584,3 +584,39 @@ test.describe("a checkbox group is read back after it is pressed", () => {
     expect(outcome!.status).toBe("rejected-by-page");
   });
 });
+
+/**
+ * Workable wraps each choice in an ARIA radio that holds a label and a real radio, and listens to
+ * the radio. A click on the wrapper went nowhere; the group itself carries no "required", only its
+ * radios do.
+ */
+test.describe("an ARIA radio holding a real radio", () => {
+  const GREEK = `
+    <span id="gq"><strong>Do you speak Greek?</strong></span>
+    <fieldset role="radiogroup" aria-labelledby="gq">
+      <div role="radio" id="wy" aria-checked="false" aria-required="true" tabindex="0">
+        <label><input type="radio" name="greek" value="true" tabindex="-1" aria-hidden="true" required style="position:absolute;opacity:0"><span>YES</span></label>
+      </div>
+      <div role="radio" id="wn" aria-checked="false" aria-required="true" tabindex="-1">
+        <label><input type="radio" name="greek" value="false" tabindex="-1" aria-hidden="true" required style="position:absolute;opacity:0"><span>NO</span></label>
+      </div>
+    </fieldset>
+    <script>
+      for (const input of document.querySelectorAll('input[name=greek]')) input.addEventListener('change', () => {
+        for (const radio of document.querySelectorAll('[role=radio]')) radio.setAttribute('aria-checked', String(radio.querySelector('input').checked));
+      });
+    </script>`;
+
+  test("is required when its radios say so", async ({ page }) => {
+    await load(page, GREEK);
+    expect(only(await read(page))).toMatchObject({ kind: "radio", required: true });
+  });
+
+  test("the named choice is pressed through its real radio", async ({ page }) => {
+    await load(page, GREEK);
+    const { id } = only(await read(page));
+    const [outcome] = await write(page, [{ fieldId: id, value: "NO", evidence: "nahi" }]);
+    expect(outcome!.status).toBe("written");
+    expect(await page.getAttribute("#wn", "aria-checked")).toBe("true");
+  });
+});

@@ -24,6 +24,7 @@
 import {
   choiceGroup,
   choiceKey,
+  toggleGroup,
   closeWidget,
   deepQueryAll,
   exclusively,
@@ -68,6 +69,9 @@ const CANDIDATE_SELECTOR = [
   "[aria-haspopup='menu']",
   // Choices built out of divs. The group is the question; its children are the answers.
   "[role='radiogroup']",
+  // Toggle buttons side by side are one question too (`toggleGroup`) — Ashby's Yes and No.
+  "button[aria-pressed]",
+  "[role='button'][aria-pressed]",
   "[role='checkbox']",
   "[role='switch']",
 ].join(",");
@@ -183,9 +187,10 @@ function wrappingLabelText(label: Element, control: Element): string {
  * text. Only before: hints ("Area Code", "example@example.com") and dropdown messages ("No
  * location found") come after it.
  */
-function ownBlockQuestion(members: Element[], isOtherField: (node: Element) => boolean): string {
+function ownBlockLabel(members: Element[], isOtherField: (node: Element) => boolean): { text: string; from: Element[] } {
+  const none = { text: "", from: [] };
   const first = members[0];
-  if (!first) return "";
+  if (!first) return none;
   const ours = (node: Node) => members.some((member) => member === node || member.contains(node) || (node instanceof Element && node.contains(member) && node.tagName === "LABEL"));
   const before = (node: Node) => (first.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_PRECEDING) !== 0;
   const labelsAChoice = (label: HTMLLabelElement) => members.some((member) => label.contains(member) || (member.id !== "" && label.htmlFor === member.id));
@@ -193,10 +198,10 @@ function ownBlockQuestion(members: Element[], isOtherField: (node: Element) => b
   let block: Element | null = first.parentElement;
   while (block && !members.every((member) => block!.contains(member))) block = block.parentElement;
   for (let hops = 0; block && hops < 4; hops++, block = block.parentElement) {
-    if (Array.from(block.querySelectorAll(CANDIDATE_SELECTOR)).some((node) => isOtherField(node) && !ours(node))) return "";
+    if (Array.from(block.querySelectorAll(CANDIDATE_SELECTOR)).some((node) => isOtherField(node) && !ours(node))) return none;
 
     const orphan = Array.from(block.querySelectorAll("label")).find((label) => before(label) && !labelsAChoice(label) && textOf(label));
-    if (orphan) return textOf(orphan);
+    if (orphan) return { text: textOf(orphan), from: [orphan] };
 
     // The first block of text before the control is the question; a block after that is its
     // description (Lever: "Which university…?" then "Please select \"Other\" if…"). Inline pieces of
@@ -213,10 +218,10 @@ function ownBlockQuestion(members: Element[], isOtherField: (node: Element) => b
       const inner = block.ownerDocument.createTreeWalker(holder, NodeFilter.SHOW_TEXT);
       for (let node = inner.nextNode(); node; node = inner.nextNode()) if (counts(node)) parts.push(tidy(node.textContent ?? ""));
       const text = parts.join(" ").trim();
-      if (text) return text.slice(0, 400);
+      if (text) return { text: text.slice(0, 400), from: [holder] };
     }
   }
-  return "";
+  return none;
 }
 
 /**
@@ -356,8 +361,8 @@ function ownLabelOf(el: Element): { text: string; from: Element[] } {
 
   // 5b. The field's own block — a question set beside the control with nothing tying them. Before
   //     the placeholder: Lever's is "Type your response", Ashby's "Start typing...".
-  const own = ownBlockQuestion([el], isAField);
-  if (own) return { text: own, from: [] };
+  const own = ownBlockLabel([el], isAField);
+  if (own.text) return own;
 
   // 6. The author's fallbacks.
   const placeholder = tidy(el.getAttribute("placeholder") ?? "");
@@ -435,6 +440,14 @@ function groupRequired(el: Element, question: string): boolean {
   return container?.getAttribute("aria-required") === "true" || STARRED.test(question);
 }
 
+/**
+ * A radio group built of divs is required when its radios say so: Workable marks every one of
+ * them `aria-required` and the group itself nothing, and three required questions read optional.
+ */
+function choicesSayRequired(el: Element): boolean {
+  return el.getAttribute("role") === "radiogroup" && el.querySelector("[role='radio'][aria-required='true'], input[type='radio'][required]") !== null;
+}
+
 /** A label that names a piece of an answer rather than the question. */
 const PART_ONLY = /^(date|time|day|month|year|hour|minute|dd|mm|yyyy|hh)$/i;
 
@@ -491,6 +504,8 @@ function kindOf(el: Element): FieldKind {
   // for its value.
   const typed = tag === "input" ? ((el as HTMLInputElement).type || "").toLowerCase() : "";
   if (typed === "tel" || typed === "email" || typed === "url" || typed === "number") return typed;
+  // A textarea is typed into, whatever it suggests: Slate's Street is a `<textarea role=combobox>`.
+  if (tag === "textarea") return "textarea";
   if (role === "combobox" || popup === "listbox" || popup === "menu") return "select";
   if (role === "radiogroup") return "radio";
   if (role === "checkbox" || role === "switch") return "checkbox";
@@ -697,6 +712,35 @@ export function readForm(
       return;
     }
 
+    // Toggle buttons side by side are one question with one answer pressed — Ashby's Yes and No,
+    // whose state sits in a hidden checkbox. Read as buttons they were no question at all, and the
+    // agent never asked them. Read once, at the group's first button.
+    if (el.hasAttribute("aria-pressed")) {
+      const toggles = toggleGroup(el);
+      if (toggles[0] !== el || !isVisible(el)) return;
+      const { text: question, from } = ownBlockLabel(toggles, isAField);
+      const label = cleanLabel(question);
+      const spec: FieldSpec = {
+        id: takeId(label || "choice", index),
+        label,
+        kind: "radio",
+        required: STARRED.test(question) || drawsAStar(from),
+        options: toggles.map((toggle) => {
+          const text = tidy(toggle.textContent ?? "");
+          return { value: text, label: text };
+        }),
+        custom: true,
+      };
+      // The field is what holds the whole answer — the buttons and the state beside them
+      // (Ashby's hidden checkbox) — as a radiogroup holds its radios.
+      const holder = el.parentElement ?? el;
+      const selector = uniqueSelector(holder, ownerDocumentOf(root));
+      if (selector) spec.selector = selector;
+      specs.push(spec);
+      handles.set(spec.id, holder as HTMLElement);
+      return;
+    }
+
     if (tag === "input") {
       const type = ((el as HTMLInputElement).type || "text").toLowerCase();
       if (NON_ANSWER_TYPES.has(type)) return;
@@ -780,7 +824,7 @@ export function readForm(
         // place or the model is answering a question it cannot see.
         // A named container first; else the group's own block (Lever's and Ashby's groups have
         // neither a legend nor a label, and came out named "cards[1c71…][field0]").
-        const question = groupQuestion(el) || ownBlockQuestion(siblings.length > 0 ? siblings : [el], isAField);
+        const question = groupQuestion(el) || ownBlockLabel(siblings.length > 0 ? siblings : [el], isAField).text;
         const groupLabel = cleanLabel(question || name);
 
         const spec: FieldSpec = {
@@ -811,7 +855,7 @@ export function readForm(
       label,
       kind,
       required:
-        Boolean((el as HTMLInputElement).required) || el.getAttribute("aria-required") === "true" || starred,
+        Boolean((el as HTMLInputElement).required) || el.getAttribute("aria-required") === "true" || starred || choicesSayRequired(el),
     };
     if (part) spec.part = part;
 

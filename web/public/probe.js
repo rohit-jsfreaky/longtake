@@ -131,6 +131,13 @@
     const onlyBoxes = controls.every((control) => control.localName === "input" && (control.getAttribute("type") ?? "").toLowerCase() === "checkbox");
     return onlyBoxes && controls.length > 1 ? controls : byName;
   }
+  function toggleGroup(el) {
+    const holder = el.hasAttribute("aria-pressed") ? el.parentElement : el;
+    const toggles = Array.from(holder?.children ?? []).filter(
+      (node) => node.hasAttribute("aria-pressed") && (node.localName === "button" || node.getAttribute("role") === "button")
+    );
+    return toggles.length >= 2 ? toggles : [];
+  }
   var ANSWERING = "input:not([type='hidden']), select, textarea, [role='checkbox'], [role='radio'], [role='switch'], [role='combobox'], [role='listbox'], [role='textbox'], [contenteditable='true']";
   function choiceKey(box, group = choiceGroup(box)) {
     const apart = (read) => {
@@ -332,6 +339,9 @@
     "[aria-haspopup='menu']",
     // Choices built out of divs. The group is the question; its children are the answers.
     "[role='radiogroup']",
+    // Toggle buttons side by side are one question too (`toggleGroup`) — Ashby's Yes and No.
+    "button[aria-pressed]",
+    "[role='button'][aria-pressed]",
     "[role='checkbox']",
     "[role='switch']"
   ].join(",");
@@ -374,23 +384,24 @@
       if (widget && label.contains(widget)) continue;
       if (!shownText(node)) continue;
       if (!checkable && !(control.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_PRECEDING)) continue;
-      const text2 = tidy(node.textContent ?? "");
-      if (text2) parts.push(text2);
+      const text3 = tidy(node.textContent ?? "");
+      if (text3) parts.push(text3);
     }
     return parts.join(" ").trim() || labelTextWithoutControls(label);
   }
-  function ownBlockQuestion(members, isOtherField) {
+  function ownBlockLabel(members, isOtherField) {
+    const none = { text: "", from: [] };
     const first = members[0];
-    if (!first) return "";
+    if (!first) return none;
     const ours = (node) => members.some((member) => member === node || member.contains(node) || node instanceof Element && node.contains(member) && node.tagName === "LABEL");
     const before = (node) => (first.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_PRECEDING) !== 0;
     const labelsAChoice = (label) => members.some((member) => label.contains(member) || member.id !== "" && label.htmlFor === member.id);
     let block = first.parentElement;
     while (block && !members.every((member) => block.contains(member))) block = block.parentElement;
     for (let hops = 0; block && hops < 4; hops++, block = block.parentElement) {
-      if (Array.from(block.querySelectorAll(CANDIDATE_SELECTOR)).some((node) => isOtherField(node) && !ours(node))) return "";
+      if (Array.from(block.querySelectorAll(CANDIDATE_SELECTOR)).some((node) => isOtherField(node) && !ours(node))) return none;
       const orphan = Array.from(block.querySelectorAll("label")).find((label) => before(label) && !labelsAChoice(label) && textOf(label));
-      if (orphan) return textOf(orphan);
+      if (orphan) return { text: textOf(orphan), from: [orphan] };
       const counts = (node) => before(node) && !ours(node) && shownText(node) && tidy(node.textContent ?? "") !== "";
       const walker = block.ownerDocument.createTreeWalker(block, NodeFilter.SHOW_TEXT);
       let first2 = null;
@@ -402,11 +413,11 @@
         const parts = [];
         const inner = block.ownerDocument.createTreeWalker(holder, NodeFilter.SHOW_TEXT);
         for (let node = inner.nextNode(); node; node = inner.nextNode()) if (counts(node)) parts.push(tidy(node.textContent ?? ""));
-        const text2 = parts.join(" ").trim();
-        if (text2) return text2.slice(0, 400);
+        const text3 = parts.join(" ").trim();
+        if (text3) return { text: text3.slice(0, 400), from: [holder] };
       }
     }
-    return "";
+    return none;
   }
   function isInside(el, selector) {
     let node = el;
@@ -427,7 +438,7 @@
   }
   function labelOf(el) {
     const own = ownLabelOf(el);
-    const piece = (text2) => text2 !== "" && PART_ONLY.test(cleanLabel(text2));
+    const piece = (text3) => text3 !== "" && PART_ONLY.test(cleanLabel(text3));
     if (!piece(own.text)) {
       const labels = Array.from(el.labels ?? []).map(textOf);
       const part = labels.length > 1 ? labels.find(piece) : void 0;
@@ -440,7 +451,7 @@
   var MOST_PARTS = 4;
   function wholeQuestion(el) {
     const fieldsIn = (node) => Array.from(node.querySelectorAll(CANDIDATE_SELECTOR)).filter(isAField);
-    const whole = (text2) => text2 !== "" && !PART_ONLY.test(cleanLabel(text2));
+    const whole = (text3) => text3 !== "" && !PART_ONLY.test(cleanLabel(text3));
     const group = el.parentElement?.closest("[aria-labelledby], [aria-label], fieldset");
     if (group) {
       const boxes = fieldsIn(group).length;
@@ -467,26 +478,26 @@
       const question = parts.filter((part) => isVisible(part) && before(part) && worded(part));
       const shown2 = parts.filter((part) => isVisible(part) && worded(part));
       const chosen = question.length > 0 ? question : shown2.length > 0 ? shown2 : parts;
-      const text2 = chosen.map(textOf).join(" ");
-      if (text2) return { text: text2, from: chosen };
+      const text3 = chosen.map(textOf).join(" ");
+      if (text3) return { text: text3, from: chosen };
     }
     const ariaLabel = tidy(el.getAttribute("aria-label") ?? "");
     if (ariaLabel) return { text: ariaLabel, from: [] };
     if (el.id) {
       const forLabel = root.querySelector(`label[for="${CSS.escape(el.id)}"]`);
-      const text2 = textOf(forLabel);
-      if (text2) return { text: text2, from: [forLabel] };
+      const text3 = textOf(forLabel);
+      if (text3) return { text: text3, from: [forLabel] };
     }
     const wrapping = el.closest("label");
     if (wrapping) {
-      const text2 = wrappingLabelText(wrapping, el);
-      if (text2) return { text: text2, from: [wrapping] };
+      const text3 = wrappingLabelText(wrapping, el);
+      if (text3) return { text: text3, from: [wrapping] };
     }
     const legend = el.closest("fieldset")?.querySelector("legend");
     const legendText = textOf(legend);
     if (legendText) return { text: legendText, from: [legend] };
-    const own = ownBlockQuestion([el], isAField);
-    if (own) return { text: own, from: [] };
+    const own = ownBlockLabel([el], isAField);
+    if (own.text) return own;
     const placeholder = tidy(el.getAttribute("placeholder") ?? "");
     if (placeholder) return { text: placeholder, from: [] };
     const title = tidy(el.getAttribute("title") ?? "");
@@ -495,8 +506,8 @@
     for (let hops = 0; node && hops < 4; hops++) {
       let sibling = node.previousElementSibling;
       while (sibling) {
-        const text2 = textOf(sibling);
-        if (text2 && text2.length <= 120) return { text: text2, from: [sibling] };
+        const text3 = textOf(sibling);
+        if (text3 && text3.length <= 120) return { text: text3, from: [sibling] };
         sibling = sibling.previousElementSibling;
       }
       node = node.parentElement;
@@ -522,8 +533,8 @@
     const root = container.getRootNode();
     const labelledBy = container.getAttribute("aria-labelledby");
     if (labelledBy) {
-      const text2 = labelledBy.split(/\s+/).map((id) => textOf(root.querySelector(`#${CSS.escape(id)}`) ?? container.ownerDocument?.getElementById(id))).filter(Boolean).join(" ");
-      if (text2) return text2;
+      const text3 = labelledBy.split(/\s+/).map((id) => textOf(root.querySelector(`#${CSS.escape(id)}`) ?? container.ownerDocument?.getElementById(id))).filter(Boolean).join(" ");
+      if (text3) return text3;
     }
     const ariaLabel = tidy(container.getAttribute("aria-label") ?? "");
     if (ariaLabel) return ariaLabel;
@@ -532,6 +543,9 @@
   function groupRequired(el, question) {
     const container = el.parentElement?.closest(GROUP_CONTAINER);
     return container?.getAttribute("aria-required") === "true" || STARRED.test(question);
+  }
+  function choicesSayRequired(el) {
+    return el.getAttribute("role") === "radiogroup" && el.querySelector("[role='radio'][aria-required='true'], input[type='radio'][required]") !== null;
   }
   var PART_ONLY = /^(date|time|day|month|year|hour|minute|dd|mm|yyyy|hh)$/i;
   var STARRED = /^[\s\p{Cf}]*[*✱]|[*✱][\s\p{Cf}]*$/u;
@@ -560,6 +574,7 @@
     const popup = el.getAttribute("aria-haspopup");
     const typed = tag === "input" ? (el.type || "").toLowerCase() : "";
     if (typed === "tel" || typed === "email" || typed === "url" || typed === "number") return typed;
+    if (tag === "textarea") return "textarea";
     if (role === "combobox" || popup === "listbox" || popup === "menu") return "select";
     if (role === "radiogroup") return "radio";
     if (role === "checkbox" || role === "switch") return "checkbox";
@@ -669,6 +684,29 @@
       if (el.getAttribute("role") === "radiogroup" && !el.querySelector("[role='radio']") && el.querySelector("input[type='radio']")) {
         return;
       }
+      if (el.hasAttribute("aria-pressed")) {
+        const toggles = toggleGroup(el);
+        if (toggles[0] !== el || !isVisible(el)) return;
+        const { text: question, from } = ownBlockLabel(toggles, isAField);
+        const label2 = cleanLabel(question);
+        const spec2 = {
+          id: takeId(label2 || "choice", index),
+          label: label2,
+          kind: "radio",
+          required: STARRED.test(question) || drawsAStar(from),
+          options: toggles.map((toggle) => {
+            const text3 = tidy(toggle.textContent ?? "");
+            return { value: text3, label: text3 };
+          }),
+          custom: true
+        };
+        const holder = el.parentElement ?? el;
+        const selector2 = uniqueSelector(holder, ownerDocumentOf(root));
+        if (selector2) spec2.selector = selector2;
+        specs.push(spec2);
+        handles.set(spec2.id, holder);
+        return;
+      }
       if (tag === "input") {
         const type = (el.type || "text").toLowerCase();
         if (NON_ANSWER_TYPES.has(type)) return;
@@ -711,7 +749,7 @@
             if (el.required) existing.required = true;
             return;
           }
-          const question = groupQuestion(el) || ownBlockQuestion(siblings.length > 0 ? siblings : [el], isAField);
+          const question = groupQuestion(el) || ownBlockLabel(siblings.length > 0 ? siblings : [el], isAField).text;
           const groupLabel = cleanLabel(question || name);
           const spec2 = {
             id: takeId(groupLabel || name, index),
@@ -734,7 +772,7 @@
         id,
         label,
         kind,
-        required: Boolean(el.required) || el.getAttribute("aria-required") === "true" || starred
+        required: Boolean(el.required) || el.getAttribute("aria-required") === "true" || starred || choicesSayRequired(el)
       };
       if (part) spec.part = part;
       const selector = uniqueSelector(el, ownerDocumentOf(root));
@@ -775,8 +813,8 @@
     if (firstField) {
       const above = deepQueryAll(root, "h1,h2,h3,h4,[role='heading']").filter(isVisible).filter((heading) => heading.compareDocumentPosition(firstField) & FOLLOWING);
       const nearest = above[above.length - 1];
-      const text2 = nearest ? cleanLabel(textOf(nearest)) : "";
-      if (text2) return text2.slice(0, 80);
+      const text3 = nearest ? cleanLabel(textOf(nearest)) : "";
+      if (text3) return text3.slice(0, 80);
     }
     const doc = ownerDocumentOf(root);
     return (doc.title ?? "").split(/\s[|·–-]\s/)[0].trim().slice(0, 80);
@@ -885,51 +923,17 @@
     );
   }
 
-  // core/src/writer.ts
-  var WIDGET_OPEN_MS = 400;
-  var RETRY_AFTER_MS = 250;
-  var sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-  var CONFIRM_MS = 1500;
-  function confirmed(done, timeoutMs = CONFIRM_MS) {
-    return new Promise((resolve) => {
-      const started = Date.now();
-      const check = () => {
-        if (done()) resolve(true);
-        else if (Date.now() - started >= timeoutMs) resolve(false);
-        else setTimeout(check, 16);
-      };
-      check();
-    });
-  }
-  function setNativeValue(el, value) {
-    const view = el.ownerDocument?.defaultView ?? window;
-    const tag = el.tagName.toLowerCase();
-    const prototype = tag === "textarea" ? view.HTMLTextAreaElement.prototype : tag === "select" ? view.HTMLSelectElement.prototype : view.HTMLInputElement.prototype;
-    const setter = Object.getOwnPropertyDescriptor(prototype, "value")?.set;
-    if (setter) {
-      setter.call(el, value);
-    } else {
-      el.value = value;
-    }
-  }
-  function pressChoice(box, want) {
-    if (box.checked !== want) box.click();
-  }
-  function announce(el, kinds) {
-    for (const kind of kinds) {
-      el.dispatchEvent(new Event(kind, { bubbles: true }));
-    }
-  }
-  function normalise(text2) {
-    return text2.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  // core/src/choices.ts
+  function normalise(text3) {
+    return text3.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
   }
   var MEANS_NO = /\b(no|not|false|never|decline|disagree|refuse|nahi|nahin)\b/i;
   var MEANS_YES = /\b(yes|true|agree|agreed|accept|confirm|ok|okay|sure|haan|han|ji|sahi)\b/i;
   function readAsYesOrNo(value) {
     if (typeof value === "boolean") return value;
-    const text2 = String(value);
-    if (MEANS_NO.test(text2)) return false;
-    return MEANS_YES.test(text2);
+    const text3 = String(value);
+    if (MEANS_NO.test(text3)) return false;
+    return MEANS_YES.test(text3);
   }
   function bareName(label) {
     return normalise(label.replace(/\s*\+\d[\d\s-]*$/, "").replace(/\s*\([^)]*\)\s*$/, ""));
@@ -946,7 +950,7 @@
     const exact = candidates.findIndex((candidate) => normalise(candidate) === want);
     if (exact >= 0) return exact;
     const plain = candidates.map(bareName);
-    if (plain.filter((text2) => text2 === want).length === 1) return plain.indexOf(want);
+    if (plain.filter((text3) => text3 === want).length === 1) return plain.indexOf(want);
     const whole = [];
     candidates.forEach((candidate, index) => {
       if (` ${normalise(candidate)} `.includes(` ${want} `)) whole.push(index);
@@ -954,8 +958,8 @@
     if (whole.length === 1) return whole[0];
     const partial = [];
     candidates.forEach((candidate, index) => {
-      const text2 = normalise(candidate);
-      if (text2.length > 0 && (text2.includes(want) || want.includes(text2))) partial.push(index);
+      const text3 = normalise(candidate);
+      if (text3.length > 0 && (text3.includes(want) || want.includes(text3))) partial.push(index);
     });
     return partial.length === 1 ? partial[0] : null;
   }
@@ -992,6 +996,50 @@
     const rest = clean.length - shown2.length;
     return rest > 0 ? `${shown2.join(", ")}, and ${rest} more` : shown2.join(", ");
   }
+
+  // core/src/adapters/kit.ts
+  var WIDGET_OPEN_MS = 400;
+  var sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  var CONFIRM_MS = 1500;
+  function confirmed(done, timeoutMs = CONFIRM_MS) {
+    return new Promise((resolve) => {
+      const started = Date.now();
+      const check = () => {
+        if (done()) resolve(true);
+        else if (Date.now() - started >= timeoutMs) resolve(false);
+        else setTimeout(check, 16);
+      };
+      check();
+    });
+  }
+  function setNativeValue(el, value) {
+    const view = el.ownerDocument?.defaultView ?? window;
+    const tag = el.tagName.toLowerCase();
+    const prototype = tag === "textarea" ? view.HTMLTextAreaElement.prototype : tag === "select" ? view.HTMLSelectElement.prototype : view.HTMLInputElement.prototype;
+    const setter = Object.getOwnPropertyDescriptor(prototype, "value")?.set;
+    if (setter) {
+      setter.call(el, value);
+    } else {
+      el.value = value;
+    }
+  }
+  function pressChoice(box, want) {
+    if (box.checked !== want) box.click();
+  }
+  function announce(el, kinds) {
+    for (const kind of kinds) {
+      el.dispatchEvent(new Event(kind, { bubbles: true }));
+    }
+  }
+  function press(el) {
+    for (const type of ["pointerdown", "mousedown", "pointerup", "mouseup", "click"]) {
+      el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, composed: true, view: window }));
+    }
+  }
+  function leave(el) {
+    el.dispatchEvent(new FocusEvent("focusout", { bubbles: true, composed: true }));
+    el.dispatchEvent(new FocusEvent("blur", { composed: true }));
+  }
   function readBack(el) {
     const tag = el.tagName.toLowerCase();
     if (tag === "input") {
@@ -1008,8 +1056,8 @@
     const own = el.tagName.toLowerCase() === "input" ? (el.value ?? "").trim() : "";
     let node = el.parentElement;
     for (let hops = 0; node && hops < 5; hops++) {
-      const text2 = (node.innerText ?? "").replace(/\s+/g, " ").trim();
-      if (text2) return own ? `${own} ${text2}` : text2;
+      const text3 = (node.innerText ?? "").replace(/\s+/g, " ").trim();
+      if (text3) return own ? `${own} ${text3}` : text3;
       node = node.parentElement;
     }
     return own;
@@ -1018,60 +1066,231 @@
     if (el.tagName.toLowerCase() !== "input") return [];
     return choiceGroup(el);
   }
+  function notAChoice(spec, wanted, unread = ". Ask the person to fill this one in themselves.") {
+    const labels = realChoices(spec.options);
+    return {
+      fieldId: spec.id,
+      status: "refused",
+      reason: labels.length ? `"${wanted}" is not one of the choices. This field only accepts: ${sayableChoices(labels)}. Read those out to the person and ask which one fits.` : `"${wanted}" does not match anything this field offers${unread}`,
+      choices: labels
+    };
+  }
   var PLACEHOLDER = /^(select|choose|pick|please (select|choose)|none selected)\b|^-+.*-+$|(\.\.\.|…)$/i;
-  function readValue(spec, el) {
-    const tag = el.tagName.toLowerCase();
-    if (spec.kind === "radio") {
-      if (tag === "input") {
-        const radios = radioGroup(el);
-        const on2 = radios.find((radio) => radio.checked);
-        if (!on2) return null;
-        return spec.options?.find((option) => option.value === choiceKey(on2, radios))?.label ?? on2.value;
+  function readText(el) {
+    const text3 = readBack(el).trim();
+    return text3 ? text3 : null;
+  }
+  function readShown(spec, el) {
+    const own = el.tagName.toLowerCase() === "input" ? "" : (el.innerText ?? "").replace(/\s+/g, " ").trim();
+    const shown2 = (own || renderedText(el)).replace(/\s*×\s*$/, "").trim();
+    if (!shown2) return null;
+    const choices = realChoices(spec.options);
+    const heard = ` ${normalise(shown2)} `;
+    const onShow = choices.filter((choice) => {
+      const word = normalise(choice);
+      return word.length > 0 && heard.includes(` ${word} `);
+    }).sort((a, b) => b.length - a.length);
+    if (onShow.length > 0) return spec.kind === "multiselect" ? onShow : onShow[0];
+    if (PLACEHOLDER.test(shown2) || choices.length > 0 && !spec.searchable) return null;
+    return shown2;
+  }
+  var CLEAR_CONTROL = "[aria-label*='clear' i], [title*='clear' i], [class*='clear-indicator'], [class*='clearIndicator'], [class*='ClearIndicator']";
+  var cannot = (spec, reason) => ({ fieldId: spec.id, status: "cannot-clear", reason });
+  async function clearShown(spec, el) {
+    const before = renderedText(el);
+    let host = el.parentElement;
+    let control = null;
+    for (let hops = 0; host && !control && hops < 3; hops++) {
+      control = host.querySelector(CLEAR_CONTROL);
+      host = host.parentElement;
+    }
+    if (control) {
+      press(control);
+    } else {
+      el.focus();
+      for (const key of ["Backspace", "Delete"]) {
+        el.dispatchEvent(new KeyboardEvent("keydown", { key, code: key, bubbles: true, cancelable: true, composed: true }));
       }
-      const on = el.querySelector("[aria-checked='true']");
-      return on ? (on.getAttribute("aria-label") ?? on.textContent ?? "").trim() || null : null;
     }
-    if (tag === "select" && el.multiple) {
-      const picked = Array.from(el.selectedOptions).map((option) => option.textContent?.trim() || option.value);
-      return picked.length > 0 ? picked : null;
+    await sleep(150);
+    closeWidget(el);
+    return renderedText(el) !== before ? { fieldId: spec.id, status: "cleared" } : cannot(spec, "This dropdown has no way to empty it \u2014 once picked, the form keeps a choice.");
+  }
+  async function clearText(spec, el) {
+    if (el.isContentEditable) {
+      el.textContent = "";
+      announce(el, ["input", "change"]);
+      return readBack(el) === "" ? { fieldId: spec.id, status: "cleared" } : cannot(spec, "The page put the text back.");
     }
-    if (spec.kind === "multiselect" && tag === "input") {
+    setNativeValue(el, "");
+    announce(el, ["input", "change"]);
+    return readBack(el) === "" ? { fieldId: spec.id, status: "cleared" } : cannot(spec, "The page put the text back.");
+  }
+
+  // core/src/adapters/choosing.ts
+  function chosenFrom(spec, spoken) {
+    const wanted = Array.isArray(spoken.value) ? spoken.value : [String(spoken.value)];
+    let chosen = wanted.map((one) => matchOption(spec, one)).filter((v) => v !== null);
+    if (chosen.length === 0 && spec.kind === "radio") {
+      const named2 = optionNamedIn(spec, spoken.evidence);
+      if (named2) chosen = [named2];
+    }
+    return chosen.length > 0 ? { chosen, wanted } : notAChoice(spec, wanted.join(", "));
+  }
+  function readAriaRadio(_spec, el) {
+    const on = el.querySelector("[aria-checked='true']");
+    return on ? (on.getAttribute("aria-label") ?? on.textContent ?? "").trim() || null : null;
+  }
+  var ariaRadiogroup = {
+    name: "aria-radiogroup",
+    matches: (spec, el) => spec.kind === "radio" && el.getAttribute("role") === "radiogroup",
+    async write(spec, el, spoken) {
+      const decided = chosenFrom(spec, spoken);
+      if ("status" in decided) return decided;
+      const first = decided.chosen[0];
+      const want = normalise(first.label);
+      const target = deepQueryAll(el, "[role='radio']").find(
+        (radio) => normalise(radio.getAttribute("aria-label") ?? radio.textContent ?? "") === want || radio.getAttribute("data-value") === first.value
+      );
+      if (!target) return { fieldId: spec.id, status: "refused", reason: "That option is no longer on the page." };
+      const native = target.querySelector("input[type='radio']");
+      if (native) pressChoice(native, true);
+      else if (target.getAttribute("aria-checked") !== "true") target.click();
+      return await confirmed(() => target.getAttribute("aria-checked") === "true" || Boolean(native?.checked)) ? { fieldId: spec.id, status: "written", wrote: first.label } : { fieldId: spec.id, status: "rejected-by-page", wrote: first.label, found: "" };
+    },
+    read: readAriaRadio,
+    clear: clearShown
+  };
+  var toggleButtons = {
+    name: "toggle-buttons",
+    matches: (spec, el) => spec.kind === "radio" && toggleGroup(el).length > 0,
+    async write(spec, el, spoken) {
+      const decided = chosenFrom(spec, spoken);
+      if ("status" in decided) return decided;
+      const first = decided.chosen[0];
+      const target = toggleGroup(el).find((toggle) => normalise(toggle.textContent ?? "") === normalise(first.label));
+      if (!target) return { fieldId: spec.id, status: "refused", reason: "That option is no longer on the page." };
+      if (target.getAttribute("aria-pressed") !== "true") target.click();
+      return await confirmed(() => target.getAttribute("aria-pressed") === "true") ? { fieldId: spec.id, status: "written", wrote: first.label } : { fieldId: spec.id, status: "rejected-by-page", wrote: first.label, found: "" };
+    },
+    read(_spec, el) {
+      const on = toggleGroup(el).find((toggle) => toggle.getAttribute("aria-pressed") === "true");
+      return on ? (on.textContent ?? "").trim() || null : null;
+    },
+    async clear(spec, el) {
+      const on = toggleGroup(el).find((toggle) => toggle.getAttribute("aria-pressed") === "true");
+      if (on) {
+        on.click();
+        await confirmed(() => on.getAttribute("aria-pressed") !== "true");
+      }
+      return on?.getAttribute("aria-pressed") === "true" ? cannot(spec, "The form will not let this be left unanswered once picked.") : { fieldId: spec.id, status: "cleared" };
+    }
+  };
+  var customRadio = {
+    name: "custom-radio",
+    matches: (spec) => spec.kind === "radio" && Boolean(spec.custom),
+    async write(spec, el, spoken) {
+      const decided = chosenFrom(spec, spoken);
+      if ("status" in decided) return decided;
+      return pickFromWidget(spec, el, decided.chosen[0], decided.wanted.join(", "));
+    },
+    read: readAriaRadio,
+    clear: clearShown
+  };
+  var nativeRadio = {
+    name: "native-radio",
+    matches: (spec) => spec.kind === "radio",
+    async write(spec, el, spoken) {
+      const decided = chosenFrom(spec, spoken);
+      if ("status" in decided) return decided;
+      const first = decided.chosen[0];
+      const radios = radioGroup(el);
+      const target = radios.find((radio) => choiceKey(radio, radios) === first.value);
+      if (!target) return { fieldId: spec.id, status: "refused", reason: "That option is no longer on the page." };
+      pressChoice(target, true);
+      return target.checked ? { fieldId: spec.id, status: "written", wrote: first.label } : { fieldId: spec.id, status: "rejected-by-page", wrote: first.label, found: "" };
+    },
+    read(spec, el) {
+      if (el.tagName.toLowerCase() !== "input") return readAriaRadio(spec, el);
+      const radios = radioGroup(el);
+      const on = radios.find((radio) => radio.checked);
+      if (!on) return null;
+      return spec.options?.find((option) => option.value === choiceKey(on, radios))?.label ?? on.value;
+    },
+    async clear(spec, el) {
+      if (el.tagName.toLowerCase() !== "input") return clearShown(spec, el);
+      for (const radio of radioGroup(el)) {
+        if (!radio.checked) continue;
+        radio.checked = false;
+        announce(radio, ["input", "change"]);
+      }
+      return radioGroup(el).some((radio) => radio.checked) ? cannot(spec, "The form put the choice back \u2014 it will not let this be left unanswered.") : { fieldId: spec.id, status: "cleared" };
+    }
+  };
+  var checkboxGroup = {
+    name: "checkbox-group",
+    matches: (spec) => spec.kind === "multiselect" && Boolean(spec.options),
+    async write(spec, el, spoken) {
+      const decided = chosenFrom(spec, spoken);
+      if ("status" in decided) return decided;
+      const boxes = choiceGroup(el);
+      const wantedValues = decided.chosen.map((c) => c.value);
+      const wants = (box) => wantedValues.includes(choiceKey(box, boxes));
+      for (const box of boxes) {
+        const shouldCheck = wants(box);
+        if (box.checked !== shouldCheck) pressChoice(box, shouldCheck);
+      }
+      const wrote = decided.chosen.map((c) => c.label).join(", ");
+      const off = boxes.filter((box) => box.checked !== wants(box));
+      return off.length === 0 && boxes.length > 0 ? { fieldId: spec.id, status: "written", wrote } : { fieldId: spec.id, status: "rejected-by-page", wrote, found: boxes.filter((box) => box.checked).map((box) => box.value).join(", ") };
+    },
+    read(spec, el) {
       const boxes = choiceGroup(el);
       const ticked = boxes.filter((box) => box.checked).map((box) => spec.options?.find((option) => option.value === choiceKey(box, boxes))?.label ?? box.value);
       return ticked.length > 0 ? ticked : null;
+    },
+    async clear(spec, el) {
+      const boxes = choiceGroup(el);
+      for (const box of boxes) pressChoice(box, false);
+      return boxes.some((box) => box.checked) ? cannot(spec, "The form would not let this be unticked.") : { fieldId: spec.id, status: "cleared" };
     }
-    if (spec.kind === "checkbox") {
-      const on = tag === "input" ? el.checked : el.getAttribute("aria-checked") === "true";
-      return on ? true : null;
+  };
+  var ariaCheckbox = {
+    name: "aria-checkbox",
+    matches: (spec) => spec.kind === "checkbox" && Boolean(spec.custom),
+    async write(spec, el, spoken) {
+      const yes = readAsYesOrNo(spoken.value);
+      const already = el.getAttribute("aria-checked") === "true";
+      if (already !== yes) {
+        openWidget(el);
+        await confirmed(() => el.getAttribute("aria-checked") === "true" === yes);
+      }
+      const now = el.getAttribute("aria-checked") === "true";
+      return now === yes ? { fieldId: spec.id, status: "written", wrote: yes ? "checked" : "unchecked" } : { fieldId: spec.id, status: "rejected-by-page", wrote: yes ? "checked" : "unchecked", found: `aria-checked=${el.getAttribute("aria-checked")}` };
+    },
+    read: (_spec, el) => el.getAttribute("aria-checked") === "true" ? true : null,
+    async clear(spec, el) {
+      if (el.getAttribute("aria-checked") === "true") {
+        openWidget(el);
+        await confirmed(() => el.getAttribute("aria-checked") !== "true");
+      }
+      return el.getAttribute("aria-checked") === "true" ? cannot(spec, "The switch would not turn off.") : { fieldId: spec.id, status: "cleared" };
     }
-    if (tag === "select") {
-      const select = el;
-      if (!select.value) return null;
-      return (select.selectedOptions[0]?.textContent ?? "").trim() || select.value;
-    }
-    if (el.getAttribute("role") === "slider") {
-      return el.getAttribute("aria-valuenow");
-    }
-    if (spec.custom) {
-      const own = tag === "input" ? "" : (el.innerText ?? "").replace(/\s+/g, " ").trim();
-      const shown2 = (own || renderedText(el)).replace(/\s*×\s*$/, "").trim();
-      if (!shown2) return null;
-      const choices = realChoices(spec.options);
-      const heard = ` ${normalise(shown2)} `;
-      const onShow = choices.filter((choice) => {
-        const word = normalise(choice);
-        return word.length > 0 && heard.includes(` ${word} `);
-      }).sort((a, b) => b.length - a.length);
-      if (onShow.length > 0) return spec.kind === "multiselect" ? onShow : onShow[0];
-      if (PLACEHOLDER.test(shown2) || choices.length > 0 && !spec.searchable) return null;
-      return shown2;
-    }
-    const text2 = readBack(el).trim();
-    return text2 ? text2 : null;
-  }
-  function isFilled(spec, el) {
-    return readValue(spec, el) !== null;
-  }
+  };
+  var checkbox = {
+    name: "checkbox",
+    matches: (spec) => spec.kind === "checkbox",
+    async write(spec, el, spoken) {
+      const yes = readAsYesOrNo(spoken.value);
+      const box = el;
+      pressChoice(box, yes);
+      return box.checked === yes ? { fieldId: spec.id, status: "written", wrote: yes ? "checked" : "unchecked" } : { fieldId: spec.id, status: "rejected-by-page", wrote: String(yes), found: String(box.checked) };
+    },
+    read: (_spec, el) => el.checked ? true : null,
+    clear: checkboxGroup.clear
+  };
+
+  // core/src/adapters/dropdowns.ts
   async function pickFromWidget(spec, el, want, spoken) {
     const before = new Set(optionNodes());
     const wasShowing = renderedText(el);
@@ -1120,7 +1339,7 @@
   function everyWordIn(candidates, spoken) {
     const words3 = normalise(spoken).split(" ").filter(Boolean);
     if (words3.length === 0) return null;
-    const hits = candidates.map((candidate, index) => ({ text: normalise(candidate), index })).filter(({ text: text2 }) => words3.every((word) => text2.includes(word)));
+    const hits = candidates.map((candidate, index) => ({ text: normalise(candidate), index })).filter(({ text: text3 }) => words3.every((word) => text3.includes(word)));
     return hits.length === 1 ? hits[0].index : null;
   }
   async function typeAndPick(spec, el, spoken) {
@@ -1175,6 +1394,124 @@
     }
     return { fieldId: spec.id, status: "rejected-by-page", wrote: spoken, found: `no result for "${spoken}"` };
   }
+  var said = (spoken) => String(Array.isArray(spoken.value) ? spoken.value[0] : spoken.value);
+  var wantOf = (spec, spoken) => matchOption(spec, said(spoken)) ?? optionNamedIn(spec, spoken.evidence);
+  function readDropdown(spec, el) {
+    if (el.tagName.toLowerCase() === "select") {
+      const select = el;
+      if (!select.value) return null;
+      return (select.selectedOptions[0]?.textContent ?? "").trim() || select.value;
+    }
+    return spec.custom ? readShown(spec, el) : readText(el);
+  }
+  async function clearDropdown(spec, el) {
+    if (el.tagName.toLowerCase() === "select") {
+      const select = el;
+      const blank = Array.from(select.options).find((option) => option.value === "");
+      if (!blank) return cannot(spec, "This dropdown has no empty choice, so one of its options has to stay picked.");
+      setNativeValue(select, "");
+      announce(select, ["input", "change"]);
+      return select.value === "" ? { fieldId: spec.id, status: "cleared" } : cannot(spec, "The form put the choice back.");
+    }
+    return spec.custom ? clearShown(spec, el) : clearText(spec, el);
+  }
+  var nativeSelect = {
+    name: "native-select",
+    matches: (spec) => spec.kind === "select" && !spec.custom && !spec.searchable,
+    async write(spec, el, spoken) {
+      const want = wantOf(spec, spoken);
+      if (!want) return notAChoice(spec, said(spoken), ", and its choices could not be read. Ask the person to fill this one in themselves.");
+      setNativeValue(el, want.value);
+      announce(el, ["input", "change"]);
+      const found = readBack(el);
+      return found === want.value ? { fieldId: spec.id, status: "written", wrote: want.label } : { fieldId: spec.id, status: "rejected-by-page", wrote: want.label, found };
+    },
+    read: readDropdown,
+    clear: clearDropdown
+  };
+  var customDropdown = {
+    name: "custom-dropdown",
+    matches: (spec) => spec.kind === "select" && Boolean(spec.custom) && !spec.searchable,
+    async write(spec, el, spoken) {
+      const want = wantOf(spec, spoken);
+      if (!want && !spec.options?.length) return pickFromWidget(spec, el, null, said(spoken));
+      if (!want) return notAChoice(spec, said(spoken), ", and its choices could not be read. Ask the person to fill this one in themselves.");
+      return pickFromWidget(spec, el, want, said(spoken));
+    },
+    read: readDropdown,
+    clear: clearDropdown
+  };
+  var searchableCombobox = {
+    name: "searchable-combobox",
+    matches: (spec) => spec.kind === "select" && Boolean(spec.searchable),
+    async write(spec, el, spoken) {
+      const searched = await typeAndPick(spec, el, said(spoken));
+      if (searched.status !== "rejected-by-page" || !spec.options?.length || searched.wrote !== said(spoken)) return searched;
+      return (spec.custom ? customDropdown : nativeSelect).write(spec, el, spoken);
+    },
+    read: readDropdown,
+    clear: clearDropdown
+  };
+  var nativeSelectMultiple = {
+    name: "native-select-multiple",
+    matches: (spec, el) => spec.kind === "multiselect" && Boolean(spec.options) && el.tagName.toLowerCase() === "select" && el.multiple,
+    async write(spec, el, spoken) {
+      const decided = chosenFrom(spec, spoken);
+      if ("status" in decided) return decided;
+      const select = el;
+      const wantedValues = new Set(decided.chosen.map((c) => c.value));
+      for (const option of Array.from(select.options)) option.selected = wantedValues.has(option.value);
+      announce(select, ["input", "change"]);
+      const now = Array.from(select.selectedOptions);
+      const wrote = decided.chosen.map((c) => c.label).join(", ");
+      return now.length === wantedValues.size && now.every((option) => wantedValues.has(option.value)) ? { fieldId: spec.id, status: "written", wrote } : { fieldId: spec.id, status: "rejected-by-page", wrote, found: now.map((option) => option.textContent?.trim() ?? "").join(", ") };
+    },
+    read(_spec, el) {
+      const picked = Array.from(el.selectedOptions).map((option) => option.textContent?.trim() || option.value);
+      return picked.length > 0 ? picked : null;
+    },
+    async clear(spec, el) {
+      const select = el;
+      for (const option of Array.from(select.options)) option.selected = false;
+      announce(select, ["input", "change"]);
+      return select.selectedOptions.length === 0 ? { fieldId: spec.id, status: "cleared" } : cannot(spec, "The form put a choice back.");
+    }
+  };
+  var tagPicker = {
+    name: "tag-picker",
+    matches: (spec) => spec.kind === "multiselect" && Boolean(spec.options) && Boolean(spec.custom),
+    async write(spec, el, spoken) {
+      const decided = chosenFrom(spec, spoken);
+      if ("status" in decided) return decided;
+      const already = readShown(spec, el);
+      const onShow = new Set(Array.isArray(already) ? already.map(normalise) : []);
+      const picked = [];
+      for (const option of decided.chosen) {
+        if (onShow.has(normalise(option.label))) {
+          picked.push(option.label);
+          continue;
+        }
+        const outcome = await pickFromWidget(spec, el, option, option.label);
+        if (outcome.status !== "written") return outcome;
+        picked.push(option.label);
+      }
+      closeWidget(el, optionNodes().filter((option) => ownsOptions(el, option) !== false));
+      return { fieldId: spec.id, status: "written", wrote: picked.join(", ") };
+    },
+    read: readShown,
+    clear: clearShown
+  };
+
+  // core/src/adapters/typing.ts
+  var readTyped = (spec, el) => spec.custom ? readShown(spec, el) : readText(el);
+  var clearTyped = (spec, el) => spec.custom ? clearShown(spec, el) : clearText(spec, el);
+  var file = {
+    name: "file",
+    matches: (spec) => spec.kind === "file",
+    write: async (spec) => ({ fieldId: spec.id, status: "refused", reason: "A file cannot be attached by voice. Longtake leaves this for the person." }),
+    read: (_spec, el) => readText(el),
+    clear: async (spec) => cannot(spec, "A file upload cannot be cleared by voice.")
+  };
   async function stepSlider(spec, el, spoken) {
     const target = Number(String(spoken.value).replace(/[^\d.-]/g, ""));
     if (!Number.isFinite(target)) {
@@ -1197,6 +1534,27 @@
     const landed = now();
     return Math.abs(landed - goal) < step / 2 ? { fieldId: spec.id, status: "written", wrote: String(landed) } : { fieldId: spec.id, status: "rejected-by-page", wrote: String(goal), found: String(landed) };
   }
+  var slider = {
+    name: "slider",
+    matches: (_spec, el) => el.getAttribute("role") === "slider",
+    write: stepSlider,
+    // A div slider carries its value in ARIA; there is nothing else to read.
+    read: (_spec, el) => el.getAttribute("aria-valuenow"),
+    clear: clearTyped
+  };
+  var contentEditable = {
+    name: "contenteditable",
+    matches: (_spec, el) => el.isContentEditable,
+    async write(spec, el, spoken) {
+      const text3 = String(spoken.value);
+      el.textContent = text3;
+      announce(el, ["input", "change"]);
+      const found = readBack(el);
+      return found === text3 ? { fieldId: spec.id, status: "written", wrote: text3 } : { fieldId: spec.id, status: "rejected-by-page", wrote: text3, found };
+    },
+    read: readTyped,
+    clear: clearTyped
+  };
   var DATE_MASK = /^(mm|dd|yyyy)([/.\-\s])(mm|dd)\2(yyyy|mm|dd)$/i;
   function asFieldDate(value, spec, el) {
     const isNative = el.tagName.toLowerCase() === "input" && el.type === "date";
@@ -1217,154 +1575,62 @@
     const part = (token) => /y/i.test(token) ? String(y) : /m/i.test(token) ? two(m) : two(d);
     return [first, second, third].map(part).join(sep);
   }
-  function leave(el) {
-    el.dispatchEvent(new FocusEvent("focusout", { bubbles: true, composed: true }));
-    el.dispatchEvent(new FocusEvent("blur", { composed: true }));
+  var DIGIT_MASK = /^[\s()+\-./]*[09#](?:[\s()+\-./]*[09#])*[\s()+\-./]*$/;
+  function asFieldShape(value, spec) {
+    const shape = (spec.placeholder ?? "").trim();
+    if (!DIGIT_MASK.test(shape)) return value;
+    const digits = value.replace(/\D/g, "");
+    const places = shape.replace(/[^09#]/g, "").length;
+    if (digits.length !== places) return value;
+    let next = 0;
+    return shape.replace(/[09#]/g, () => digits[next++]);
   }
-  async function writeOne(spec, el, spoken) {
-    const { id } = spec;
-    if (spec.kind === "file") {
-      return {
-        fieldId: id,
-        status: "refused",
-        reason: "A file cannot be attached by voice. Longtake leaves this for the person."
-      };
-    }
-    if (spec.kind === "select") {
-      const wanted = String(Array.isArray(spoken.value) ? spoken.value[0] : spoken.value);
-      if (spec.searchable) {
-        const searched = await typeAndPick(spec, el, wanted);
-        if (searched.status !== "rejected-by-page" || !spec.options?.length || searched.wrote !== wanted) return searched;
-      }
-      const want = matchOption(spec, wanted) ?? optionNamedIn(spec, spoken.evidence);
-      if (!want && spec.custom && !spec.options?.length) {
-        return pickFromWidget(spec, el, null, wanted);
-      }
-      if (!want) {
-        const labels = realChoices(spec.options);
-        return {
-          fieldId: id,
-          status: "refused",
-          reason: labels.length ? `"${wanted}" is not one of the choices. This field only accepts: ${sayableChoices(labels)}. Read those out to the person and ask which one fits.` : `"${wanted}" does not match anything this field offers, and its choices could not be read. Ask the person to fill this one in themselves.`,
-          choices: labels
-        };
-      }
-      if (spec.custom) return pickFromWidget(spec, el, want, wanted);
-      setNativeValue(el, want.value);
+  var text = {
+    name: "text",
+    matches: () => true,
+    async write(spec, el, spoken) {
+      let value = asFieldShape(asFieldDate(String(spoken.value), spec, el), spec);
+      if (spec.maxLength && value.length > spec.maxLength) value = value.slice(0, spec.maxLength);
+      setNativeValue(el, value);
       announce(el, ["input", "change"]);
-      const found2 = readBack(el);
-      return found2 === want.value ? { fieldId: id, status: "written", wrote: want.label } : { fieldId: id, status: "rejected-by-page", wrote: want.label, found: found2 };
-    }
-    if (spec.kind === "radio" || spec.kind === "multiselect" && spec.options) {
-      const wanted = Array.isArray(spoken.value) ? spoken.value : [String(spoken.value)];
-      let chosen = wanted.map((one) => matchOption(spec, one)).filter((v) => v !== null);
-      if (chosen.length === 0 && spec.kind === "radio") {
-        const named2 = optionNamedIn(spec, spoken.evidence);
-        if (named2) chosen = [named2];
-      }
-      if (chosen.length === 0) {
-        const labels = realChoices(spec.options);
-        return {
-          fieldId: id,
-          status: "refused",
-          reason: labels.length ? `"${wanted.join(", ")}" is not one of the choices. This field only accepts: ${sayableChoices(labels)}. Read those out to the person and ask which one fits.` : `"${wanted.join(", ")}" does not match anything this field offers. Ask the person to fill this one in themselves.`,
-          choices: labels
-        };
-      }
-      if (el.tagName.toLowerCase() === "select" && el.multiple) {
-        const select = el;
-        const wantedValues2 = new Set(chosen.map((c) => c.value));
-        for (const option of Array.from(select.options)) option.selected = wantedValues2.has(option.value);
-        announce(select, ["input", "change"]);
-        const now = Array.from(select.selectedOptions);
-        const wrote2 = chosen.map((c) => c.label).join(", ");
-        return now.length === wantedValues2.size && now.every((option) => wantedValues2.has(option.value)) ? { fieldId: id, status: "written", wrote: wrote2 } : { fieldId: id, status: "rejected-by-page", wrote: wrote2, found: now.map((option) => option.textContent?.trim() ?? "").join(", ") };
-      }
-      if (spec.custom && spec.kind === "multiselect") {
-        const already = readValue(spec, el);
-        const onShow = new Set(Array.isArray(already) ? already.map(normalise) : []);
-        const picked = [];
-        for (const option of chosen) {
-          if (onShow.has(normalise(option.label))) {
-            picked.push(option.label);
-            continue;
-          }
-          const outcome = await pickFromWidget(spec, el, option, option.label);
-          if (outcome.status !== "written") return outcome;
-          picked.push(option.label);
-        }
-        closeWidget(el, optionNodes().filter((option) => ownsOptions(el, option) !== false));
-        return { fieldId: id, status: "written", wrote: picked.join(", ") };
-      }
-      if (spec.kind === "radio" && el.getAttribute("role") === "radiogroup") {
-        const want = normalise(chosen[0].label);
-        const target = deepQueryAll(el, "[role='radio']").find(
-          (radio) => normalise(radio.getAttribute("aria-label") ?? radio.textContent ?? "") === want || radio.getAttribute("data-value") === chosen[0].value
-        );
-        if (!target) return { fieldId: id, status: "refused", reason: "That option is no longer on the page." };
-        if (target.getAttribute("aria-checked") !== "true") target.click();
-        return await confirmed(() => target.getAttribute("aria-checked") === "true") ? { fieldId: id, status: "written", wrote: chosen[0].label } : { fieldId: id, status: "rejected-by-page", wrote: chosen[0].label, found: "" };
-      }
-      if (spec.custom) return pickFromWidget(spec, el, chosen[0], wanted.join(", "));
-      if (spec.kind === "radio") {
-        const radios = radioGroup(el);
-        const target = radios.find((radio) => choiceKey(radio, radios) === chosen[0].value);
-        if (!target) {
-          return { fieldId: id, status: "refused", reason: "That option is no longer on the page." };
-        }
-        pressChoice(target, true);
-        return target.checked ? { fieldId: id, status: "written", wrote: chosen[0].label } : { fieldId: id, status: "rejected-by-page", wrote: chosen[0].label, found: "" };
-      }
-      const boxes = choiceGroup(el);
-      const wantedValues = chosen.map((c) => c.value);
-      const wants = (box) => wantedValues.includes(choiceKey(box, boxes));
-      for (const box of boxes) {
-        const shouldCheck = wants(box);
-        if (box.checked !== shouldCheck) {
-          pressChoice(box, shouldCheck);
-        }
-      }
-      const wrote = chosen.map((c) => c.label).join(", ");
-      const off = boxes.filter((box) => box.checked !== wants(box));
-      return off.length === 0 && boxes.length > 0 ? { fieldId: id, status: "written", wrote } : { fieldId: id, status: "rejected-by-page", wrote, found: boxes.filter((box) => box.checked).map((box) => box.value).join(", ") };
-    }
-    if (spec.kind === "checkbox") {
-      const yes = readAsYesOrNo(spoken.value);
-      if (spec.custom) {
-        const already = el.getAttribute("aria-checked") === "true";
-        if (already !== yes) {
-          openWidget(el);
-          await confirmed(() => el.getAttribute("aria-checked") === "true" === yes);
-        }
-        const now = el.getAttribute("aria-checked") === "true";
-        return now === yes ? { fieldId: id, status: "written", wrote: yes ? "checked" : "unchecked" } : {
-          fieldId: id,
-          status: "rejected-by-page",
-          wrote: yes ? "checked" : "unchecked",
-          found: `aria-checked=${el.getAttribute("aria-checked")}`
-        };
-      }
-      const box = el;
-      pressChoice(box, yes);
-      return box.checked === yes ? { fieldId: id, status: "written", wrote: yes ? "checked" : "unchecked" } : { fieldId: id, status: "rejected-by-page", wrote: String(yes), found: String(box.checked) };
-    }
-    if (el.getAttribute("role") === "slider") return stepSlider(spec, el, spoken);
-    if (el.isContentEditable) {
-      const text3 = String(spoken.value);
-      el.textContent = text3;
-      announce(el, ["input", "change"]);
-      const found2 = readBack(el);
-      return found2 === text3 ? { fieldId: id, status: "written", wrote: text3 } : { fieldId: id, status: "rejected-by-page", wrote: text3, found: found2 };
-    }
-    let text2 = asFieldDate(String(spoken.value), spec, el);
-    if (spec.maxLength && text2.length > spec.maxLength) {
-      text2 = text2.slice(0, spec.maxLength);
-    }
-    setNativeValue(el, text2);
-    announce(el, ["input", "change"]);
-    leave(el);
-    const found = readBack(el);
-    return found === text2 ? { fieldId: id, status: "written", wrote: text2 } : { fieldId: id, status: "rejected-by-page", wrote: text2, found };
+      leave(el);
+      const found = readBack(el);
+      return found === value ? { fieldId: spec.id, status: "written", wrote: value } : { fieldId: spec.id, status: "rejected-by-page", wrote: value, found };
+    },
+    read: readTyped,
+    clear: clearTyped
+  };
+
+  // core/src/adapters/index.ts
+  var ADAPTERS = [
+    file,
+    searchableCombobox,
+    customDropdown,
+    nativeSelect,
+    nativeSelectMultiple,
+    tagPicker,
+    ariaRadiogroup,
+    toggleButtons,
+    customRadio,
+    nativeRadio,
+    checkboxGroup,
+    ariaCheckbox,
+    checkbox,
+    slider,
+    contentEditable,
+    text
+  ];
+  function adapterFor(spec, el) {
+    return ADAPTERS.find((adapter) => adapter.matches(spec, el)) ?? text;
+  }
+
+  // core/src/writer.ts
+  var RETRY_AFTER_MS = 250;
+  function readValue(spec, el) {
+    return adapterFor(spec, el).read(spec, el);
+  }
+  function isFilled(spec, el) {
+    return readValue(spec, el) !== null;
   }
   function writeValues(specs, handles, values) {
     return exclusively(() => writeAll(specs, handles, values));
@@ -1407,91 +1673,17 @@
         });
         continue;
       }
-      let outcome = await writeOne(spec, el, spoken);
+      let outcome = await adapterFor(spec, el).write(spec, el, spoken);
       if (outcome.status === "rejected-by-page") {
         await sleep(RETRY_AFTER_MS);
         const fresh = handles.get(spoken.fieldId);
         const target = fresh && fresh.isConnected ? fresh : el.isConnected ? el : null;
-        outcome = target ? await writeOne(spec, target, spoken) : { ...outcome, found: "the field left the page before it could be written" };
+        outcome = target ? await adapterFor(spec, target).write(spec, target, spoken) : { ...outcome, found: "the field left the page before it could be written" };
         if (outcome.status === "rejected-by-page") outcome = { ...outcome, retried: true };
       }
       outcomes.push(outcome);
     }
     return outcomes;
-  }
-  var CLEAR_CONTROL = "[aria-label*='clear' i], [title*='clear' i], [class*='clear-indicator'], [class*='clearIndicator'], [class*='ClearIndicator']";
-  function press(el) {
-    for (const type of ["pointerdown", "mousedown", "pointerup", "mouseup", "click"]) {
-      el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, composed: true, view: window }));
-    }
-  }
-  async function clearOne(spec, el) {
-    const id = spec.id;
-    const cannot = (reason) => ({ fieldId: id, status: "cannot-clear", reason });
-    const tag = el.tagName.toLowerCase();
-    if (spec.kind === "file") return cannot("A file upload cannot be cleared by voice.");
-    if (spec.kind === "radio" && tag === "input") {
-      for (const radio of radioGroup(el)) {
-        if (!radio.checked) continue;
-        radio.checked = false;
-        announce(radio, ["input", "change"]);
-      }
-      return radioGroup(el).some((radio) => radio.checked) ? cannot("The form put the choice back \u2014 it will not let this be left unanswered.") : { fieldId: id, status: "cleared" };
-    }
-    if ((spec.kind === "multiselect" || spec.kind === "checkbox") && tag === "input") {
-      const boxes = choiceGroup(el);
-      for (const box of boxes) pressChoice(box, false);
-      return boxes.some((box) => box.checked) ? cannot("The form would not let this be unticked.") : { fieldId: id, status: "cleared" };
-    }
-    if (spec.kind === "checkbox") {
-      if (el.getAttribute("aria-checked") === "true") {
-        openWidget(el);
-        await confirmed(() => el.getAttribute("aria-checked") !== "true");
-      }
-      return el.getAttribute("aria-checked") === "true" ? cannot("The switch would not turn off.") : { fieldId: id, status: "cleared" };
-    }
-    if (tag === "select" && el.multiple) {
-      const select = el;
-      for (const option of Array.from(select.options)) option.selected = false;
-      announce(select, ["input", "change"]);
-      return select.selectedOptions.length === 0 ? { fieldId: id, status: "cleared" } : cannot("The form put a choice back.");
-    }
-    if (tag === "select") {
-      const select = el;
-      const blank = Array.from(select.options).find((option) => option.value === "");
-      if (!blank) return cannot("This dropdown has no empty choice, so one of its options has to stay picked.");
-      setNativeValue(select, "");
-      announce(select, ["input", "change"]);
-      return select.value === "" ? { fieldId: id, status: "cleared" } : cannot("The form put the choice back.");
-    }
-    if (spec.custom) {
-      const before = renderedText(el);
-      let host = el.parentElement;
-      let control = null;
-      for (let hops = 0; host && !control && hops < 3; hops++) {
-        control = host.querySelector(CLEAR_CONTROL);
-        host = host.parentElement;
-      }
-      if (control) {
-        press(control);
-      } else {
-        el.focus();
-        for (const key of ["Backspace", "Delete"]) {
-          el.dispatchEvent(new KeyboardEvent("keydown", { key, code: key, bubbles: true, cancelable: true, composed: true }));
-        }
-      }
-      await sleep(150);
-      closeWidget(el);
-      return renderedText(el) !== before ? { fieldId: id, status: "cleared" } : cannot("This dropdown has no way to empty it \u2014 once picked, the form keeps a choice.");
-    }
-    if (el.isContentEditable) {
-      el.textContent = "";
-      announce(el, ["input", "change"]);
-      return readBack(el) === "" ? { fieldId: id, status: "cleared" } : cannot("The page put the text back.");
-    }
-    setNativeValue(el, "");
-    announce(el, ["input", "change"]);
-    return readBack(el) === "" ? { fieldId: id, status: "cleared" } : cannot("The page put the text back.");
   }
   function clearValues(specs, handles, ids) {
     return exclusively(async () => {
@@ -1504,7 +1696,7 @@
           outcomes.push({ fieldId: id, status: "cannot-clear", reason: "That field is not on the page." });
           continue;
         }
-        outcomes.push(await clearOne(spec, el));
+        outcomes.push(await adapterFor(spec, el).clear(spec, el));
       }
       return outcomes;
     });
@@ -1811,11 +2003,11 @@
   // core/src/evidence.ts
   var MIN_WORD_OVERLAP = 0.7;
   var MIN_QUOTE_CHARS = 2;
-  function normalise2(text2) {
-    return text2.toLowerCase().replace(/[\p{P}\p{S}]/gu, " ").replace(/\s+/g, " ").trim();
+  function normalise2(text3) {
+    return text3.toLowerCase().replace(/[\p{P}\p{S}]/gu, " ").replace(/\s+/g, " ").trim();
   }
-  function words(text2) {
-    return normalise2(text2).split(" ").filter(Boolean);
+  function words(text3) {
+    return normalise2(text3).split(" ").filter(Boolean);
   }
   function checkEvidence(transcript, evidence) {
     const quote = (evidence ?? "").trim();
@@ -1860,8 +2052,8 @@
   var MAX_KEYTERMS = 100;
   var MAX_KEYTERMS_CHARS = 8e3;
   var MAX_CALLS_PER_UTTERANCE = 3;
-  function clip(text2, max) {
-    return text2.length <= max ? text2 : text2.slice(0, max);
+  function clip(text3, max) {
+    return text3.length <= max ? text3 : text3.slice(0, max);
   }
   function keytermsFrom(specs, known) {
     const terms = [];
@@ -1972,15 +2164,15 @@
   var HEAVILY_EDITED_RATIO = 0.25;
   var SLOW_START_SECONDS = 2.5;
   var FILLER_THRESHOLD = 2;
-  function normalise3(text2) {
-    return text2.toLowerCase().replace(/[\p{P}\p{S}]/gu, " ").replace(/\s+/g, " ").trim();
+  function normalise3(text3) {
+    return text3.toLowerCase().replace(/[\p{P}\p{S}]/gu, " ").replace(/\s+/g, " ").trim();
   }
   function countFillers(verbatim) {
-    const text2 = ` ${normalise3(verbatim)} `;
+    const text3 = ` ${normalise3(verbatim)} `;
     const found = [];
     let count2 = 0;
     for (const filler of FILLERS) {
-      const matches = text2.split(` ${filler} `).length - 1;
+      const matches = text3.split(` ${filler} `).length - 1;
       if (matches > 0) {
         count2 += matches;
         found.push(filler);
@@ -2678,7 +2870,7 @@
 
   // core/src/errors.ts
   var ERROR_CLASS = /(^|[\s_-])(error|invalid|danger|field-error|error-message|help-block-error)([\s_-]|$)/i;
-  function text(el) {
+  function text2(el) {
     return (el?.innerText ?? el?.textContent ?? "").replace(/\s+/g, " ").trim();
   }
   function readError(el) {
@@ -2687,7 +2879,7 @@
       const ids = `${el.getAttribute("aria-errormessage") ?? ""} ${el.getAttribute("aria-describedby") ?? ""}`.split(/\s+/).filter(Boolean);
       for (const id of ids) {
         const node = doc?.getElementById(id);
-        if (node && isVisible(node) && text(node)) return text(node);
+        if (node && isVisible(node) && text2(node)) return text2(node);
       }
     }
     let block = el.parentElement;
@@ -2697,9 +2889,9 @@
       );
       if (others.length > 0) break;
       const found = Array.from(block.querySelectorAll("[role='alert'], [class]")).find(
-        (node) => node !== el && !node.contains(el) && (node.getAttribute("role") === "alert" || ERROR_CLASS.test(node.className?.toString() ?? "")) && isVisible(node) && text(node).length > 0
+        (node) => node !== el && !node.contains(el) && (node.getAttribute("role") === "alert" || ERROR_CLASS.test(node.className?.toString() ?? "")) && isVisible(node) && text2(node).length > 0
       );
-      if (found) return text(found);
+      if (found) return text2(found);
       block = block.parentElement;
     }
     const input = el;
@@ -2790,12 +2982,12 @@
     if (held?.reason === "hedged" && !hedged(spec, evidence)) return { write: true };
     if (isChoice2(spec) && spec.options?.length) {
       const want = matchOption(spec, value);
-      const said = named(spec, evidence);
+      const said2 = named(spec, evidence);
       if (UNSURE.test(evidence) && !(held && MEANS_YES.test(evidence))) {
         return { write: false, pending: { suggestion: want?.label ?? value, heard: evidence, reason: "hedged" } };
       }
       if (!want) return { write: true };
-      if (said === want.label || sameText(evidence, want.label)) return { write: true };
+      if (said2 === want.label || sameText(evidence, want.label)) return { write: true };
       return { write: false, pending: { suggestion: want.label, heard: evidence, reason: "not_named" } };
     }
     if (!isLongAnswer(spec) && hedged(spec, evidence) && /\d/.test(value)) {
@@ -2882,8 +3074,8 @@
     empty: ""
   };
   function shown(value) {
-    const text2 = value === true ? "ticked" : Array.isArray(value) ? value.join(", ") : String(value);
-    return text2.length > 48 ? `${text2.slice(0, 48)}\u2026` : text2;
+    const text3 = value === true ? "ticked" : Array.isArray(value) ? value.join(", ") : String(value);
+    return text3.length > 48 ? `${text3.slice(0, 48)}\u2026` : text3;
   }
   function describe(facts) {
     const where = facts.section ? ` (under "${facts.section}")` : "";
@@ -3303,10 +3495,10 @@
       for (const result of results) {
         if (result.status !== "written") continue;
         const spec = byId.get(result.fieldId);
-        const said = values.find((v) => v.fieldId === result.fieldId);
-        if (!spec || !said) continue;
-        this.ledger.wrote(result.fieldId, { source, value: result.wrote, evidence: said.evidence, spec });
-        kept.push({ ...said, value: result.wrote });
+        const said2 = values.find((v) => v.fieldId === result.fieldId);
+        if (!spec || !said2) continue;
+        this.ledger.wrote(result.fieldId, { source, value: result.wrote, evidence: said2.evidence, spec });
+        kept.push({ ...said2, value: result.wrote });
       }
       if (source === "spoken" && kept.length > 0) {
         this.memory = remember(this.memory, read.specs, kept, read.url);
@@ -3382,10 +3574,10 @@
         const codeId = pairs.get(claim.fieldId);
         if (byId.get(claim.fieldId)?.kind !== "tel" || !codeId) continue;
         if (spoken.some((c) => c.fieldId === codeId)) continue;
-        const said = /^\s*\+\s*(\d{1,4})\b/.exec(String(claim.value)) ?? /\+\s*(\d{1,4})\b/.exec(claim.evidence);
-        if (!said) continue;
+        const said2 = /^\s*\+\s*(\d{1,4})\b/.exec(String(claim.value)) ?? /\+\s*(\d{1,4})\b/.exec(claim.evidence);
+        if (!said2) continue;
         claim.value = String(claim.value).replace(/^\s*\+\s*\d{1,4}[\s.-]*/, "");
-        const code = new RegExp(`\\+\\s*${said[1]}\\b`);
+        const code = new RegExp(`\\+\\s*${said2[1]}\\b`);
         const matches = (byId.get(codeId).options ?? []).filter((o) => code.test(o.label));
         if (matches.length === 1) extra.push({ fieldId: codeId, value: matches[0].label, evidence: claim.evidence });
       }
@@ -3610,16 +3802,16 @@
     "aur",
     "toh"
   ]);
-  function words2(text2) {
-    return text2.toLowerCase().replace(/[\p{P}\p{S}]/gu, " ").split(/\s+/).filter(Boolean);
+  function words2(text3) {
+    return text3.toLowerCase().replace(/[\p{P}\p{S}]/gu, " ").split(/\s+/).filter(Boolean);
   }
   function markers(quote) {
     const all = words2(quote);
     const rare = all.filter((w) => !COMMON.has(w));
     return rare.length > 0 ? rare : all;
   }
-  function count(text2, word) {
-    return words2(text2).filter((w) => w === word).length;
+  function count(text3, word) {
+    return words2(text3).filter((w) => w === word).length;
   }
   function clipFor(quote, timeline, totalSamples, sampleRate = 24e3) {
     const marks = markers(quote);
@@ -3636,8 +3828,8 @@
     if (startIndex === -1) return null;
     let endIndex = -1;
     for (let i = startIndex; i < timeline.length; i++) {
-      const text2 = timeline[i].text;
-      if (marks.every((w) => count(text2, w) > 0) && count(text2, last) > 0) {
+      const text3 = timeline[i].text;
+      if (marks.every((w) => count(text3, w) > 0) && count(text3, last) > 0) {
         endIndex = i;
         break;
       }
@@ -4230,8 +4422,8 @@
       this.current = { ...this.current, ...patch };
       for (const listener of this.listeners) listener(this.current);
     }
-    note(kind, text2) {
-      const log = [...this.current.log.slice(-(LOG_LIMIT - 1)), { at: (/* @__PURE__ */ new Date()).toISOString(), kind, text: text2 }];
+    note(kind, text3) {
+      const log = [...this.current.log.slice(-(LOG_LIMIT - 1)), { at: (/* @__PURE__ */ new Date()).toISOString(), kind, text: text3 }];
       this.update({ log });
     }
     /** Redraw the form, and drop "didn't go in" notices for fields that now have something in them. */
@@ -4314,15 +4506,15 @@
             this.update({ status: "live" });
             this.note("app", how === "resumed" ? "reconnected \u2014 same conversation" : "reconnected \u2014 new session, picked up from the form");
           },
-          onUserPartial: (text2) => {
-            this.partial = text2;
-            this.update({ partial: text2 });
+          onUserPartial: (text3) => {
+            this.partial = text3;
+            this.update({ partial: text3 });
           },
-          onUserTranscript: (text2, audio, timeline) => this.heardTurn(text2, audio, timeline),
-          onAgentTranscript: (text2) => {
+          onUserTranscript: (text3, audio, timeline) => this.heardTurn(text3, audio, timeline),
+          onAgentTranscript: (text3) => {
             this.askedAt = Date.now();
-            this.note("agent", text2);
-            this.update({ turns: [...this.current.turns, { who: "agent", text: text2 }] });
+            this.note("agent", text3);
+            this.update({ turns: [...this.current.turns, { who: "agent", text: text3 }] });
           },
           onSpeechStart: () => {
             const now = Date.now();
@@ -4372,18 +4564,18 @@
       return `${this.transcript}
 ${this.partial}`.trim();
     }
-    heardTurn(text2, audio, timeline) {
+    heardTurn(text3, audio, timeline) {
       if (audio && audio.length > 0) {
-        this.turnAudio = [...this.turnAudio.slice(-5), { text: text2, audio, timeline }];
+        this.turnAudio = [...this.turnAudio.slice(-5), { text: text3, audio, timeline }];
         for (const [fieldId, evidence] of this.pendingClips) {
           if (this.placeClip(fieldId, evidence)) this.pendingClips.delete(fieldId);
         }
       }
       this.partial = "";
       this.transcript = `${this.transcript}
-${text2}`.trim();
-      this.note("you", text2);
-      this.update({ partial: "", turns: [...this.current.turns, { who: "you", text: text2 }] });
+${text3}`.trim();
+      this.note("you", text3);
+      this.update({ partial: "", turns: [...this.current.turns, { who: "you", text: text3 }] });
     }
     // ── The tools ──────────────────────────────────────────────────────────────────────
     /** Runs one tool call and returns what goes back to the agent. Public so replays can drive it. */
@@ -4403,9 +4595,9 @@ ${text2}`.trim();
         this.update({ outcomes: [...this.current.outcomes, ...done.outcomes] });
         const landed = done.outcomes.filter((o) => o.status === "written").map((o) => o.fieldId);
         if (landed.length > 0) {
-          for (const said of done.spoken) {
-            if (!landed.includes(said.fieldId)) continue;
-            if (!this.placeClip(said.fieldId, said.evidence)) this.pendingClips.set(said.fieldId, said.evidence);
+          for (const said2 of done.spoken) {
+            if (!landed.includes(said2.fieldId)) continue;
+            if (!this.placeClip(said2.fieldId, said2.evidence)) this.pendingClips.set(said2.fieldId, said2.evidence);
           }
           if (!this.switchedMode) {
             this.switchedMode = true;
@@ -4580,14 +4772,14 @@ ${text2}`.trim();
       return this.options;
     }
     /** The person finished a turn. */
-    userSays(text2) {
+    userSays(text3) {
       this.o.onSpeechStart?.();
-      this.o.onUserPartial?.(text2);
-      this.o.onUserTranscript?.(text2, null, [{ text: text2, sample: 0 }]);
+      this.o.onUserPartial?.(text3);
+      this.o.onUserTranscript?.(text3, null, [{ text: text3, sample: 0 }]);
     }
     /** The person is mid-sentence: a running partial, not yet final. */
-    partial(text2) {
-      this.o.onUserPartial?.(text2);
+    partial(text3) {
+      this.o.onUserPartial?.(text3);
     }
     /** The agent calls a tool; resolves with what would go back to it. */
     async toolCall(name, args) {
@@ -4597,8 +4789,8 @@ ${text2}`.trim();
       return result;
     }
     /** The agent said something. */
-    agentSays(text2) {
-      this.o.onAgentTranscript?.(text2);
+    agentSays(text3) {
+      this.o.onAgentTranscript?.(text3);
     }
     /** The latest system prompt the agent has — the opening one until something replaced it. */
     get prompt() {
