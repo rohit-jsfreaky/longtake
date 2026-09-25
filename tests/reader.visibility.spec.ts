@@ -110,6 +110,17 @@ test.describe("scrolling is not hiding — the bug that dropped First Name", () 
     expect((await counts(page)).fields).toBe(1);
   });
 
+  // Luma's form scrolls inside its popup, not the page: the page's own scroll is 0, and the
+  // fields above the popup's scroll position were dropped as hidden.
+  test("a field above the scroll position of a box that scrolls is still read", async ({ page }) => {
+    await load(
+      page,
+      `<div id="box" style="height:200px;overflow:auto">${LABELLED}<input id="f"><div style="height:3000px"></div></div>`,
+    );
+    await page.evaluate(() => document.getElementById("box")!.scrollTo(0, 2500));
+    expect((await counts(page)).fields).toBe(1);
+  });
+
   test("scrolling far past a field does not turn it into a honeypot", async ({ page }) => {
     await load(page, `${LABELLED}<input id="f">${TALL}`);
     await page.evaluate(() => window.scrollTo(0, 2900));

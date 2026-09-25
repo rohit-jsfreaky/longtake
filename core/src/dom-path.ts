@@ -396,9 +396,17 @@ function paintedOnScreen(el: Element): boolean {
   // looks equivalent and is badly wrong: on any form taller than the screen, every field above
   // the current scroll position has a negative `rect.bottom`. That bug quietly dropped "First
   // Name" from a real Reddit application, because the page happened to be scrolled down.
-  const view = el.ownerDocument.defaultView;
-  const scrollX = view?.scrollX ?? 0;
-  const scrollY = view?.scrollY ?? 0;
+  //
+  // And the same inside any box that scrolls, not only the page. Luma's form scrolls inside its
+  // popup: once the agent had filled the questions further down, Name, Email and Phone sat above
+  // the popup's scroll position with negative boxes, and were dropped as hidden. Every scrolling
+  // ancestor's offset counts — the page's own is the root element's (or, in quirks mode, body's).
+  let scrollX = 0;
+  let scrollY = 0;
+  for (let node = html.parentElement; node; node = node.parentElement) {
+    scrollX += node.scrollLeft;
+    scrollY += node.scrollTop;
+  }
   if (rect.right + scrollX < 0 || rect.bottom + scrollY < 0) return false;
 
   return true;
@@ -509,16 +517,29 @@ export function openWidget(el: HTMLElement): void {
  * stale menu, and concludes that nothing opened. So an outside `pointerdown` is sent as well,
  * which is what most libraries actually use to dismiss.
  */
-export function closeWidget(el: HTMLElement): void {
-  el.dispatchEvent(
-    new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true, composed: true }),
-  );
-  el.blur();
+export function closeWidget(el: HTMLElement, shown?: Element[]): void {
+  // Close only what is open, and nothing around it. Handed the options that were on show, it
+  // does nothing once none of them is: the widget closed itself, and an Escape or an outside
+  // click would reach only what holds it. Luma's form sits in a popup that closes on both — one
+  // Escape after a pick closed it, with every answer in it. (Not `aria-expanded`: plenty of
+  // widgets never update it.) Inside a marked dialog, the outside click stays inside the dialog.
+  const open = () => !shown || shown.some((option) => option.isConnected && isVisible(option));
+  if (!open()) return;
+  const dialog = el.closest("[role='dialog'], dialog, [aria-modal='true']");
 
-  const doc = el.ownerDocument;
-  if (doc?.body) {
+  if (!dialog) {
+    el.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true, composed: true }),
+    );
+  }
+  el.blur();
+  // The Escape closed it: a click outside now would land only on what holds the widget.
+  if (!open()) return;
+
+  const outside = dialog ?? el.ownerDocument?.body;
+  if (outside) {
     for (const type of ["pointerdown", "mousedown"]) {
-      doc.body.dispatchEvent(
+      outside.dispatchEvent(
         new MouseEvent(type, { bubbles: true, cancelable: true, composed: true }),
       );
     }

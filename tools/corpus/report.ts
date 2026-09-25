@@ -22,7 +22,16 @@ type Stored = {
   elsewhere?: number;
   /** Who stamped what this form is scored against: the truth, and for filling the plan too. */
   checkedBy?: string[];
+  /** How long the read and the harvest took. Tracked, never ratcheted: a busy machine is slow. */
+  timing?: { readMs: number; harvestMs: number };
 };
+
+/** The p50 and p95 of some durations, as "12 / 40 ms". */
+function percentiles(ms: number[]): string {
+  const sorted = [...ms].sort((a, b) => a - b);
+  const at = (p: number) => sorted[Math.min(sorted.length - 1, Math.ceil((p / 100) * sorted.length) - 1)]!;
+  return `${Math.round(at(50))} / ${Math.round(at(95))} ms`;
+}
 
 /**
  * Checked by Claude, not by a person. Such a key is a second opinion, not a person's: when one of
@@ -67,9 +76,15 @@ const FILL: Metric[] = [
   { key: "collateral", label: "Touched others", better: "lower", gate: true, value: (c) => c.collateral ?? 0 },
 ];
 
+const TALK: Metric[] = [
+  { key: "talkChecks", label: "Talk checks right", better: "higher", value: (c) => ratio(c.passed, c.checks) },
+  { key: "touchedUnasked", label: "Changed unasked", better: "lower", gate: true, value: (c) => c.touched ?? 0 },
+];
+
 export const SCORERS: Scorer[] = [
   { name: "read", title: "reading", size: (t) => `${t.fields ?? 0} fields`, metrics: READ },
   { name: "fill", title: "filling", size: (t) => `${t.cases ?? 0} answers`, metrics: FILL },
+  { name: "talk", title: "talking", size: (t) => `${t.checks ?? 0} checks`, metrics: TALK },
 ];
 
 /** Deterministic reads and writes: any move is a real move. Raise per metric here only if one turns out noisy. */
@@ -169,6 +184,15 @@ export function report(options: {
     if (stored.some(byClaude)) {
       lines.push("");
       lines.push("† Answer key checked by Claude, not by a person — when one of these gets worse, suspect the key first.");
+    }
+
+    const timed = stored.filter((s) => s.timing);
+    if (timed.length > 0) {
+      lines.push("");
+      lines.push(
+        `Time (p50 / p95, tracked only): read ${percentiles(timed.map((s) => s.timing!.readMs))}, ` +
+          `harvest ${percentiles(timed.map((s) => s.timing!.harvestMs))}.`,
+      );
     }
 
     const elsewhere = stored.reduce((n, s) => n + (s.elsewhere ?? 0), 0);

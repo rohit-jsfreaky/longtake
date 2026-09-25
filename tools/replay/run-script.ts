@@ -30,7 +30,8 @@ export type Step =
 
 export type Script = { name: string; steps: Step[] };
 
-export type ScriptReport = { ok: boolean; failures: string[]; results: unknown[] };
+/** `checks` counts every expectation looked at; each failure is one of them. */
+export type ScriptReport = { ok: boolean; failures: string[]; results: unknown[]; checks: number };
 
 type Result = {
   just_filled?: { field: string }[];
@@ -47,6 +48,7 @@ export async function runScript(
 ): Promise<ScriptReport> {
   const failures: string[] = [];
   const results: unknown[] = [];
+  let checks = 0;
   let last: Result | null = null;
   const fail = (index: number, what: string) => failures.push(`step ${index + 1}: ${what}`);
   const ids = (list?: { field: string }[]) => (list ?? []).map((item) => item.field).sort();
@@ -72,10 +74,12 @@ export async function runScript(
     } else if ("expectResult" in step) {
       const want = step.expectResult;
       if (!last) {
+        checks++;
         fail(index, "no tool result to check");
         continue;
       }
       if (want.justFilled) {
+        checks++;
         const expected = want.justFilled.map(resolve).sort();
         if (JSON.stringify(ids(last.just_filled)) !== JSON.stringify(expected)) {
           fail(index, `just_filled ${JSON.stringify(ids(last.just_filled))}, expected ${JSON.stringify(expected)}`);
@@ -83,17 +87,21 @@ export async function runScript(
       }
       if (want.notFilled) {
         for (const item of want.notFilled) {
+          checks++;
           const found = (last.not_filled ?? []).find((n) => n.field === resolve(item.field));
           if (!found) fail(index, `expected ${item.field} not filled`);
           else if (item.why && found.why !== item.why) fail(index, `${item.field} not filled because ${found.why}, expected ${item.why}`);
         }
       }
       if (want.waiting) {
+        checks++;
         const expected = want.waiting.map(resolve).sort();
         if (JSON.stringify(ids(last.waiting_for_yes)) !== JSON.stringify(expected)) {
           fail(index, `waiting ${JSON.stringify(ids(last.waiting_for_yes))}, expected ${JSON.stringify(expected)}`);
         }
       }
+      if (want.doNextHas) checks++;
+      if (want.doNextLacks) checks++;
       if (want.doNextHas && !String(last.do_next ?? "").includes(want.doNextHas)) {
         fail(index, `do_next "${last.do_next}" lacks "${want.doNextHas}"`);
       }
@@ -107,6 +115,7 @@ export async function runScript(
         return field ? field.value : undefined;
       };
       for (const [ref, want] of Object.entries(step.expectFinal.values ?? {})) {
+        checks++;
         const got = value(ref);
         if (got === undefined) fail(index, `no field ${ref}`);
         else if (!String(Array.isArray(got) ? got.join(", ") : got).includes(want)) {
@@ -114,13 +123,15 @@ export async function runScript(
         }
       }
       for (const ref of step.expectFinal.empty ?? []) {
+        checks++;
         const got = value(ref);
         if (got !== null) fail(index, `${ref} should be empty, is ${JSON.stringify(got)}`);
       }
       for (const words of step.expectFinal.promptHas ?? []) {
+        checks++;
         if (!fake.prompt.includes(words)) fail(index, `the agent's prompt lacks "${words}"`);
       }
     }
   }
-  return { ok: failures.length === 0, failures, results };
+  return { ok: failures.length === 0, failures, results, checks };
 }

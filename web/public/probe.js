@@ -208,9 +208,12 @@
       }
       return false;
     }
-    const view = el.ownerDocument.defaultView;
-    const scrollX = view?.scrollX ?? 0;
-    const scrollY = view?.scrollY ?? 0;
+    let scrollX = 0;
+    let scrollY = 0;
+    for (let node = html.parentElement; node; node = node.parentElement) {
+      scrollX += node.scrollLeft;
+      scrollY += node.scrollTop;
+    }
     if (rect.right + scrollX < 0 || rect.bottom + scrollY < 0) return false;
     return true;
   }
@@ -246,15 +249,21 @@
       );
     }
   }
-  function closeWidget(el) {
-    el.dispatchEvent(
-      new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true, composed: true })
-    );
+  function closeWidget(el, shown2) {
+    const open = () => !shown2 || shown2.some((option) => option.isConnected && isVisible(option));
+    if (!open()) return;
+    const dialog = el.closest("[role='dialog'], dialog, [aria-modal='true']");
+    if (!dialog) {
+      el.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true, composed: true })
+      );
+    }
     el.blur();
-    const doc = el.ownerDocument;
-    if (doc?.body) {
+    if (!open()) return;
+    const outside = dialog ?? el.ownerDocument?.body;
+    if (outside) {
       for (const type of ["pointerdown", "mousedown"]) {
-        doc.body.dispatchEvent(
+        outside.dispatchEvent(
           new MouseEvent(type, { bubbles: true, cancelable: true, composed: true })
         );
       }
@@ -549,6 +558,8 @@
     const tag = el.tagName.toLowerCase();
     const role = el.getAttribute("role");
     const popup = el.getAttribute("aria-haspopup");
+    const typed = tag === "input" ? (el.type || "").toLowerCase() : "";
+    if (typed === "tel" || typed === "email" || typed === "url" || typed === "number") return typed;
     if (role === "combobox" || popup === "listbox" || popup === "menu") return "select";
     if (role === "radiogroup") return "radio";
     if (role === "checkbox" || role === "switch") return "checkbox";
@@ -822,11 +833,12 @@
     const pressAndRead = async (spec, el, lastTry) => {
       const before = new Set(allOptions());
       const opened = () => allOptions().some((option) => !before.has(option)) || el.getAttribute("aria-expanded") === "true";
+      let revealed = [];
       try {
         openWidget(el);
         await whenSettled(doc, settleMs, MENU_TIMEOUT_MS, opened);
         if (!opened() && !lastTry) return false;
-        let revealed = allOptions().filter((option) => !before.has(option));
+        revealed = allOptions().filter((option) => !before.has(option));
         if (revealed.length === 0 && el.getAttribute("aria-expanded") === "true") {
           revealed = allOptions().filter((option) => ownsOptions(el, option) === true);
         }
@@ -845,7 +857,7 @@
         if (typesToSearch && (options.length === 0 || options.length >= SEARCH_NOT_SCROLL)) spec.searchable = true;
       } catch {
       } finally {
-        closeWidget(el);
+        closeWidget(el, revealed.length > 0 ? revealed : void 0);
         await sleep2(40);
       }
       return true;
@@ -950,12 +962,15 @@
   function optionNamedIn(spec, evidence) {
     const heard = ` ${normalise(evidence ?? "")} `;
     if (!heard.trim()) return null;
-    const named2 = (spec.options ?? []).filter((option) => option.value !== "").filter((option) => {
-      return [normalise(option.label), bareName(option.label)].some(
-        (label) => label.length >= 2 && heard.includes(` ${label} `)
-      );
-    });
-    return named2.length === 1 ? named2[0] : null;
+    const names = (spec.options ?? []).filter((option) => option.value !== "").flatMap((option) => [normalise(option.label), bareName(option.label)].filter((label) => label.length >= 2).map((label) => ({ option, label }))).sort((a, b) => b.label.length - a.label.length);
+    let rest = heard;
+    const named2 = /* @__PURE__ */ new Set();
+    for (const { option, label } of names) {
+      if (!rest.includes(` ${label} `)) continue;
+      named2.add(option);
+      rest = rest.split(` ${label} `).join("  ");
+    }
+    return named2.size === 1 ? [...named2][0] : null;
   }
   function matchOption(spec, spoken) {
     if (!spec.options || spec.options.length === 0) return null;
@@ -990,13 +1005,14 @@
     return (el.textContent ?? "").trim();
   }
   function renderedText(el) {
+    const own = el.tagName.toLowerCase() === "input" ? (el.value ?? "").trim() : "";
     let node = el.parentElement;
     for (let hops = 0; node && hops < 5; hops++) {
       const text2 = (node.innerText ?? "").replace(/\s+/g, " ").trim();
-      if (text2) return text2;
+      if (text2) return own ? `${own} ${text2}` : text2;
       node = node.parentElement;
     }
-    return "";
+    return own;
   }
   function radioGroup(el) {
     if (el.tagName.toLowerCase() !== "input") return [];
@@ -1070,7 +1086,7 @@
     const target = index !== null ? candidates[index] : void 0;
     const chosen = index !== null ? labels[index] : want?.label ?? spoken;
     if (!target) {
-      closeWidget(el);
+      closeWidget(el, candidates);
       if (candidates.length === 0) {
         return {
           fieldId: spec.id,
@@ -1091,7 +1107,7 @@
     const showing = renderedText(el);
     const took = showsChoice(showing, chosen) && showing !== wasShowing;
     if (!took) {
-      closeWidget(el);
+      closeWidget(el, candidates);
       return { fieldId: spec.id, status: "rejected-by-page", wrote: chosen, found: showing };
     }
     return { fieldId: spec.id, status: "written", wrote: chosen };
@@ -1114,6 +1130,7 @@
       (q, i, all) => q && all.indexOf(q) === i
     );
     let lastLabels = [];
+    let lastShown = [];
     for (const query of queries) {
       const before = new Set(optionNodes());
       openWidget(el);
@@ -1130,6 +1147,7 @@
         candidates = optionNodes().filter((o) => !before.has(o) && ownsOptions(el, o) !== false);
         if (candidates.length > 0) break;
       }
+      lastShown = candidates;
       const labels = candidates.map((o) => (o.innerText ?? "").trim());
       const whole = query === spoken.trim() || query === spoken.split(",")[0].trim();
       const index = matchAmong(labels, spoken) ?? (whole ? matchAmong(labels, query) : null) ?? everyWordIn(labels, spoken);
@@ -1139,14 +1157,14 @@
         await sleep(200);
         const showing = renderedText(el);
         if (showsChoice(showing, chosen)) return { fieldId: spec.id, status: "written", wrote: chosen };
-        closeWidget(el);
+        closeWidget(el, candidates);
         return { fieldId: spec.id, status: "rejected-by-page", wrote: chosen, found: showing };
       }
       if (labels.length > 0) lastLabels = labels;
     }
     setNativeValue(input, "");
     announce(input, ["input"]);
-    closeWidget(el);
+    closeWidget(el, lastShown);
     if (lastLabels.length > 0) {
       return {
         fieldId: spec.id,
@@ -1275,6 +1293,7 @@
           if (outcome.status !== "written") return outcome;
           picked.push(option.label);
         }
+        closeWidget(el, optionNodes().filter((option) => ownsOptions(el, option) !== false));
         return { fieldId: id, status: "written", wrote: picked.join(", ") };
       }
       if (spec.kind === "radio" && el.getAttribute("role") === "radiogroup") {
@@ -4592,6 +4611,7 @@ ${text2}`.trim();
   async function runScript(conductor, fake, script, resolve = (ref) => ref.replace(/^\$/, "")) {
     const failures = [];
     const results = [];
+    let checks = 0;
     let last = null;
     const fail = (index, what) => failures.push(`step ${index + 1}: ${what}`);
     const ids = (list) => (list ?? []).map((item) => item.field).sort();
@@ -4614,10 +4634,12 @@ ${text2}`.trim();
       } else if ("expectResult" in step) {
         const want = step.expectResult;
         if (!last) {
+          checks++;
           fail(index, "no tool result to check");
           continue;
         }
         if (want.justFilled) {
+          checks++;
           const expected = want.justFilled.map(resolve).sort();
           if (JSON.stringify(ids(last.just_filled)) !== JSON.stringify(expected)) {
             fail(index, `just_filled ${JSON.stringify(ids(last.just_filled))}, expected ${JSON.stringify(expected)}`);
@@ -4625,17 +4647,21 @@ ${text2}`.trim();
         }
         if (want.notFilled) {
           for (const item of want.notFilled) {
+            checks++;
             const found = (last.not_filled ?? []).find((n) => n.field === resolve(item.field));
             if (!found) fail(index, `expected ${item.field} not filled`);
             else if (item.why && found.why !== item.why) fail(index, `${item.field} not filled because ${found.why}, expected ${item.why}`);
           }
         }
         if (want.waiting) {
+          checks++;
           const expected = want.waiting.map(resolve).sort();
           if (JSON.stringify(ids(last.waiting_for_yes)) !== JSON.stringify(expected)) {
             fail(index, `waiting ${JSON.stringify(ids(last.waiting_for_yes))}, expected ${JSON.stringify(expected)}`);
           }
         }
+        if (want.doNextHas) checks++;
+        if (want.doNextLacks) checks++;
         if (want.doNextHas && !String(last.do_next ?? "").includes(want.doNextHas)) {
           fail(index, `do_next "${last.do_next}" lacks "${want.doNextHas}"`);
         }
@@ -4649,6 +4675,7 @@ ${text2}`.trim();
           return field ? field.value : void 0;
         };
         for (const [ref, want] of Object.entries(step.expectFinal.values ?? {})) {
+          checks++;
           const got = value(ref);
           if (got === void 0) fail(index, `no field ${ref}`);
           else if (!String(Array.isArray(got) ? got.join(", ") : got).includes(want)) {
@@ -4656,15 +4683,17 @@ ${text2}`.trim();
           }
         }
         for (const ref of step.expectFinal.empty ?? []) {
+          checks++;
           const got = value(ref);
           if (got !== null) fail(index, `${ref} should be empty, is ${JSON.stringify(got)}`);
         }
         for (const words3 of step.expectFinal.promptHas ?? []) {
+          checks++;
           if (!fake.prompt.includes(words3)) fail(index, `the agent's prompt lacks "${words3}"`);
         }
       }
     }
-    return { ok: failures.length === 0, failures, results };
+    return { ok: failures.length === 0, failures, results, checks };
   }
 
   // tools/probe.ts

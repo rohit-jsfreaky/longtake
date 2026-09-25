@@ -62,8 +62,12 @@ async function main(): Promise<void> {
     const queries: Record<string, string[]> = {};
     for (let i = 0; i < rest.length; i++) {
       if (rest[i] !== "--query") continue;
-      const [css, list] = (rest[i + 1] ?? "").split("=");
-      if (css && list) queries[css] = list.split("|");
+      // On the last "=": a selector has its own ("input[name='ZIP Code']"), a query has none.
+      const arg = rest[i + 1] ?? "";
+      const cut = arg.lastIndexOf("=");
+      const css = arg.slice(0, cut);
+      const list = arg.slice(cut + 1);
+      if (cut > 0 && list) queries[css] = list.split("|");
     }
     const result = await capture(url, id, {
       dir: DIR,

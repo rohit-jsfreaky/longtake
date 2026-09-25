@@ -264,6 +264,15 @@ test.describe("the gate — nothing goes in that they did not clearly say", () =
     expect((await verdict(page, heard, { fieldId: "heard", value: "LinkedIn", evidence: "saw it on LinkedIn" })).write).toBe(true);
   });
 
+  // Discord lists both "Science" and "Computer Science": saying the second named the first too,
+  // two names read as not sure, and a plainly named answer waited for a yes.
+  test("an option named inside a longer one is not named as well", async ({ page }) => {
+    const discipline = { id: "d", label: "Discipline", kind: "select", required: false, options: ["Science", "Computer Science", "Political Science"].map((l) => ({ value: l, label: l })) };
+    expect((await verdict(page, discipline, { fieldId: "d", value: "Computer Science", evidence: "Computer Science mein" })).write).toBe(true);
+    const both = await verdict(page, discipline, { fieldId: "d", value: "Science", evidence: "Science ya Computer Science" });
+    expect(both.write).toBe(false);
+  });
+
   /** #13 */
   test("Twitter mapped to Social Media waits for their yes", async ({ page }) => {
     const v = await verdict(page, heard, { fieldId: "heard", value: "Social Media", evidence: "I heard from Twitter" });

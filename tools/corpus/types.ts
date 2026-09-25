@@ -10,10 +10,12 @@
  *   ax.json           Chrome's accessibility tree at capture, with a DOM path per control
  *   truth.json        the verified answer key: what each field really is
  *   fill.json         what we try on it, and what must happen — verified separately
+ *   conversation.json a whole conversation on it, through the real conductor — verified separately
  *   shots/page.png    full-page screenshot, for the human review
  */
 
 import type { FieldKind } from "../../core/src/types";
+import type { Step as TalkStep } from "../replay/run-script";
 
 /** The recording: a HAR plus one file per response body beside it, so the JSON can be cleaned. */
 export const HAR = "har/capture.har";
@@ -144,6 +146,13 @@ export type FillCase = {
 };
 
 export type FillPlan = { cases: FillCase[]; verified: { by: string; at: string } | null };
+
+/**
+ * A whole conversation on one form: what the person said, what the agent called, what must come
+ * back. Fields are `$f07` — truth keys, mapped to whatever ids the reader of the day gives them.
+ * `also`: truth keys an answer rightly changes too (a phone's country-code picker).
+ */
+export type Conversation = { name: string; steps: TalkStep[]; also?: string[]; verified: { by: string; at: string } | null };
 
 export type TruthPage = {
   page: number;

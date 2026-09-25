@@ -103,6 +103,48 @@ test.describe("a component dropdown is genuinely filled", () => {
     expect(await page.locator(".pop-w").count()).toBe(0);
   });
 
+  // Luma: the form sits in a popup that closes on Escape and on a click outside it, and its
+  // dropdown shows the pick as the input's own value. Read as not taken, the widget was "closed"
+  // after the pick — and the Escape closed the popup, with every answer in it.
+  test("a pick shown as the box's value is taken, and the popup around it stays open", async ({ page }) => {
+    await load(
+      page,
+      `<div id="popup">
+         <label id="q">How did you hear?</label>
+         <input id="h" role="combobox" aria-labelledby="q" aria-expanded="false" style="width:200px;height:24px">
+       </div>
+       <script>
+         const popup = document.getElementById('popup');
+         const input = document.getElementById('h');
+         const list = () => document.querySelector('.list');
+         document.addEventListener('keydown', (e) => { if (e.key !== 'Escape') return; if (list()) list().remove(); else popup.remove(); });
+         document.body.addEventListener('pointerdown', (e) => {
+           if (list()) { if (!e.target.closest('.list') && e.target !== input) list().remove(); }
+           else if (!popup.contains(e.target)) popup.remove();
+         });
+         input.addEventListener('pointerdown', () => {
+           if (list()) return;
+           const box = document.createElement('div');
+           box.className = 'list';
+           ['LinkedIn', 'Newsletter'].forEach((text) => {
+             const option = document.createElement('div');
+             option.setAttribute('role', 'option');
+             option.textContent = text;
+             option.style.height = '20px';
+             option.addEventListener('click', () => { input.value = text; box.remove(); });
+             box.appendChild(option);
+           });
+           document.body.appendChild(box);
+         });
+       </script>`,
+    );
+    await readDeep(page);
+    const [outcome] = await write(page, said("how_did_you_hear", "LinkedIn"));
+    expect(outcome!.status).toBe("written");
+    expect(await page.locator("#popup").count()).toBe(1);
+    expect(await page.inputValue("#h")).toBe("LinkedIn");
+  });
+
   test("the outcome reports the option's own wording", async ({ page }) => {
     await load(page, COMPONENT_SELECT("Work authorization", ["Yes", "No"]));
     await readDeep(page);

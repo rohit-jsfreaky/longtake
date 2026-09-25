@@ -258,16 +258,23 @@ export function optionNamedIn(spec: FieldSpec, evidence: string | undefined): { 
   const heard = ` ${normalise(evidence ?? "")} `;
   if (!heard.trim()) return null;
 
-  const named = (spec.options ?? [])
+  // Named in full, or by the name a person actually says — "India" for "India +91". Longest names
+  // first, each taking its words out of what was heard: "Computer Science" names Computer Science
+  // and not also "Science", an option of its own on Discord's list — two names meant "not sure",
+  // and a plainly named answer waited for a yes.
+  const names = (spec.options ?? [])
     .filter((option) => option.value !== "")
-    .filter((option) => {
-      // Named in full, or by the name a person actually says — "India" for "India +91".
-      return [normalise(option.label), bareName(option.label)].some(
-        (label) => label.length >= 2 && heard.includes(` ${label} `),
-      );
-    });
+    .flatMap((option) => [normalise(option.label), bareName(option.label)].filter((label) => label.length >= 2).map((label) => ({ option, label })))
+    .sort((a, b) => b.label.length - a.label.length);
+  let rest = heard;
+  const named = new Set<{ value: string; label: string }>();
+  for (const { option, label } of names) {
+    if (!rest.includes(` ${label} `)) continue;
+    named.add(option);
+    rest = rest.split(` ${label} `).join("  ");
+  }
 
-  return named.length === 1 ? named[0]! : null;
+  return named.size === 1 ? [...named][0]! : null;
 }
 
 /**
@@ -343,6 +350,10 @@ function readBack(el: HTMLElement): string {
  * its chosen value into a sibling `div`, not into the input it happens to own.
  */
 function renderedText(el: HTMLElement): string {
+  // A box you type into can show its choice as its own value — Luma's "How did you hear" puts
+  // "LinkedIn" in the input itself — and `innerText` never includes a value. Read as not taken,
+  // the pick was "rejected" and the widget closed on a form that had already moved on.
+  const own = el.tagName.toLowerCase() === "input" ? ((el as HTMLInputElement).value ?? "").trim() : "";
   // Walk up until something has text, rather than guessing at a container by class name.
   //
   // A class-based `closest()` looks tidier and gets this wrong. React-Select nests
@@ -352,10 +363,10 @@ function renderedText(el: HTMLElement): string {
   let node: HTMLElement | null = el.parentElement;
   for (let hops = 0; node && hops < 5; hops++) {
     const text = (node.innerText ?? "").replace(/\s+/g, " ").trim();
-    if (text) return text;
+    if (text) return own ? `${own} ${text}` : text;
     node = node.parentElement;
   }
-  return "";
+  return own;
 }
 
 /** Every radio sharing this one's name, wherever in the document they live. */
@@ -511,7 +522,7 @@ async function pickFromWidget(
   const chosen = index !== null ? labels[index]! : (want?.label ?? spoken);
 
   if (!target) {
-    closeWidget(el);
+    closeWidget(el, candidates);
     if (candidates.length === 0) {
       return {
         fieldId: spec.id,
@@ -539,7 +550,7 @@ async function pickFromWidget(
   const took = showsChoice(showing, chosen) && showing !== wasShowing;
 
   if (!took) {
-    closeWidget(el);
+    closeWidget(el, candidates);
     return { fieldId: spec.id, status: "rejected-by-page", wrote: chosen, found: showing };
   }
 
@@ -598,6 +609,7 @@ async function typeAndPick(spec: FieldSpec, el: HTMLElement, spoken: string): Pr
   );
   let lastLabels: string[] = [];
 
+  let lastShown: HTMLElement[] = [];
   for (const query of queries) {
     const before = new Set(optionNodes());
     openWidget(el);
@@ -617,6 +629,7 @@ async function typeAndPick(spec: FieldSpec, el: HTMLElement, spoken: string): Pr
       if (candidates.length > 0) break;
     }
 
+    lastShown = candidates;
     const labels = candidates.map((o) => (o.innerText ?? "").trim());
     const whole = query === spoken.trim() || query === spoken.split(",")[0]!.trim();
     const index = matchAmong(labels, spoken) ?? (whole ? matchAmong(labels, query) : null) ?? everyWordIn(labels, spoken);
@@ -626,7 +639,7 @@ async function typeAndPick(spec: FieldSpec, el: HTMLElement, spoken: string): Pr
       await sleep(200);
       const showing = renderedText(el);
       if (showsChoice(showing, chosen)) return { fieldId: spec.id, status: "written", wrote: chosen };
-      closeWidget(el);
+      closeWidget(el, candidates);
       return { fieldId: spec.id, status: "rejected-by-page", wrote: chosen, found: showing };
     }
     if (labels.length > 0) lastLabels = labels;
@@ -635,7 +648,7 @@ async function typeAndPick(spec: FieldSpec, el: HTMLElement, spoken: string): Pr
   // Leave the box as we found it — a half-typed search is not an answer.
   setNativeValue(input, "");
   announce(input, ["input"]);
-  closeWidget(el);
+  closeWidget(el, lastShown);
 
   if (lastLabels.length > 0) {
     return {
@@ -839,6 +852,9 @@ async function writeOne(
         if (outcome.status !== "written") return outcome;
         picked.push(option.label);
       }
+      // A picker that stays open for the next pick is closed once the last is in. Left open, Luma's
+      // list sat over the questions below it, and its search box was read as a question.
+      closeWidget(el, optionNodes().filter((option) => ownsOptions(el, option) !== false));
       return { fieldId: id, status: "written", wrote: picked.join(", ") };
     }
 

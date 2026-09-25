@@ -485,6 +485,12 @@ function kindOf(el: Element): FieldKind {
   // lost. The page under test had **no `<select>` elements at all** and twelve comboboxes.
   const role = el.getAttribute("role");
   const popup = el.getAttribute("aria-haspopup");
+  // …except where the input's own type says what the answer is. Tally's phone box is an
+  // `<input type=tel role=combobox>`: the list it opens is suggestions (a country), the answer is
+  // typed. Read as a dropdown, the number was "rejected" and the box's placeholder text was taken
+  // for its value.
+  const typed = tag === "input" ? ((el as HTMLInputElement).type || "").toLowerCase() : "";
+  if (typed === "tel" || typed === "email" || typed === "url" || typed === "number") return typed;
   if (role === "combobox" || popup === "listbox" || popup === "menu") return "select";
   if (role === "radiogroup") return "radio";
   if (role === "checkbox" || role === "switch") return "checkbox";
@@ -1016,6 +1022,7 @@ async function harvestAll(read: FormRead, settleMs: number): Promise<FormRead> {
     // never attribute another widget's options to this field.
     const before = new Set(allOptions());
     const opened = () => allOptions().some((option) => !before.has(option)) || el.getAttribute("aria-expanded") === "true";
+    let revealed: HTMLElement[] = [];
 
     try {
       openWidget(el);
@@ -1026,7 +1033,7 @@ async function harvestAll(read: FormRead, settleMs: number): Promise<FormRead> {
       await whenSettled(doc, settleMs, MENU_TIMEOUT_MS, opened);
       if (!opened() && !lastTry) return false;
 
-      let revealed = allOptions().filter((option) => !before.has(option));
+      revealed = allOptions().filter((option) => !before.has(option));
       // Already open before we got here, so nothing is "new" — read its own options instead.
       if (revealed.length === 0 && el.getAttribute("aria-expanded") === "true") {
         revealed = allOptions().filter((option) => ownsOptions(el, option) === true);
@@ -1064,7 +1071,8 @@ async function harvestAll(read: FormRead, settleMs: number): Promise<FormRead> {
       // A widget that refuses to open is not a crash. The field keeps no options, the binder
       // leaves it as free text, and the agent asks about it out loud instead.
     } finally {
-      closeWidget(el);
+      // Handed what it showed, so closing stops once the list is gone (see `closeWidget`).
+      closeWidget(el, revealed.length > 0 ? revealed : undefined);
       await sleep(40);
     }
     return true;

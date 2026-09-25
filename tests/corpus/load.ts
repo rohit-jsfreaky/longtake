@@ -12,7 +12,7 @@ import type { Page } from "@playwright/test";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
-import { HAR, type AxCapture, type FillPlan, type Locator, type Meta, type Truth } from "../../tools/corpus/types";
+import { HAR, type AxCapture, type Conversation, type FillPlan, type Locator, type Meta, type Truth } from "../../tools/corpus/types";
 import { replayFromHar } from "../../tools/corpus/replay-har";
 import { runSteps, settle } from "../../tools/corpus/steps";
 import type { ReadJoin, ReadSpec } from "../../tools/corpus/score";
@@ -22,7 +22,7 @@ export const CORPUS = resolve(process.cwd(), process.env.CORPUS_DIR ?? "corpus")
 /** One JSON per form per scorer, read by the report. Cleared at the start of every run. */
 export const RESULTS = resolve(process.cwd(), process.env.CORPUS_RESULTS ?? "corpus-results");
 
-export type CorpusForm = { id: string; dir: string; meta: Meta; ax: AxCapture; truth: Truth | null; fill: FillPlan | null };
+export type CorpusForm = { id: string; dir: string; meta: Meta; ax: AxCapture; truth: Truth | null; fill: FillPlan | null; talk: Conversation | null };
 
 /** Every captured form, read synchronously so specs can be generated from it. Empty without a corpus. */
 export function corpusForms(): CorpusForm[] {
@@ -39,6 +39,7 @@ export function corpusForms(): CorpusForm[] {
       ax: json<AxCapture>("ax.json"),
       truth: existsSync(join(dir, "truth.json")) ? json<Truth>("truth.json") : null,
       fill: existsSync(join(dir, "fill.json")) ? json<FillPlan>("fill.json") : null,
+      talk: existsSync(join(dir, "conversation.json")) ? json<Conversation>("conversation.json") : null,
     });
   }
   return forms;
@@ -54,6 +55,8 @@ declare global {
     __corpusSent?: string[];
     __corpusSession?: InstanceType<Window["__longtake"]["LongtakeSession"]>;
     __corpusFind?: (locator: Locator) => Located;
+    __corpusConductor?: InstanceType<Window["__longtake"]["Conductor"]>;
+    __corpusFake?: InstanceType<Window["__longtake"]["FakeVoice"]>;
   }
 }
 
@@ -160,13 +163,17 @@ export async function sentSoFar(page: Page, sent: Sent): Promise<Sent> {
 }
 
 /** Read the page the way the product does: wait for it to settle, read, open every dropdown. */
-export async function readLikeTheProduct(page: Page): Promise<ReadSpec[]> {
+export async function readLikeTheProduct(page: Page): Promise<{ specs: ReadSpec[]; readMs: number; harvestMs: number }> {
   return page.evaluate(async () => {
     const core = window.__longtake;
     await core.waitForForm();
-    const read = await core.harvestOptions(core.readForm());
+    // Timed apart: the read is what a person waits for on every page change, the harvest once.
+    const started = performance.now();
+    const first = core.readForm();
+    const readAt = performance.now();
+    const read = await core.harvestOptions(first);
     core.last = read;
-    return read.specs as unknown as ReadSpec[];
+    return { specs: read.specs as unknown as ReadSpec[], readMs: readAt - started, harvestMs: performance.now() - readAt };
   });
 }
 
@@ -240,6 +247,66 @@ export async function startSession(page: Page): Promise<void> {
     window.__corpusSession = session;
     core.last = session.read!;
   });
+}
+
+/**
+ * The whole product on the page — the conductor the site and the extension both run — with a
+ * FakeVoice where the microphone and the agent would be. `core.last` is its read, for the join.
+ */
+export async function startConductor(page: Page): Promise<void> {
+  await page.evaluate(async () => {
+    const core = window.__longtake;
+    const fake = new core.FakeVoice();
+    let memory = {} as never;
+    const conductor = new core.Conductor({
+      root: () => document,
+      ignore: "[data-longtake-ignore]",
+      memory: { load: () => memory, save: (next) => { memory = next as never; } },
+      logFrames: false,
+      services: { getToken: async () => "token", workletUrl: "", startVoice: fake.start },
+    });
+    await conductor.start();
+    await new Promise((ready) => setTimeout(ready, 20)); // session.ready arrives on the next tick
+    window.__corpusConductor = conductor;
+    window.__corpusFake = fake;
+    core.last = conductor.session.read!;
+  });
+}
+
+/**
+ * Play a conversation through the conductor. `ids` maps truth keys to today's spec ids. Every
+ * field is photographed before and after: one that changed although no call named it — nor
+ * `also` — was touched unasked.
+ */
+export async function talk(page: Page, script: Conversation, ids: Record<string, string>) {
+  return page.evaluate(async ({ script, ids }) => {
+    const core = window.__longtake;
+    const conductor = window.__corpusConductor!;
+    const fake = window.__corpusFake!;
+    const resolve = (ref: string) => {
+      const key = ref.replace(/^\$/, "");
+      return ids[key] ?? (ref.startsWith("$") ? `unread_${key}` : ref);
+    };
+    const photo = () => new Map(conductor.session.state().fields.map((f) => [f.spec.id, JSON.stringify(f.value)]));
+    const before = photo();
+    const report = await core.runScript(conductor, fake, { name: script.name, steps: script.steps }, resolve);
+    await new Promise((settle) => setTimeout(settle, 300));
+    const after = photo();
+
+    const asked = new Set((script.also ?? []).map(resolve));
+    for (const step of script.steps) {
+      if (!("tool" in step)) continue;
+      for (const [key, value] of Object.entries(step.args)) {
+        if (key.startsWith("$")) asked.add(resolve(key));
+        if (key === "field" && typeof value === "string") asked.add(resolve(value));
+        if (key === "fields" && Array.isArray(value)) for (const one of value) asked.add(resolve(String(one)));
+      }
+    }
+    const touched = [...after.keys()]
+      .filter((id) => !asked.has(id) && before.has(id) && before.get(id) !== after.get(id))
+      .map((id) => `${id} (${before.get(id)} → ${after.get(id)})`);
+    return { report, touched };
+  }, { script, ids });
 }
 
 export type Answer = { specId: string; also: string[]; value: string | string[] | boolean; evidence: string; hiddenCss?: string };

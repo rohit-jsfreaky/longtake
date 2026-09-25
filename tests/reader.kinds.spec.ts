@@ -122,6 +122,12 @@ test.describe("native non-input controls", () => {
   });
 });
 
+// Tally's phone box: a combobox for its country suggestions, a phone number for its answer.
+test("an input whose type names the answer keeps it, whatever list it opens", async ({ page }) => {
+  await load(page, `<input type="tel" role="combobox" aria-haspopup="listbox" aria-label="Phone" placeholder="Phone">`);
+  expect(only(await read(page)).kind).toBe("tel");
+});
+
 // A choice is something a person can pick that answers the question. Jotform, Lever and Slate open
 // every select with `<option value="">Please Select</option>` — it submits nothing — and it was in
 // the agent's list of answers.

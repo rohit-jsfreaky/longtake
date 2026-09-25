@@ -21,7 +21,9 @@ for (const form of forms) {
   test(`${form.id} — reading`, async ({ page }) => {
     test.skip(!form.meta.fillable, "replay does not reproduce this page — read from its snapshot instead");
     const sent = await openForm(page, form);
-    let specs = await readLikeTheProduct(page);
+    const first = await readLikeTheProduct(page);
+    let specs = first.specs;
+    const timing = { readMs: Math.round(first.readMs), harvestMs: Math.round(first.harvestMs) };
     // A field inside another origin's frame is out of this page's reach — the extension reads it
     // from inside that frame. Counted in the report, not scored as missing.
     const every = form.truth!.pages[0]!.fields;
@@ -34,7 +36,7 @@ for (const form of forms) {
     // product does when its page changes.
     for (let again = 0; join.stale > 0 && again < 2; again++) {
       test.info().annotations.push({ type: "read again", description: `${join.stale} fields were replaced after the read` });
-      specs = await readLikeTheProduct(page);
+      specs = (await readLikeTheProduct(page)).specs;
       join = await joinTruth(page, locators);
     }
     expect(join.stale, "the page keeps replacing its fields after every read").toBe(0);
@@ -44,7 +46,7 @@ for (const form of forms) {
     if (!form.truth!.verified) {
       test.info().annotations.push({ type: "unverified read", description: JSON.stringify({ counts: result.counts, elsewhere }) });
     } else {
-      saveResult("read", form.id, { ...result, elsewhere, checkedBy: [form.truth!.verified.by] });
+      saveResult("read", form.id, { ...result, elsewhere, timing, checkedBy: [form.truth!.verified.by] });
     }
     // Per run, beside the saved file (which the next run overwrites) — so a flaky field shows up.
     const wrong = result.rows.filter((row) => row.problems.length > 0).map((row) => `${row.key}: ${row.problems.join("; ")}`);

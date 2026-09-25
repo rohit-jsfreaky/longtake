@@ -154,6 +154,16 @@ test.describe("a tag picker", () => {
     expect(await page.textContent("#t .tags")).toBe("Python Go Rust");
     expect([...(r.value as string[])].sort()).toEqual(["Go", "Python", "Rust"]);
   });
+
+  // Luma's pickers stay open for the next pick. Left open after the last one, the list sat over the
+  // questions below it, and its search box was read as a question of its own.
+  test("a picker that stays open between picks is closed after the last", async ({ page }) => {
+    await load(page, TAGS.replace("picked.push(o); tags.textContent = picked.join(' '); close();", "picked.push(o); tags.textContent = picked.join(' '); li.remove();"));
+    const r = await harvestAndWrite(page, "languages", ["Python", "Go"]);
+    expect(r.outcome.status).toBe("written");
+    expect(await page.textContent("#t .tags")).toBe("Python Go");
+    expect(await page.locator("[role='listbox']").count()).toBe(0);
+  });
 });
 
 test.describe("a slider", () => {
