@@ -349,7 +349,7 @@ export async function talk(page: Page, script: Conversation, ids: Record<string,
   }, { script, ids });
 }
 
-export type Answer = { specId: string; also: string[]; value: string | string[] | boolean; evidence: string; hiddenCss?: string };
+export type Answer = { specId: string; also: string[]; value: string | string[] | boolean; evidence: string; how?: string; hiddenCss?: string };
 
 /**
  * One answer, exactly as the agent's `fill_fields` call carries it, with everything they said
@@ -357,14 +357,14 @@ export type Answer = { specId: string; also: string[]; value: string | string[] 
  * moved some other field — one nobody spoke to — is caught.
  */
 export async function answer(page: Page, input: Answer) {
-  return page.evaluate(async ({ specId, also, value, evidence, hiddenCss }) => {
+  return page.evaluate(async ({ specId, also, value, evidence, how, hiddenCss }) => {
     const core = window.__longtake;
     const session = window.__corpusSession!;
     const photo = () => new Map(session.state().fields.map((f) => [f.spec.id, JSON.stringify(f.value)]));
     const labels = new Map(session.state().fields.map((f) => [f.spec.id, f.spec.label || f.spec.id]));
 
     const before = photo();
-    const done = await session.fill({ [specId]: { value, evidence } }, evidence);
+    const done = await session.fill({ [specId]: { value, evidence, ...(how ? { how } : {}) } }, evidence);
     await new Promise((settle) => setTimeout(settle, 300));
     const after = photo();
 

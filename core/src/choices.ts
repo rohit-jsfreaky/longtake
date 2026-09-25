@@ -15,24 +15,18 @@ export function normalise(text: string): string {
   return text.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 }
 
-/** Words that mean no, in either of the two languages Longtake is built to hear. */
-export const MEANS_NO = /\b(no|not|false|never|decline|disagree|refuse|nahi|nahin)\b/i;
-/** Words that mean yes. Only consulted once the negatives have had their say. */
-export const MEANS_YES = /\b(yes|true|agree|agreed|accept|confirm|ok|okay|sure|haan|han|ji|sahi)\b/i;
-
 /**
- * Did the speaker mean yes?
+ * A tick-box's answer: true or false, as the model gave it — never read out of words.
  *
- * The negative is tested first and that ordering is the whole point: "I do not agree" contains
- * the word "agree", and a tick-box for a privacy policy is not the place to get that backwards.
- * Anchoring on the first word instead — which is the obvious implementation — fails on "I agree",
- * which is how most people actually say it.
+ * It used to read "haan", "I agree" and "I do not agree" with lists of yes- and no-words, which
+ * knew two languages and got a consent box backwards the day someone said it a third way. Whether
+ * they agreed is the model's to hear; the tool asks it for a boolean. Anything else is no answer.
  */
-export function readAsYesOrNo(value: unknown): boolean {
+export function readAsYesOrNo(value: unknown): boolean | null {
   if (typeof value === "boolean") return value;
-  const text = String(value);
-  if (MEANS_NO.test(text)) return false;
-  return MEANS_YES.test(text);
+  if (value === "true") return true;
+  if (value === "false") return false;
+  return null;
 }
 
 /**

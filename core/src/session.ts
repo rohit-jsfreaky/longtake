@@ -311,6 +311,9 @@ export class LongtakeSession {
         filled: state.fields.filter((f) => f.value !== null).map((f) => f.spec.id),
         remembered: state.fields.some((f) => f.source === "memory"),
         toConfirm: state.fields.filter((f) => f.pending?.reason === "from_last_time").map((f) => fieldName(f.spec)),
+        recalled: state.fields.filter((f) => f.source === "memory").length,
+        fresh: state.fields.filter((f) => f.value === null && !f.pending && !f.declined).length,
+        learns: Boolean(this.options.understand),
       },
     );
   }
@@ -635,9 +638,14 @@ export class LongtakeSession {
     const claimed: SpokenValue[] = [];
     for (const [fieldId, raw] of Object.entries(args)) {
       if (!raw || typeof raw !== "object") continue;
-      const { value, evidence } = raw as { value?: unknown; evidence?: unknown };
+      const { value, evidence, how } = raw as { value?: unknown; evidence?: unknown; how?: unknown };
       if (value === undefined || value === null) continue;
-      claimed.push({ fieldId, value: value as SpokenValue["value"], evidence: typeof evidence === "string" ? evidence : "" });
+      claimed.push({
+        fieldId,
+        value: value as SpokenValue["value"],
+        evidence: typeof evidence === "string" ? evidence : "",
+        ...(how === "named" || how === "inferred" || how === "unsure" ? { how } : {}),
+      });
     }
 
     // Every quote is checked against what was actually said, then every choice against the gate.

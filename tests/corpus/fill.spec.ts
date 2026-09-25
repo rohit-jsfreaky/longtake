@@ -39,7 +39,7 @@ for (const form of forms) {
         continue;
       }
       const also = (await Promise.all((plan.expect.also ?? []).map(specFor))).filter((id): id is string => Boolean(id));
-      const done = await answer(page, { specId, also, value: plan.value, evidence: plan.evidence, hiddenCss: plan.expect.hidden?.css });
+      const done = await answer(page, { specId, also, value: plan.value, evidence: plan.evidence, ...(plan.how ? { how: plan.how } : {}), hiddenCss: plan.expect.hidden?.css });
       runs.push({ outcome: done.outcome, shows: done.shows === null ? null : shown(done.shows), touched: done.touched, hidden: done.hidden, call: done.call });
     }
 

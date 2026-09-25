@@ -35,10 +35,11 @@ export type Pending = {
   /** What they actually said. */
   heard: string;
   /**
-   * Not named: they said something the form does not offer. Hedged: they were not sure. From last
+   * Not named: they said something the form does not offer. Hedged: they were not sure. Inferred:
+   * the agent worked it out rather than heard it. From last
    * time: an answer from an earlier form that is not certain enough to go in unasked.
    */
-  reason: "not_named" | "hedged" | "from_last_time";
+  reason: "not_named" | "hedged" | "inferred" | "from_last_time";
   /** The exact value to write on a yes, when it is not just the suggestion (a list, a yes/no). */
   value?: SpokenValue["value"];
   /** From last time: the saved answer, and why it waits. */

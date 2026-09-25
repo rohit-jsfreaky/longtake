@@ -43,6 +43,11 @@ export type FieldState = {
   pending?: Pending;
   /** What the form itself says is wrong with this field, word for word. */
   error?: string;
+  /**
+   * An answer from their last form: the saved answer it is, and whether it went straight in (sure)
+   * or waits for their yes. What it means is on the field itself (`spec.understood`).
+   */
+  recalled?: { factId: string; sure: boolean };
 };
 
 export type FormState = {
@@ -102,6 +107,8 @@ export function snapshot(read: FormRead, ledger: Ledger, title = "", buttons?: A
     if ((source === "spoken" || source === "memory") && entry) state.evidence = entry.evidence;
     const pending = ledger.pendingFor(spec.id);
     if (pending && value === null) state.pending = pending;
+    if (source === "memory" && entry?.factId) state.recalled = { factId: entry.factId, sure: true };
+    else if (value === null && pending?.reason === "from_last_time" && pending.factId) state.recalled = { factId: pending.factId, sure: false };
     const error = el && el.isConnected ? readError(el) : null;
     if (error) state.error = error;
     fields.push(state);

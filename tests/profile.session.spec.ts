@@ -117,7 +117,7 @@ test.describe("a returning person", () => {
     let v = await view(page);
     expect(v.fields.email).toMatchObject({ value: null, pending: "from_last_time" });
     expect(v.move.kind).toBe("confirm_recalled");
-    expect(v.greeting).toMatch(/From last time I also have Email — they're on screen\. Still right\?$/);
+    expect(v.greeting).toMatch(/I've filled 2 from last time — your name and where you're based; 2 are new\. Email needs a quick yes — still right\?$/);
 
     const result = await tool(page, "confirm", { field: "email", agreed: true, evidence: "haan sahi hai" }, "haan sahi hai");
     expect(result.just_filled).toBeTruthy();

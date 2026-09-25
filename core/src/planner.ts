@@ -21,7 +21,7 @@ import { fieldName } from "./types";
 
 export type Move =
   /** An answer is waiting for their yes. Always first: nothing else makes sense until it is settled. */
-  | { kind: "confirm"; field: FieldFacts; suggestion: string; heard: string; reason: "not_named" | "hedged" }
+  | { kind: "confirm"; field: FieldFacts; suggestion: string; heard: string; reason: "not_named" | "hedged" | "inferred" }
   /** Answers from last time that wait for a yes — a few at once, since one yes can settle them all. */
   | { kind: "confirm_recalled"; fields: { field: FieldFacts; suggestion: string; why?: string }[] }
   /** The form rejected something that went in. Before anything new — it is a mistake on the page now. */
@@ -37,7 +37,10 @@ export type Move =
   /** This page is done and the form has another. Ask, and press Next only on their yes. */
   | { kind: "next_page"; label: string; keep?: KeepFacts }
   /** Nothing left that is ours to do. */
-  | { kind: "handover"; theirs: string[]; submit?: string; keep?: KeepFacts };
+  | { kind: "handover"; theirs: string[]; submit?: string; keep?: KeepFacts; review?: Review };
+
+/** Answers they did not just speak, worth their eye before they send: from last time, typed by them. */
+export type Review = { fromLastTime: number; typed: number };
 
 /** One thing to settle about next time. */
 export type ProfileQuestionFacts = { field: string; question: string; kind: "changed" | "forget"; was: string; now?: string };
@@ -154,7 +157,7 @@ export function nextMove(state: FormState, plan: Plan): Move {
       const together = open
         .filter((f) => later.has(first.field) || !later.has(f.spec.id))
         .map((f) => factsOf(f.spec, specs))
-        .filter((facts) => facts.group === first.group && facts.section === first.section);
+        .filter((facts) => facts.group === first.group && facts.section === first.section && facts.whole === first.whole);
       return { kind: "ask", fields: together };
     }
     // The next few, together — but not across into a group, which is asked as its own question.
@@ -179,9 +182,12 @@ export function nextMove(state: FormState, plan: Plan): Move {
   }
   if (next) return { kind: "next_page", label: next.label, ...keep };
 
+  const fromLastTime = state.fields.filter((f) => f.source === "memory").length;
+  const typed = state.fields.filter((f) => f.source === "typed").length;
+  const review: { review?: Review } = fromLastTime + typed > 0 ? { review: { fromLastTime, typed } } : {};
   return state.submitLabel
-    ? { kind: "handover", theirs: state.theirs, submit: state.submitLabel, ...keep }
-    : { kind: "handover", theirs: state.theirs, ...keep };
+    ? { kind: "handover", theirs: state.theirs, submit: state.submitLabel, ...keep, ...review }
+    : { kind: "handover", theirs: state.theirs, ...keep, ...review };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════════════
@@ -225,6 +231,15 @@ function askFor(fields: FieldFacts[]): string {
   return now.length > 1 ? `these together, in one question: ${now.map(describe).join("; ")}` : describe(now[0]!);
 }
 
+/** "look it over — especially the 12 from their last form" */
+function lookFirst(review: Review): string {
+  const parts = [
+    review.fromLastTime > 0 ? `the ${review.fromLastTime} from their last form` : "",
+    review.typed > 0 ? `the ${review.typed} they typed` : "",
+  ].filter(Boolean);
+  return `look it over — especially ${parts.join(" and ")} —`;
+}
+
 /** Before moving on: once, whether to keep the personal answers they gave for next time. */
 function keepFirst(keep: KeepFacts | undefined): string {
   if (!keep) return "";
@@ -235,9 +250,9 @@ function keepFirst(keep: KeepFacts | undefined): string {
 export function doNext(move: Move): string {
   switch (move.kind) {
     case "confirm":
-      return move.reason === "hedged"
-        ? `They weren't sure for "${move.field.question}" (they said: "${move.heard}"). Ask which it is before anything goes in.`
-        : `"${move.field.question}" is waiting for their yes: they said "${move.heard}", and the closest the form offers is "${move.suggestion}". Ask if that's right, then call confirm_answer for ${move.field.field} with agreed true or false — you judge their reply, in whatever words. If not, offer the other choices.`;
+      if (move.reason === "hedged") return `They weren't sure for "${move.field.question}" (they said: "${move.heard}"). Ask which it is before anything goes in.`;
+      if (move.reason === "inferred") return `You worked out "${move.suggestion}" for "${move.field.question}" from "${move.heard}" — they did not say it. Ask if that's right, then call confirm_answer for ${move.field.field} with agreed true or false.`;
+      return `"${move.field.question}" is waiting for their yes: they said "${move.heard}", and the closest the form offers is "${move.suggestion}". Ask if that's right, then call confirm_answer for ${move.field.field} with agreed true or false — you judge their reply, in whatever words. If not, offer the other choices.`;
     case "confirm_recalled": {
       const list = move.fields.map((f) => `${f.field.question}: "${f.suggestion}"`).join("; ");
       return `From their last form, ready to go in on their yes: ${list}. Say them briefly and ask if they are still right. For each, call confirm_answer with agreed true if they accept it, in any words, or false if not; if they give a new answer, fill it with fill_fields instead.`;
@@ -259,6 +274,9 @@ export function doNext(move: Move): string {
         const where = move.fields[0]!.section ? ` under "${move.fields[0]!.section}"` : "";
         return `Ask for their address${where} as one question — ${move.fields.map((f) => f.question).join(", ")}.`;
       }
+      if (move.fields.length > 1 && move.fields.every((f) => f.group === "split")) {
+        return `Ask for "${move.fields[0]!.whole}" as one answer, the way a person says it — it goes into ${move.fields.map((f) => f.question.split(" — ").pop()).join(", ")}.`;
+      }
       if (move.fields.length > 1 && move.fields.every((f) => f.group === "phone")) {
         return `Ask for their phone number, with its country code, as one question.`;
       }
@@ -276,7 +294,8 @@ export function doNext(move: Move): string {
     case "next_page":
       return keepFirst(move.keep) + `Everything needed on this page is in. Ask if they're ready for the next page, and press "${move.label}" with press_form_button only on their yes.`;
     case "handover": {
-      const send = move.submit ? `look it over and press "${move.submit}" themselves` : "look it over and send it themselves";
+      const look = move.review ? lookFirst(move.review) : "look it over";
+      const send = move.submit ? `${look} and press "${move.submit}" themselves` : `${look} and send it themselves`;
       return keepFirst(move.keep) + (move.theirs.length > 0
         ? `Nothing left for you. Say everything they told you is in, that ${move.theirs.join(" and ")} is theirs to do by hand, and that they should ${send}.`
         : `Nothing left for you. Say everything they told you is in, and that they should ${send}.`);
@@ -380,6 +399,8 @@ export function resumeLine(state: FormState, move: Move): string {
       const what =
         move.fields.length > 1 && first?.group === "address"
           ? "your address"
+          : move.fields.length > 1 && first?.group === "split"
+            ? (first.whole ?? "the next one")
           : move.fields.length > 1 && first?.group === "phone"
             ? "your phone number"
             : move.fields.length > 1

@@ -41,7 +41,7 @@ import { exclusively } from "./dom-path";
 import type { FieldHandles, FieldSpec, SpokenValue } from "./types";
 
 export type { ClearOutcome, FieldValue, WriteOutcome } from "./adapters/kit";
-export { MEANS_NO, MEANS_YES, matchOption, optionNamedIn, realChoices } from "./choices";
+export { matchOption, optionNamedIn, realChoices } from "./choices";
 export { asFieldDate } from "./adapters/typing";
 
 /**

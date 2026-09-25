@@ -76,14 +76,11 @@ const TIMEOUT_SECONDS = 60;
  * outcome — which is the opposite of what a helpful assistant assumes by default.
  */
 const TOOL_DESCRIPTION = [
-  "Write answers into the form the person is looking at.",
-  "Call this as soon as you have heard even one answer, and call it again each time you hear more —",
-  "you do not need to wait until the person has finished.",
-  "Include ONLY fields the person actually spoke about.",
-  "Leaving a field out is always correct and costs nothing; the form will ask about it later.",
-  "Filling one they did not mention is never acceptable, even if the answer seems obvious from",
-  "something else they said, and even if the field is required.",
-  "Every answer carries the person's own words in `evidence`, quoted as they said them.",
+  "Write answers into the form. Call it the moment you hear one answer, and again each time you hear more.",
+  "Include only fields the person spoke about: leaving one out is always fine; filling one they did not mention never is, even if it seems obvious or is required.",
+  "Each answer carries evidence — their own words, quoted — and how you heard it:",
+  "named (they said this answer, in any words or language), inferred (you worked it out, or chose the closest option to what they said), unsure (they hedged or gave a range).",
+  "Inferred and unsure answers wait for their yes.",
 ].join(" ");
 
 /** Format hints, so a spoken phrase arrives as something the field will accept. */
@@ -185,10 +182,13 @@ function fieldSchema(spec: FieldSpec): JsonSchema {
         description:
           "The person's own words that this answer came from, quoted. Not a paraphrase. If you cannot quote them, you did not hear this answer and the field must be left out.",
       },
+      // How it was heard is the model's judgement of language — whether "2 or 3 years" is unsure,
+      // whether "haan" answered this yes-or-no. The gate (gate.ts) acts on it instead of word lists.
+      how: { type: "string", enum: ["named", "inferred", "unsure"] },
     },
-    // Both, always. This is what makes an unsupported answer unrepresentable rather than merely
+    // Always. This is what makes an unsupported answer unrepresentable rather than merely
     // discouraged — there is no shape of this object that carries a value without its source.
-    required: ["value", "evidence"],
+    required: ["value", "evidence", "how"],
     additionalProperties: false,
   };
 }
@@ -246,7 +246,7 @@ export function buildClearTool(specs: FieldSpec[]): VoiceAgentTool {
     type: "function",
     name: CLEAR_TOOL_NAME,
     description:
-      "Empty fields the person asked you to clear, remove or undo. Only when they ask for it. Never pick another option as a way of clearing one.",
+      "Empty fields the person asked you to clear, remove or undo, with their words. Only when they ask for it. Never pick another option, like a decline choice, as a way of clearing one. If a result says one can't be emptied, tell them why.",
     parameters: {
       type: "object",
       properties: {
@@ -318,7 +318,7 @@ export function buildLaterTool(specs: FieldSpec[]): VoiceAgentTool {
     type: "function",
     name: LATER_TOOL_NAME,
     description:
-      "Put fields off until the end when the person says skip it, later, come back to it, or do the rest first. Nothing is filled or cleared; they are asked again once everything else is done.",
+      "Put fields off until the end when the person says skip it, later, come back to it, or do the rest first — then move on. Nothing is filled or cleared; they are asked again once everything else is done. Any field can wait: never tell them the form makes them answer in order.",
     parameters: {
       type: "object",
       properties: {
@@ -389,7 +389,7 @@ export function buildPressTool(actions: { id: string; kind: string; label: strin
     type: "function",
     name: PRESS_TOOL_NAME,
     description:
-      "Press a button on the form when the person asks: add another entry to a section, or go to the next page. Only when they ask for it. There is no submit button here — the person always submits themselves.",
+      "Press a button on the form when the person asks: add another entry (another job, another school), or go to the next page. Only when they ask for it; then carry on with what appears. page_did_not_change means the form refused to move on: tell them what it asked for. There is no submit button here — the person always submits themselves.",
     parameters: {
       type: "object",
       properties: {

@@ -76,6 +76,9 @@ function easyGroupOf(spec: FieldSpec): (typeof EASY)[number] | undefined {
 /** How many easy answers to name before it stops being an invitation and starts being a list. */
 const MOST_EASY_TO_NAME = 5;
 
+/** The opening line is spoken verbatim: besides the form's own name, at most this many words. */
+const MOST_WORDS = 30;
+
 /** Is this field one of the ones everybody can answer without thinking? */
 export function isEasy(spec: FieldSpec): boolean {
   return easyGroupOf(spec) !== undefined;
@@ -114,6 +117,9 @@ export function openingLine(
     filled = [],
     remembered = false,
     toConfirm = [],
+    recalled = 0,
+    fresh = 0,
+    learns = false,
   }: {
     /** Fields that already have an answer in them when the call opens. */
     filled?: Iterable<string>;
@@ -121,6 +127,11 @@ export function openingLine(
     remembered?: boolean;
     /** Questions with an answer from last time that waits for their yes. Asked first. */
     toConfirm?: string[];
+    /** How many answers went in from last time, and how many questions are new — a returning person's line. */
+    recalled?: number;
+    fresh?: number;
+    /** Whether what they say now can be kept for next time — only when the form's meanings can be known. */
+    learns?: boolean;
   } = {},
 ): string {
   const fields = answerable(specs);
@@ -171,16 +182,45 @@ export function openingLine(
         remembered ? " from last time" : ""
       } — give ${alreadyIn.length === 1 ? "it" : "them"} a quick look.`
     : "";
+  const shortKept = alreadyIn.length
+    ? ` I've already put in ${spokenList(alreadyIn.map((group) => group.say).slice(0, 3))}${remembered ? " from last time" : ""}.`
+    : "";
+
+  // Spoken verbatim, so short: besides the form's own name, at most MOST_WORDS. The richest line
+  // that fits is said — softer phrases go before any easy question does.
+  const words = (line: string) => line.replace(name, "").split(/\s+/).filter((word) => /\w/.test(word)).length;
+  const fits = (lines: string[]) => lines.find((line) => words(line) <= MOST_WORDS) ?? lines[lines.length - 1]!;
+  const counts = (n: number) => Array.from({ length: n }, (_, i) => n - i); // n, n-1, … 1
+
+  // A returning person: how much is already done, what needs a yes, what is new — and never a
+  // read-out of what went in. They hear it only if they ask (the persona: four at a time).
+  if (remembered && recalled > 0) {
+    const all = alreadyIn.map((group) => group.say).slice(0, 3);
+    const done = (n: number) =>
+      ` I've filled ${recalled} from last time${n > 0 ? ` — ${spokenList(all.slice(0, n))}` : ""}${fresh > 0 ? `; ${fresh} ${fresh === 1 ? "is" : "are"} new` : ""}.`;
+    const lines = [...counts(all.length), 0].map((n) => {
+      if (toConfirm.length === 0) return `${intro}${done(n)} Want to hear them, or ${fresh > 0 ? "do the new ones" : "look it over yourself"}?`;
+      const named = toConfirm.slice(0, 2);
+      const extra = toConfirm.length - named.length;
+      const which = extra > 0 ? `${named.join(", ")} and ${extra} more` : spokenList(named);
+      return `${intro}${done(n)} ${which} ${toConfirm.length === 1 ? "needs" : "need"} a quick yes — still right?`;
+    });
+    return fits(lines);
+  }
 
   // Answers from last time that wait for a yes are the first thing to settle — so the line ends on
   // that question, not on an invitation to talk that the next turn would have to take back.
   if (toConfirm.length > 0) {
     const named = toConfirm.slice(0, 3);
     const more = toConfirm.length > named.length ? ` and ${toConfirm.length - named.length} more` : "";
-    return `${intro}${kept} From last time I also have ${spokenList(named)}${more} — they're on screen. Still right?`;
+    return fits([kept, shortKept].map((k) => `${intro}${k} From last time I also have ${spokenList(named)}${more} — they're on screen. Still right?`));
   }
   if (toSay.length > 0) {
-    return `${intro}${kept} Easy ones first: ${spokenList(toSay)}. Say them all at once if you like.`;
+    const tails = learns && !remembered ? ["Say them all at once — next time I'll remember.", "Say them all at once."] : ["Say them all at once if you like.", "Say them all at once."];
+    const lines = counts(toSay.length).flatMap((n) =>
+      [kept, shortKept].flatMap((k) => tails.map((tail) => `${intro}${k} Easy ones first: ${spokenList(toSay.slice(0, n))}. ${tail}`)),
+    );
+    return fits(lines);
   }
   if (alreadyIn.length > 0) {
     return `${intro}${kept} The rest needs you — ready when you are.`;
@@ -265,7 +305,9 @@ export type FieldFacts = {
   /** How many options there are, when there are too many to say — point at the screen instead. */
   choice_count?: number;
   /** Fields that are one question to a person, however many boxes the form splits them into. */
-  group?: "address" | "phone";
+  group?: "address" | "phone" | "split";
+  /** For a split answer: the question over its boxes — "What is your date of birth?". */
+  whole?: string;
   /** A list that fills in as you type — nothing to read out; what they say is looked up. */
   searchable?: boolean;
   /** A slider's range. */
@@ -307,6 +349,16 @@ function addressFields(specs: FieldSpec[]): Set<string> {
   return grouped;
 }
 
+/**
+ * One answer the form splits across boxes — GOV.UK's day, month and year under "What is your date of
+ * birth?". Structure: several boxes under the same question, each a piece. Asked once, as a person
+ * says it; the pieces are the agent's to put in their boxes.
+ */
+function splitAnswer(spec: FieldSpec, all: FieldSpec[]): boolean {
+  if (!spec.part) return false;
+  return all.some((other) => other !== spec && other.part && other.label === spec.label && (other.section ?? "") === (spec.section ?? ""));
+}
+
 // The phone number's pieces are structure, shared with the fill and the profile: phones.ts.
 export { phoneFields };
 
@@ -342,6 +394,10 @@ export function factsOf(spec: FieldSpec, all: FieldSpec[] = [spec]): FieldFacts 
 
   if (addressFields(all).has(spec.id)) facts.group = "address";
   else if (phoneFields(all).has(spec.id)) facts.group = "phone";
+  else if (splitAnswer(spec, all)) {
+    facts.group = "split";
+    facts.whole = (spec.label || spec.id).replace(/\s*\*\s*$/, "").trim();
+  }
   if (spec.searchable) facts.searchable = true;
   if (spec.range) facts.range = { min: spec.range.min, max: spec.range.max };
   return facts;

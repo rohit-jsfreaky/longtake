@@ -133,6 +133,8 @@ export type FillCase = {
   value: string | string[] | boolean;
   /** Their words. Passed as everything they said, so the quote check sees it. */
   evidence: string;
+  /** How the agent heard it — named when left out. A hedge is the agent's to hear, not a word list's. */
+  how?: "named" | "inferred" | "unsure";
   expect: {
     /** `held`: waiting for their yes (an answer the page does not offer, a hedge). */
     outcome: "written" | "refused" | "held";

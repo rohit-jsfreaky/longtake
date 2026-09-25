@@ -245,7 +245,7 @@ test.describe("one form state — where every value came from", () => {
       await s.open();
       return s.greeting();
     });
-    expect(greeting).toContain("I've already put in where you're based from last time");
+    expect(greeting).toContain("I've filled 1 from last time — where you're based");
     expect(greeting).not.toMatch(/Easy ones first:[^.]*where you're based/);
   });
 });
@@ -298,15 +298,30 @@ test.describe("the gate — nothing goes in that they did not clearly say", () =
     expect((await verdict(page, heard, { fieldId: "heard", value: "Social Media", evidence: "no, not that" }, held)).write).toBe(false);
   });
 
-  test("yes and no — in English or Hindi — answer a yes-or-no question", async ({ page }) => {
-    expect((await verdict(page, relocate, { fieldId: "r", value: "Yes", evidence: "haan bilkul" })).write).toBe(true);
-    expect((await verdict(page, relocate, { fieldId: "r", value: "No", evidence: "nahi, I can't move" })).write).toBe(true);
+  test("yes and no — in English or Hindi — answer a yes-or-no question, as the agent heard them", async ({ page }) => {
+    expect((await verdict(page, relocate, { fieldId: "r", value: "Yes", evidence: "haan bilkul", how: "named" })).write).toBe(true);
+    expect((await verdict(page, relocate, { fieldId: "r", value: "No", evidence: "nahi, I can't move", how: "named" })).write).toBe(true);
   });
 
-  /** #14 */
-  test("'two and a half or three years' waits", async ({ page }) => {
-    const v = await verdict(page, years, { fieldId: "years", value: "3 years", evidence: "about 2 and a half or 3 years" });
+  /** #14 — the agent hears the hedge and says so; code keeps no list of hedging words. */
+  test("'two and a half or three years' waits when the agent heard it as unsure", async ({ page }) => {
+    const v = await verdict(page, years, { fieldId: "years", value: "3 years", evidence: "about 2 and a half or 3 years", how: "unsure" });
     expect(v).toMatchObject({ write: false, pending: { reason: "hedged" } });
+  });
+
+  test("an answer the agent worked out, rather than heard, waits for their yes", async ({ page }) => {
+    const v = await verdict(page, phone, { fieldId: "phone", value: "98765 43210", evidence: "same as my WhatsApp", how: "inferred" });
+    expect(v).toMatchObject({ write: false, pending: { suggestion: "98765 43210", reason: "inferred" } });
+  });
+
+  test("an agent calling a mapped choice 'named' is still held: the option's name is not in their words", async ({ page }) => {
+    const v = await verdict(page, heard, { fieldId: "heard", value: "Social Media", evidence: "I heard from Twitter", how: "named" });
+    expect(v).toMatchObject({ write: false, pending: { reason: "not_named" } });
+  });
+
+  test("a yes or no in any language is the agent's to hear: 'named' on a yes-or-no question goes in", async ({ page }) => {
+    expect((await verdict(page, relocate, { fieldId: "r", value: "Yes", evidence: "bilkul, kyun nahi", how: "named" })).write).toBe(true);
+    expect((await verdict(page, relocate, { fieldId: "r", value: "Yes", evidence: "bilkul, kyun nahi", how: "inferred" })).write).toBe(false);
   });
 
   test("and a plain answer settles it", async ({ page }) => {

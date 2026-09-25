@@ -1051,11 +1051,22 @@ export function titleOf(read: FormRead, root: Document | Element = document): st
   )[0];
 
   if (firstField) {
-    const above = deepQueryAll(root, "h1,h2,h3,h4,[role='heading']")
+    const above = deepQueryAll(root, "h1,h2,h3,h4,h5,h6,[role='heading']")
       .filter(isVisible)
-      .filter((heading) => heading.compareDocumentPosition(firstField) & FOLLOWING);
-    const nearest = above[above.length - 1];
-    const text = nearest ? cleanLabel(textOf(nearest)) : "";
+      .filter((heading) => heading.compareDocumentPosition(firstField) & FOLLOWING)
+      .filter((heading) => cleanLabel(textOf(heading)) !== "");
+    // The page's own title names the form ("Job Application for Software Engineer, Backend at
+    // Glean"): the heading it contains is the form's name — not the nearest "Apply for this job",
+    // "Personal information", or a question's own heading. Else the nearest heading, as a site's
+    // header ("Acme Careers") sits above a form's own title.
+    const flat = (text: string) => text.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+    const pageTitle = flat(ownerDocumentOf(root).title ?? "");
+    const named = above.filter((heading) => {
+      const text = flat(textOf(heading));
+      return text.length >= 4 && pageTitle.includes(text);
+    });
+    const chosen = named[0] ?? above[above.length - 1];
+    const text = chosen ? cleanLabel(textOf(chosen)) : "";
     if (text) return text.slice(0, 80);
   }
 

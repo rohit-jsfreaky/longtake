@@ -1408,8 +1408,8 @@
     const group = el.parentElement?.closest("[aria-labelledby], [aria-label], fieldset");
     if (group) {
       const boxes = fieldsIn(group).length;
-      const named2 = boxes <= MOST_PARTS ? labelOf(group) : null;
-      if (named2 && whole(named2.text)) return { text: named2.text, from: named2.from, boxes };
+      const named = boxes <= MOST_PARTS ? labelOf(group) : null;
+      if (named && whole(named.text)) return { text: named.text, from: named.from, boxes };
     }
     let block = el.parentElement;
     while (block && fieldsIn(block).length < 2) block = block.parentElement;
@@ -1449,8 +1449,8 @@
     if (el.isContentEditable) {
       const standsFor = hiddenTextareaBeside(el);
       if (standsFor) {
-        const named2 = ownLabelOf(standsFor);
-        if (named2.text) return named2;
+        const named = ownLabelOf(standsFor);
+        if (named.text) return named;
       }
     }
     const legend = el.closest("fieldset")?.querySelector("legend");
@@ -1756,9 +1756,9 @@
       let ticking = "";
       if (kind === "checkbox" && tag === "input") {
         const container = el.parentElement?.closest(GROUP_CONTAINER);
-        const named2 = container && container.querySelectorAll(ANSWERING).length === 1 ? cleanLabel(containerName(container)) : "";
-        if (named2 && named2 !== label) {
-          question = named2;
+        const named = container && container.querySelectorAll(ANSWERING).length === 1 ? cleanLabel(containerName(container)) : "";
+        if (named && named !== label) {
+          question = named;
           ticking = label;
         }
       }
@@ -1816,9 +1816,15 @@
       (a, b) => a.compareDocumentPosition(b) & FOLLOWING ? -1 : 1
     )[0];
     if (firstField) {
-      const above = deepQueryAll(root, "h1,h2,h3,h4,[role='heading']").filter(isVisible).filter((heading) => heading.compareDocumentPosition(firstField) & FOLLOWING);
-      const nearest = above[above.length - 1];
-      const text4 = nearest ? cleanLabel(textOf(nearest)) : "";
+      const above = deepQueryAll(root, "h1,h2,h3,h4,h5,h6,[role='heading']").filter(isVisible).filter((heading) => heading.compareDocumentPosition(firstField) & FOLLOWING).filter((heading) => cleanLabel(textOf(heading)) !== "");
+      const flat2 = (text5) => text5.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+      const pageTitle = flat2(ownerDocumentOf(root).title ?? "");
+      const named = above.filter((heading) => {
+        const text5 = flat2(textOf(heading));
+        return text5.length >= 4 && pageTitle.includes(text5);
+      });
+      const chosen = named[0] ?? above[above.length - 1];
+      const text4 = chosen ? cleanLabel(textOf(chosen)) : "";
       if (text4) return text4.slice(0, 80);
     }
     const doc = ownerDocumentOf(root);
@@ -1942,13 +1948,11 @@
   function normalise(text4) {
     return text4.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
   }
-  var MEANS_NO = /\b(no|not|false|never|decline|disagree|refuse|nahi|nahin)\b/i;
-  var MEANS_YES = /\b(yes|true|agree|agreed|accept|confirm|ok|okay|sure|haan|han|ji|sahi)\b/i;
   function readAsYesOrNo(value) {
     if (typeof value === "boolean") return value;
-    const text4 = String(value);
-    if (MEANS_NO.test(text4)) return false;
-    return MEANS_YES.test(text4);
+    if (value === "true") return true;
+    if (value === "false") return false;
+    return null;
   }
   function bareName(label) {
     return normalise(label.replace(/\s*\+\d[\d\s-]*$/, "").replace(/\s*\([^)]*\)\s*$/, ""));
@@ -1983,13 +1987,13 @@
     if (!heard.trim()) return null;
     const names = (spec.options ?? []).filter((option) => option.value !== "").flatMap((option) => [normalise(option.label), bareName(option.label)].filter((label) => label.length >= 2).map((label) => ({ option, label }))).sort((a, b) => b.label.length - a.label.length);
     let rest = heard;
-    const named2 = /* @__PURE__ */ new Set();
+    const named = /* @__PURE__ */ new Set();
     for (const { option, label } of names) {
       if (!rest.includes(` ${label} `)) continue;
-      named2.add(option);
+      named.add(option);
       rest = rest.split(` ${label} `).join("  ");
     }
-    return named2.size === 1 ? [...named2][0] : null;
+    return named.size === 1 ? [...named][0] : null;
   }
   function matchOption(spec, spoken) {
     if (!spec.options || spec.options.length === 0) return null;
@@ -2162,8 +2166,8 @@
     const wanted = Array.isArray(spoken.value) ? spoken.value : [String(spoken.value)];
     let chosen = wanted.map((one) => matchOption(spec, one)).filter((v) => v !== null);
     if (chosen.length === 0 && spec.kind === "radio") {
-      const named2 = optionNamedIn(spec, spoken.evidence);
-      if (named2) chosen = [named2];
+      const named = optionNamedIn(spec, spoken.evidence);
+      if (named) chosen = [named];
     }
     return chosen.length > 0 ? { chosen, wanted } : notAChoice(spec, wanted.join(", "));
   }
@@ -2285,11 +2289,15 @@
       return boxes.some((box) => box.checked) ? cannot(spec, "The form would not let this be unticked.") : { fieldId: spec.id, status: "cleared" };
     }
   };
+  function notYesOrNo(spec, value) {
+    return { fieldId: spec.id, status: "refused", reason: `A tick-box takes true or false, not "${String(value)}".` };
+  }
   var ariaCheckbox = {
     name: "aria-checkbox",
     matches: (spec) => spec.kind === "checkbox" && Boolean(spec.custom),
     async write(spec, el, spoken) {
       const yes = readAsYesOrNo(spoken.value);
+      if (yes === null) return notYesOrNo(spec, spoken.value);
       const already = el.getAttribute("aria-checked") === "true";
       if (already !== yes) {
         openWidget(el);
@@ -2312,6 +2320,7 @@
     matches: (spec) => spec.kind === "checkbox",
     async write(spec, el, spoken) {
       const yes = readAsYesOrNo(spoken.value);
+      if (yes === null) return notYesOrNo(spec, spoken.value);
       const box = el;
       pressChoice(box, yes);
       return box.checked === yes ? { fieldId: spec.id, status: "written", wrote: yes ? "checked" : "unchecked" } : { fieldId: spec.id, status: "rejected-by-page", wrote: String(yes), found: String(box.checked) };
@@ -2736,14 +2745,11 @@
   var EXECUTION_MODE = "interactive";
   var TIMEOUT_SECONDS = 60;
   var TOOL_DESCRIPTION = [
-    "Write answers into the form the person is looking at.",
-    "Call this as soon as you have heard even one answer, and call it again each time you hear more \u2014",
-    "you do not need to wait until the person has finished.",
-    "Include ONLY fields the person actually spoke about.",
-    "Leaving a field out is always correct and costs nothing; the form will ask about it later.",
-    "Filling one they did not mention is never acceptable, even if the answer seems obvious from",
-    "something else they said, and even if the field is required.",
-    "Every answer carries the person's own words in `evidence`, quoted as they said them."
+    "Write answers into the form. Call it the moment you hear one answer, and again each time you hear more.",
+    "Include only fields the person spoke about: leaving one out is always fine; filling one they did not mention never is, even if it seems obvious or is required.",
+    "Each answer carries evidence \u2014 their own words, quoted \u2014 and how you heard it:",
+    "named (they said this answer, in any words or language), inferred (you worked it out, or chose the closest option to what they said), unsure (they hedged or gave a range).",
+    "Inferred and unsure answers wait for their yes."
   ].join(" ");
   var FORMAT_HINTS = {
     email: { format: "email", hint: "A full email address, lowercase.", examples: ["rohit@example.com"] },
@@ -2819,11 +2825,14 @@
         evidence: {
           type: "string",
           description: "The person's own words that this answer came from, quoted. Not a paraphrase. If you cannot quote them, you did not hear this answer and the field must be left out."
-        }
+        },
+        // How it was heard is the model's judgement of language — whether "2 or 3 years" is unsure,
+        // whether "haan" answered this yes-or-no. The gate (gate.ts) acts on it instead of word lists.
+        how: { type: "string", enum: ["named", "inferred", "unsure"] }
       },
-      // Both, always. This is what makes an unsupported answer unrepresentable rather than merely
+      // Always. This is what makes an unsupported answer unrepresentable rather than merely
       // discouraged — there is no shape of this object that carries a value without its source.
-      required: ["value", "evidence"],
+      required: ["value", "evidence", "how"],
       additionalProperties: false
     };
   }
@@ -2858,7 +2867,7 @@
     return {
       type: "function",
       name: CLEAR_TOOL_NAME,
-      description: "Empty fields the person asked you to clear, remove or undo. Only when they ask for it. Never pick another option as a way of clearing one.",
+      description: "Empty fields the person asked you to clear, remove or undo, with their words. Only when they ask for it. Never pick another option, like a decline choice, as a way of clearing one. If a result says one can't be emptied, tell them why.",
       parameters: {
         type: "object",
         properties: {
@@ -2910,7 +2919,7 @@
     return {
       type: "function",
       name: LATER_TOOL_NAME,
-      description: "Put fields off until the end when the person says skip it, later, come back to it, or do the rest first. Nothing is filled or cleared; they are asked again once everything else is done.",
+      description: "Put fields off until the end when the person says skip it, later, come back to it, or do the rest first \u2014 then move on. Nothing is filled or cleared; they are asked again once everything else is done. Any field can wait: never tell them the form makes them answer in order.",
       parameters: {
         type: "object",
         properties: {
@@ -2962,7 +2971,7 @@
     return {
       type: "function",
       name: PRESS_TOOL_NAME,
-      description: "Press a button on the form when the person asks: add another entry to a section, or go to the next page. Only when they ask for it. There is no submit button here \u2014 the person always submits themselves.",
+      description: "Press a button on the form when the person asks: add another entry (another job, another school), or go to the next page. Only when they ask for it; then carry on with what appears. page_did_not_change means the form refused to move on: tell them what it asked for. There is no submit button here \u2014 the person always submits themselves.",
       parameters: {
         type: "object",
         properties: {
@@ -3654,6 +3663,7 @@
     return key === null ? void 0 : EASY.find((group) => group.keys.includes(key));
   }
   var MOST_EASY_TO_NAME = 5;
+  var MOST_WORDS = 30;
   function isEasy(spec) {
     return easyGroupOf(spec) !== void 0;
   }
@@ -3670,7 +3680,10 @@
   function openingLine(specs, title = "", {
     filled = [],
     remembered = false,
-    toConfirm = []
+    toConfirm = [],
+    recalled = 0,
+    fresh = 0,
+    learns = false
   } = {}) {
     const fields = answerable(specs);
     if (fields.length === 0) {
@@ -3694,13 +3707,33 @@
     });
     const toSay = easyGroups.filter((group) => !alreadyIn.includes(group)).map((group) => group.say).slice(0, MOST_EASY_TO_NAME);
     const kept = alreadyIn.length ? ` I've already put in ${spokenList(alreadyIn.map((group) => group.say).slice(0, MOST_EASY_TO_NAME))}${remembered ? " from last time" : ""} \u2014 give ${alreadyIn.length === 1 ? "it" : "them"} a quick look.` : "";
+    const shortKept = alreadyIn.length ? ` I've already put in ${spokenList(alreadyIn.map((group) => group.say).slice(0, 3))}${remembered ? " from last time" : ""}.` : "";
+    const words3 = (line) => line.replace(name, "").split(/\s+/).filter((word) => /\w/.test(word)).length;
+    const fits = (lines) => lines.find((line) => words3(line) <= MOST_WORDS) ?? lines[lines.length - 1];
+    const counts = (n) => Array.from({ length: n }, (_, i) => n - i);
+    if (remembered && recalled > 0) {
+      const all = alreadyIn.map((group) => group.say).slice(0, 3);
+      const done2 = (n) => ` I've filled ${recalled} from last time${n > 0 ? ` \u2014 ${spokenList(all.slice(0, n))}` : ""}${fresh > 0 ? `; ${fresh} ${fresh === 1 ? "is" : "are"} new` : ""}.`;
+      const lines = [...counts(all.length), 0].map((n) => {
+        if (toConfirm.length === 0) return `${intro}${done2(n)} Want to hear them, or ${fresh > 0 ? "do the new ones" : "look it over yourself"}?`;
+        const named = toConfirm.slice(0, 2);
+        const extra = toConfirm.length - named.length;
+        const which = extra > 0 ? `${named.join(", ")} and ${extra} more` : spokenList(named);
+        return `${intro}${done2(n)} ${which} ${toConfirm.length === 1 ? "needs" : "need"} a quick yes \u2014 still right?`;
+      });
+      return fits(lines);
+    }
     if (toConfirm.length > 0) {
-      const named2 = toConfirm.slice(0, 3);
-      const more = toConfirm.length > named2.length ? ` and ${toConfirm.length - named2.length} more` : "";
-      return `${intro}${kept} From last time I also have ${spokenList(named2)}${more} \u2014 they're on screen. Still right?`;
+      const named = toConfirm.slice(0, 3);
+      const more = toConfirm.length > named.length ? ` and ${toConfirm.length - named.length} more` : "";
+      return fits([kept, shortKept].map((k) => `${intro}${k} From last time I also have ${spokenList(named)}${more} \u2014 they're on screen. Still right?`));
     }
     if (toSay.length > 0) {
-      return `${intro}${kept} Easy ones first: ${spokenList(toSay)}. Say them all at once if you like.`;
+      const tails = learns && !remembered ? ["Say them all at once \u2014 next time I'll remember.", "Say them all at once."] : ["Say them all at once if you like.", "Say them all at once."];
+      const lines = counts(toSay.length).flatMap(
+        (n) => [kept, shortKept].flatMap((k) => tails.map((tail) => `${intro}${k} Easy ones first: ${spokenList(toSay.slice(0, n))}. ${tail}`))
+      );
+      return fits(lines);
     }
     if (alreadyIn.length > 0) {
       return `${intro}${kept} The rest needs you \u2014 ready when you are.`;
@@ -3748,6 +3781,10 @@
     }
     return grouped;
   }
+  function splitAnswer(spec, all) {
+    if (!spec.part) return false;
+    return all.some((other) => other !== spec && other.part && other.label === spec.label && (other.section ?? "") === (spec.section ?? ""));
+  }
   function questionOf(spec) {
     return fieldName(spec);
   }
@@ -3766,6 +3803,10 @@
     }
     if (addressFields(all).has(spec.id)) facts.group = "address";
     else if (phoneFields(all).has(spec.id)) facts.group = "phone";
+    else if (splitAnswer(spec, all)) {
+      facts.group = "split";
+      facts.whole = (spec.label || spec.id).replace(/\s*\*\s*$/, "").trim();
+    }
     if (spec.searchable) facts.searchable = true;
     if (spec.range) facts.range = { min: spec.range.min, max: spec.range.max };
     return facts;
@@ -3975,13 +4016,11 @@
       "",
       // ── 4. The form, the plan, and the tools ───────────────────────────────────────
       "FORM NOW, at the end of this prompt, is the form exactly as it is at this moment \u2014 updated after everything you do. Trust it over your memory of the conversation: if it says a field is answered, it is. DO NEXT is what to do next; do that, in your own words.",
-      "When DO NEXT lists several questions, ask them together in one short sentence \u2014 people answer a short list in one go.",
-      "Call fill_fields the moment you hear an answer, and again whenever you hear more \u2014 several answers in one call. Fill only what they actually said, even for required fields; never work one answer out from another.",
+      "Call fill_fields the moment you hear an answer, and again whenever you hear more \u2014 several answers in one call. Fill only what they actually said, even for required fields. An answer you worked out rather than heard is how: inferred, and one they hedged is unsure \u2014 both wait for their yes.",
       "Every answer's evidence is their own words, copied exactly, in the language they said them. They may mix English and Hindi; the value goes in English, in the Latin alphabet, never Devanagari. Evidence that isn't in what they said is thrown away.",
       "Each result says what went in, what didn't and why. Acknowledge what went in in a few words, not a readback. waiting_for_yes: nothing went in yet \u2014 ask, then report their reply with confirm_answer; you decide whether it was a yes. Never say everything is in while FORM NOW lists anything waiting for their yes. not_an_option: tried is what you sent; check the choices before saying anything is missing. quote_not_found: they did say it, so call again quoting their exact words \u2014 don't ask again. page_refused: ask them to say it once more. page_refused_twice: say plainly they'll need to type that one. not_heard: you sent none of their words, so nothing went in \u2014 say so and ask again. gone: say nothing. If you realise you got something wrong, fix it with a call straight away rather than just apologising.",
-      "When they ask to add another entry, like another job or school, or to go to the next page, call press_form_button with their words, then carry on with what appears. page_did_not_change means the form refused to move on: tell them what it asked for. There is no button for submitting: that one is always theirs.",
-      "When they say skip it, later, or do the rest first, call skip_for_now with their words and move on. Any field can wait; never tell them the form makes them answer in order.",
-      "When they ask to remove, clear or undo an answer, call clear_fields with their words. Never pick another option, like a decline choice, as a way of clearing one. If it can't be emptied, tell them why.",
+      "Answers from their last form are already on the page. Never read them out unless they ask \u2014 then four at a time \u2014 and change any they correct.",
+      "Each tool says when to use it. Every one needs their own words; none of them submits.",
       "",
       // ── 5. Speaking, not writing ───────────────────────────────────────────────────
       "Everything you say is spoken. No markdown, no lists, no asterisks \u2014 they would be read aloud. Say emails and links the way a person does: rohit at example dot com. Round numbers.",
@@ -4134,6 +4173,8 @@
       if ((source === "spoken" || source === "memory") && entry) state.evidence = entry.evidence;
       const pending = ledger.pendingFor(spec.id);
       if (pending && value === null) state.pending = pending;
+      if (source === "memory" && entry?.factId) state.recalled = { factId: entry.factId, sure: true };
+      else if (value === null && pending?.reason === "from_last_time" && pending.factId) state.recalled = { factId: pending.factId, sure: false };
       const error = el && el.isConnected ? readError(el) : null;
       if (error) state.error = error;
       fields.push(state);
@@ -4161,24 +4202,8 @@
   }
 
   // core/src/gate.ts
-  var NUMBER_RANGE = /\d+(\.\d+)?(\s+and\s+a\s+half)?\s+(or|to|ya)\s+\d|\d\s*[-–]\s*\d+\s*(years?|yrs?|months?|weeks?|days?|lakhs?|k)\b/i;
-  var ABOUT_A_NUMBER = /\b(about|around|roughly|approximately|approx|nearly|almost|lagbhag|kareeb|takriban)\s+\d/i;
-  var UNSURE = /\b(maybe|perhaps|probably|not sure|i guess|shayad|pata nahi)\b/i;
-  function isYesNo(spec) {
-    const labels = (spec.options ?? []).map((o) => o.label);
-    const yes = labels.find((l) => /^\s*yes\b/i.test(l));
-    const no = labels.find((l) => /^\s*no\b/i.test(l));
-    return yes || no ? { yes, no } : null;
-  }
-  function named(spec, evidence) {
-    const byName = optionNamedIn(spec, evidence);
-    if (byName) return byName.label;
-    const yesNo = isYesNo(spec);
-    if (yesNo) {
-      if (MEANS_NO.test(evidence) && yesNo.no) return yesNo.no;
-      if (MEANS_YES.test(evidence) && yesNo.yes) return yesNo.yes;
-    }
-    return null;
+  function yesNoOptions(spec) {
+    return (spec.options ?? []).map((o) => o.label).filter((label) => /^\s*(yes|no)\b/i.test(label));
   }
   function isChoice2(spec) {
     return spec.kind === "select" || spec.kind === "radio";
@@ -4186,28 +4211,22 @@
   function gate(spec, claim, held) {
     const evidence = claim.evidence ?? "";
     const value = Array.isArray(claim.value) ? claim.value.join(", ") : String(claim.value);
-    if (held?.reason === "hedged" && !hedged(spec, evidence)) return { write: true };
+    const how = claim.how ?? "named";
+    if (held?.reason === "hedged" && how !== "unsure") return { write: true };
+    const want = isChoice2(spec) && spec.options?.length ? matchOption(spec, value) : null;
+    if (how === "unsure" && !spec.longForm) {
+      return { write: false, pending: { suggestion: want?.label ?? value, heard: evidence, reason: "hedged" } };
+    }
     if (isChoice2(spec) && spec.options?.length) {
-      const want = matchOption(spec, value);
-      const said2 = named(spec, evidence);
-      if (UNSURE.test(evidence) && !(held && MEANS_YES.test(evidence))) {
-        return { write: false, pending: { suggestion: want?.label ?? value, heard: evidence, reason: "hedged" } };
-      }
       if (!want) return { write: true };
-      if (said2 === want.label || sameText(evidence, want.label)) return { write: true };
+      if (optionNamedIn(spec, evidence)?.label === want.label || sameText(evidence, want.label)) return { write: true };
+      if (how === "named" && yesNoOptions(spec).includes(want.label)) return { write: true };
       return { write: false, pending: { suggestion: want.label, heard: evidence, reason: "not_named" } };
     }
-    if (!isLongAnswer(spec) && hedged(spec, evidence) && /\d/.test(value)) {
-      return { write: false, pending: { suggestion: value, heard: evidence, reason: "hedged" } };
+    if (how === "inferred" && !spec.longForm) {
+      return { write: false, pending: { suggestion: value, heard: evidence, reason: "inferred" } };
     }
     return { write: true };
-  }
-  function isLongAnswer(spec) {
-    return Boolean(spec.longForm);
-  }
-  function hedged(spec, evidence) {
-    if (NUMBER_RANGE.test(evidence) || ABOUT_A_NUMBER.test(evidence)) return true;
-    return isChoice2(spec) && UNSURE.test(evidence);
   }
   function sameText(a, b) {
     const flat2 = (s) => s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
@@ -4241,8 +4260,8 @@
       const meaning = meanings[spec.id];
       if (!meaning || meaning.subject !== "self" || meaning.concept === "other") continue;
       const split = (boxes.get(meaning.concept) ?? 0) > 1 && !conceptById(meaning.concept)?.repeatable;
-      const named2 = asPart(meaning.part) ?? (split ? asPart(spec.part) : void 0);
-      const part = named2 && !meaning.concept.endsWith(`.${named2}`) ? named2 : void 0;
+      const named = asPart(meaning.part) ?? (split ? asPart(spec.part) : void 0);
+      const part = named && !meaning.concept.endsWith(`.${named}`) ? named : void 0;
       const concept = conceptById(meaning.concept);
       let entry;
       if (concept?.repeatable) {
@@ -4767,7 +4786,7 @@
     if (required.length > 0) {
       const first = factsOf(required[0], specs);
       if (first.group) {
-        const together = open.filter((f) => later.has(first.field) || !later.has(f.spec.id)).map((f) => factsOf(f.spec, specs)).filter((facts) => facts.group === first.group && facts.section === first.section);
+        const together = open.filter((f) => later.has(first.field) || !later.has(f.spec.id)).map((f) => factsOf(f.spec, specs)).filter((facts) => facts.group === first.group && facts.section === first.section && facts.whole === first.whole);
         return { kind: "ask", fields: together };
       }
       return { kind: "ask", fields: batch(required.map((spec) => factsOf(spec, specs)).filter((f) => !f.group || f.field === first.field)) };
@@ -4784,7 +4803,10 @@
       return state.submitLabel ? { kind: "optional", fields: optional, submit: state.submitLabel, ...keep } : { kind: "optional", fields: optional, ...keep };
     }
     if (next) return { kind: "next_page", label: next.label, ...keep };
-    return state.submitLabel ? { kind: "handover", theirs: state.theirs, submit: state.submitLabel, ...keep } : { kind: "handover", theirs: state.theirs, ...keep };
+    const fromLastTime = state.fields.filter((f) => f.source === "memory").length;
+    const typed = state.fields.filter((f) => f.source === "typed").length;
+    const review = fromLastTime + typed > 0 ? { review: { fromLastTime, typed } } : {};
+    return state.submitLabel ? { kind: "handover", theirs: state.theirs, submit: state.submitLabel, ...keep, ...review } : { kind: "handover", theirs: state.theirs, ...keep, ...review };
   }
   var SOURCE_WORDS = {
     spoken: "they said it",
@@ -4815,6 +4837,13 @@
     const now = batch(fields);
     return now.length > 1 ? `these together, in one question: ${now.map(describe2).join("; ")}` : describe2(now[0]);
   }
+  function lookFirst(review) {
+    const parts = [
+      review.fromLastTime > 0 ? `the ${review.fromLastTime} from their last form` : "",
+      review.typed > 0 ? `the ${review.typed} they typed` : ""
+    ].filter(Boolean);
+    return `look it over \u2014 especially ${parts.join(" and ")} \u2014`;
+  }
   function keepFirst(keep) {
     if (!keep) return "";
     return `First, once: ask whether to remember their answers to ${keep.questions.join(", ")} for next time \u2014 they stay on this device \u2014 and call save_for_next_time for ${keep.fields.join(", ")} with agreed true or false. Then: `;
@@ -4822,7 +4851,9 @@
   function doNext(move) {
     switch (move.kind) {
       case "confirm":
-        return move.reason === "hedged" ? `They weren't sure for "${move.field.question}" (they said: "${move.heard}"). Ask which it is before anything goes in.` : `"${move.field.question}" is waiting for their yes: they said "${move.heard}", and the closest the form offers is "${move.suggestion}". Ask if that's right, then call confirm_answer for ${move.field.field} with agreed true or false \u2014 you judge their reply, in whatever words. If not, offer the other choices.`;
+        if (move.reason === "hedged") return `They weren't sure for "${move.field.question}" (they said: "${move.heard}"). Ask which it is before anything goes in.`;
+        if (move.reason === "inferred") return `You worked out "${move.suggestion}" for "${move.field.question}" from "${move.heard}" \u2014 they did not say it. Ask if that's right, then call confirm_answer for ${move.field.field} with agreed true or false.`;
+        return `"${move.field.question}" is waiting for their yes: they said "${move.heard}", and the closest the form offers is "${move.suggestion}". Ask if that's right, then call confirm_answer for ${move.field.field} with agreed true or false \u2014 you judge their reply, in whatever words. If not, offer the other choices.`;
       case "confirm_recalled": {
         const list = move.fields.map((f) => `${f.field.question}: "${f.suggestion}"`).join("; ");
         return `From their last form, ready to go in on their yes: ${list}. Say them briefly and ask if they are still right. For each, call confirm_answer with agreed true if they accept it, in any words, or false if not; if they give a new answer, fill it with fill_fields instead.`;
@@ -4840,6 +4871,9 @@
           const where = move.fields[0].section ? ` under "${move.fields[0].section}"` : "";
           return `Ask for their address${where} as one question \u2014 ${move.fields.map((f) => f.question).join(", ")}.`;
         }
+        if (move.fields.length > 1 && move.fields.every((f) => f.group === "split")) {
+          return `Ask for "${move.fields[0].whole}" as one answer, the way a person says it \u2014 it goes into ${move.fields.map((f) => f.question.split(" \u2014 ").pop()).join(", ")}.`;
+        }
         if (move.fields.length > 1 && move.fields.every((f) => f.group === "phone")) {
           return `Ask for their phone number, with its country code, as one question.`;
         }
@@ -4855,7 +4889,8 @@
       case "next_page":
         return keepFirst(move.keep) + `Everything needed on this page is in. Ask if they're ready for the next page, and press "${move.label}" with press_form_button only on their yes.`;
       case "handover": {
-        const send = move.submit ? `look it over and press "${move.submit}" themselves` : "look it over and send it themselves";
+        const look = move.review ? lookFirst(move.review) : "look it over";
+        const send = move.submit ? `${look} and press "${move.submit}" themselves` : `${look} and send it themselves`;
         return keepFirst(move.keep) + (move.theirs.length > 0 ? `Nothing left for you. Say everything they told you is in, that ${move.theirs.join(" and ")} is theirs to do by hand, and that they should ${send}.` : `Nothing left for you. Say everything they told you is in, and that they should ${send}.`);
       }
     }
@@ -4925,7 +4960,7 @@
         return `${where}. The form won't take ${move.value} for ${move.field.question} \u2014 can you say it again?`;
       case "ask": {
         const [first] = move.fields;
-        const what = move.fields.length > 1 && first?.group === "address" ? "your address" : move.fields.length > 1 && first?.group === "phone" ? "your phone number" : move.fields.length > 1 ? move.fields.map((f) => f.question).join(", ") : first?.question ?? "the next one";
+        const what = move.fields.length > 1 && first?.group === "address" ? "your address" : move.fields.length > 1 && first?.group === "split" ? first.whole ?? "the next one" : move.fields.length > 1 && first?.group === "phone" ? "your phone number" : move.fields.length > 1 ? move.fields.map((f) => f.question).join(", ") : first?.question ?? "the next one";
         return `${where}. Next up: ${what}.`;
       }
       case "offer_optional":
@@ -5340,7 +5375,10 @@
         {
           filled: state.fields.filter((f) => f.value !== null).map((f) => f.spec.id),
           remembered: state.fields.some((f) => f.source === "memory"),
-          toConfirm: state.fields.filter((f) => f.pending?.reason === "from_last_time").map((f) => fieldName(f.spec))
+          toConfirm: state.fields.filter((f) => f.pending?.reason === "from_last_time").map((f) => fieldName(f.spec)),
+          recalled: state.fields.filter((f) => f.source === "memory").length,
+          fresh: state.fields.filter((f) => f.value === null && !f.pending && !f.declined).length,
+          learns: Boolean(this.options.understand)
         }
       );
     }
@@ -5608,9 +5646,14 @@
       const claimed = [];
       for (const [fieldId, raw] of Object.entries(args)) {
         if (!raw || typeof raw !== "object") continue;
-        const { value, evidence } = raw;
+        const { value, evidence, how } = raw;
         if (value === void 0 || value === null) continue;
-        claimed.push({ fieldId, value, evidence: typeof evidence === "string" ? evidence : "" });
+        claimed.push({
+          fieldId,
+          value,
+          evidence: typeof evidence === "string" ? evidence : "",
+          ...how === "named" || how === "inferred" || how === "unsure" ? { how } : {}
+        });
       }
       const { spoken, unsupported } = keepOnlyWhatWasSaid(heard, claimed);
       const byId = new Map(read.specs.map((spec) => [spec.id, spec]));

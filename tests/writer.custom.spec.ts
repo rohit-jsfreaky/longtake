@@ -281,7 +281,7 @@ test.describe("ARIA checkboxes and switches", () => {
   test("a switch is turned on", async ({ page }) => {
     await load(page, SWITCH);
     await readDeep(page);
-    const [outcome] = await write(page, said("open_to_remote", "yes"));
+    const [outcome] = await write(page, said("open_to_remote", true));
     expect(outcome!.status).toBe("written");
     expect(await page.getAttribute("#s", "aria-checked")).toBe("true");
   });
@@ -289,7 +289,7 @@ test.describe("ARIA checkboxes and switches", () => {
   test("a switch already in the right state is left alone", async ({ page }) => {
     await load(page, SWITCH);
     await readDeep(page);
-    const [outcome] = await write(page, said("open_to_remote", "no"));
+    const [outcome] = await write(page, said("open_to_remote", false));
     expect(outcome!.status).toBe("written");
     expect(await page.getAttribute("#s", "aria-checked")).toBe("false");
   });
@@ -297,8 +297,8 @@ test.describe("ARIA checkboxes and switches", () => {
   test("turning it on twice does not turn it back off", async ({ page }) => {
     await load(page, SWITCH);
     await readDeep(page);
-    await write(page, said("open_to_remote", "yes"));
-    await write(page, said("open_to_remote", "yes"));
+    await write(page, said("open_to_remote", true));
+    await write(page, said("open_to_remote", true));
     expect(await page.getAttribute("#s", "aria-checked")).toBe("true");
   });
 
@@ -313,7 +313,7 @@ test.describe("ARIA checkboxes and switches", () => {
        </script>`,
     );
     await readDeep(page);
-    await write(page, said("i_agree", "I agree"));
+    await write(page, said("i_agree", true));
     expect(await page.getAttribute("#c", "aria-checked")).toBe("true");
   });
 
@@ -324,7 +324,7 @@ test.describe("ARIA checkboxes and switches", () => {
             style="width:40px;height:20px"></div>`,
     );
     await readDeep(page);
-    const [outcome] = await write(page, said("locked", "yes"));
+    const [outcome] = await write(page, said("locked", true));
     expect(outcome!.status).toBe("rejected-by-page");
   });
 });

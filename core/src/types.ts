@@ -180,4 +180,10 @@ export type SpokenValue = {
   value: string | string[] | boolean;
   /** The speaker's own words that this value came from. Required, deliberately. */
   evidence: string;
+  /**
+   * How the agent heard it — its judgement of their words, which code does not second-guess:
+   * named (they said this answer, in any words or language), inferred (worked out from what they
+   * said, or the closest choice to it), unsure (they hedged, or gave a range). See gate.ts.
+   */
+  how?: "named" | "inferred" | "unsure";
 };

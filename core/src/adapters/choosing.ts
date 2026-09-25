@@ -179,12 +179,18 @@ export const checkboxGroup: WidgetAdapter = {
   },
 };
 
+/** A tick-box given something other than true or false: nothing is ticked on a guess. */
+function notYesOrNo(spec: FieldSpec, value: unknown): WriteOutcome {
+  return { fieldId: spec.id, status: "refused", reason: `A tick-box takes true or false, not "${String(value)}".` };
+}
+
 /** A div wearing role="checkbox" or role="switch": pressed the way the reader found it answers. */
 export const ariaCheckbox: WidgetAdapter = {
   name: "aria-checkbox",
   matches: (spec) => spec.kind === "checkbox" && Boolean(spec.custom),
   async write(spec, el, spoken) {
     const yes = readAsYesOrNo(spoken.value);
+    if (yes === null) return notYesOrNo(spec, spoken.value);
     const already = el.getAttribute("aria-checked") === "true";
     if (already !== yes) {
       openWidget(el); // the same press sequence; a switch answers pointerdown too
@@ -211,6 +217,7 @@ export const checkbox: WidgetAdapter = {
   matches: (spec) => spec.kind === "checkbox",
   async write(spec, el, spoken) {
     const yes = readAsYesOrNo(spoken.value);
+    if (yes === null) return notYesOrNo(spec, spoken.value);
     const box = el as HTMLInputElement;
     pressChoice(box, yes);
     return box.checked === yes

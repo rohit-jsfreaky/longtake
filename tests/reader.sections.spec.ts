@@ -146,3 +146,18 @@ test.describe("the form's title", () => {
     expect(title).toBe("Trademark Intake");
   });
 });
+
+// Greenhouse: the page's <title> names the job; "Apply for this job" is the nearest heading.
+test("the form's title is the heading the page's own title names, not the nearest one", async ({ page }) => {
+  await load(
+    page,
+    `<h1>Software Engineer, Backend</h1><h2>Apply for this job</h2>
+     <label for="a">Email</label><input id="a" type="email">`,
+    "<title>Job Application for Software Engineer, Backend at Glean</title>",
+  );
+  const title = await page.evaluate(() => {
+    const L = window.__longtake;
+    return L.titleOf(L.readForm());
+  });
+  expect(title).toBe("Software Engineer, Backend");
+});

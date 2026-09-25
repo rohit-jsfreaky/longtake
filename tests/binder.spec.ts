@@ -78,12 +78,12 @@ test.describe("the shape of the tool", () => {
 
   test("the description tells the model when NOT to call it", async ({ page }) => {
     const { tool } = await buildFrom(page, FORM);
-    expect(tool.description.toLowerCase()).toContain("only fields the person actually spoke");
+    expect(tool.description.toLowerCase()).toContain("only fields the person spoke about");
   });
 
   test("the description says leaving a field out is correct", async ({ page }) => {
     const { tool } = await buildFrom(page, FORM);
-    expect(tool.description.toLowerCase()).toContain("leaving a field out is always correct");
+    expect(tool.description.toLowerCase()).toContain("leaving one out is always fine");
   });
 
   test("no field is required at the tool level", async ({ page }) => {
@@ -105,17 +105,15 @@ test.describe("the shape of the tool", () => {
 test.describe("evidence is structural, not advisory", () => {
   const FORM = `<label for="a">Desired salary</label><input id="a">`;
 
-  test("every field is an object of value and evidence", async ({ page }) => {
+  test("every field is an object of value, evidence, and how it was heard", async ({ page }) => {
     const { tool } = await buildFrom(page, FORM);
-    expect(Object.keys(field(tool, "desired_salary").properties!).sort()).toEqual([
-      "evidence",
-      "value",
-    ]);
+    expect(Object.keys(field(tool, "desired_salary").properties!).sort()).toEqual(["evidence", "how", "value"]);
+    expect((field(tool, "desired_salary").properties!.how as { enum: string[] }).enum).toEqual(["named", "inferred", "unsure"]);
   });
 
-  test("both are required, so a value without its source is unrepresentable", async ({ page }) => {
+  test("all three are required, so a value without its source is unrepresentable", async ({ page }) => {
     const { tool } = await buildFrom(page, FORM);
-    expect(field(tool, "desired_salary").required!.sort()).toEqual(["evidence", "value"]);
+    expect(field(tool, "desired_salary").required!.sort()).toEqual(["evidence", "how", "value"]);
   });
 
   test("nothing else can be smuggled into a field", async ({ page }) => {
@@ -538,4 +536,16 @@ test("the help the page gives for a field goes to the agent with it", async ({ p
     `<label for="p">Phone Number</label><input id="p" type="tel" aria-describedby="h"><span id="h">Format: (000) 000-0000.</span>`,
   );
   expect(field(tool, "phone_number").description).toContain('the form adds: "Format: (000) 000-0000."');
+});
+
+// Each tool says when to use it, in its own description, and the persona does not repeat it.
+// Short enough that the model reads all of it.
+test("every tool's description is at most 600 characters", async ({ page }) => {
+  await load(page, `<label for="a">First name</label><input id="a"><button type="button">Add another</button>`);
+  const lengths = await page.evaluate(() => {
+    const s = new window.__longtake.LongtakeSession({ root: () => document, ignore: "" });
+    return s.tools().map((tool) => [tool.name, tool.description.length] as const);
+  });
+  for (const [name, length] of lengths) expect(length, name).toBeLessThanOrEqual(600);
+  expect(lengths.map(([name]) => name)).toEqual(expect.arrayContaining(["fill_fields", "confirm_answer", "clear_fields", "skip_for_now", "save_for_next_time"]));
 });

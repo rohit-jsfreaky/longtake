@@ -155,11 +155,13 @@ test.describe("2 · 'skip this, do the rest first'", () => {
     expect(r.set_aside).toEqual([]);
   });
 
-  test("the agent is told any field can wait", async ({ page }) => {
+  test("the agent is told any field can wait — by the tool itself", async ({ page }) => {
     await load(page, "<p>x</p>");
-    const prompt = await page.evaluate(() => window.__longtake.systemPrompt(""));
-    expect(prompt).toContain("skip_for_now");
-    expect(prompt).toContain("never tell them the form makes them answer in order");
+    const later = await page.evaluate(() => {
+      const L = window.__longtake;
+      return new L.LongtakeSession({ root: () => document, ignore: "" }).tools().find((tool) => tool.name === "skip_for_now")!.description;
+    });
+    expect(later).toContain("never tell them the form makes them answer in order");
   });
 });
 
@@ -179,7 +181,7 @@ test.describe("3 · the opening line names what memory put in", () => {
       return { greeting: s.greeting(), filled: s.state().progress.filled };
     });
     expect(r.filled).toBe(3);
-    expect(r.greeting).toContain("I've already put in your name and email");
+    expect(r.greeting).toContain("I've filled 3 from last time — your name and email");
   });
 });
 
@@ -299,7 +301,7 @@ test.describe("7 · a long answer is never held as a hedge", () => {
     const answer = "I have used Discord for about 5 years with my friends and I want to help keep it safe";
     const r = await page.evaluate(async (said) => {
       const s = (window as unknown as { __s: S }).__s;
-      return (await s.fill({ why_do_you_want_to_work_at_discord: { value: said, evidence: said } }, said)).result;
+      return (await s.fill({ why_do_you_want_to_work_at_discord: { value: said, evidence: said, how: "unsure" } }, said)).result;
     }, answer);
     expect(r.waiting_for_yes).toEqual([]);
     expect(await page.inputValue("#w")).toBe(answer);
@@ -309,7 +311,7 @@ test.describe("7 · a long answer is never held as a hedge", () => {
     await session(page, `<label for="y">Years of experience*</label><input id="y" required>`);
     const r = await page.evaluate(async () => {
       const s = (window as unknown as { __s: S }).__s;
-      return (await s.fill({ years_of_experience: { value: "3", evidence: "2 or 3 years" } }, "2 or 3 years")).result;
+      return (await s.fill({ years_of_experience: { value: "3", evidence: "2 or 3 years", how: "unsure" } }, "2 or 3 years")).result;
     });
     expect(r.waiting_for_yes).toHaveLength(1);
   });

@@ -249,23 +249,22 @@ test.describe("radio groups", () => {
 test.describe("checkboxes", () => {
   const CONSENT = `<label><input type="checkbox" id="c" name="consent"> I agree to the privacy policy</label>`;
 
-  const yeses = ["yes", "Yes", "true", "agree", "I agree", "accept", "haan"];
-  for (const word of yeses) {
-    test(`"${word}" ticks the box`, async ({ page }) => {
+  // Whether "haan", "I agree" or "I do not agree" meant yes is the model's to hear; the tool asks it
+  // for a boolean. A tick-box given words instead is not ticked on a guess — in any language.
+  for (const words of ["yes", "I agree", "haan", "no", "I do not agree", "nahi"]) {
+    test(`the words "${words}" tick nothing — a tick-box takes true or false`, async ({ page }) => {
       await load(page, CONSENT);
-      await readThenWrite(page, said("i_agree_to_the_privacy_policy", word));
-      expect(await valueOf(page, "#c")).toBe("checked");
-    });
-  }
-
-  const noes = ["no", "No", "false", "nahi", "decline"];
-  for (const word of noes) {
-    test(`"${word}" leaves the box unticked`, async ({ page }) => {
-      await load(page, CONSENT);
-      await readThenWrite(page, said("i_agree_to_the_privacy_policy", word));
+      const [outcome] = await readThenWrite(page, said("i_agree_to_the_privacy_policy", words));
+      expect(outcome!.status).toBe("refused");
       expect(await valueOf(page, "#c")).toBe("unchecked");
     });
   }
+
+  test('"true" and "false", as JSON writes them, are true and false', async ({ page }) => {
+    await load(page, CONSENT);
+    await readThenWrite(page, said("i_agree_to_the_privacy_policy", "true"));
+    expect(await valueOf(page, "#c")).toBe("checked");
+  });
 
   test("a real boolean true ticks the box", async ({ page }) => {
     await load(page, CONSENT);
@@ -281,7 +280,7 @@ test.describe("checkboxes", () => {
 
   test("ticking an already-ticked box is safe to repeat", async ({ page }) => {
     await load(page, `<label><input type="checkbox" id="c" name="consent" checked> I agree</label>`);
-    const [outcome] = await readThenWrite(page, said("i_agree", "yes"));
+    const [outcome] = await readThenWrite(page, said("i_agree", true));
     expect(outcome!.status).toBe("written");
     expect(await valueOf(page, "#c")).toBe("checked");
   });
@@ -294,7 +293,7 @@ test.describe("checkboxes", () => {
          document.getElementById('heard').textContent = 'yes';
        });</script>`,
     );
-    await readThenWrite(page, said("i_agree_to_the_privacy_policy", "yes"));
+    await readThenWrite(page, said("i_agree_to_the_privacy_policy", true));
     expect(await page.textContent("#heard")).toBe("yes");
   });
 });

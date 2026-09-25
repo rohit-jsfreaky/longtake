@@ -222,3 +222,28 @@ test.describe("what the model understood decides the easy questions", () => {
     expect(line).toContain("Easy ones first: your name and email");
   });
 });
+
+// The opening line is spoken verbatim, so it is built in code — and kept short: besides the form's
+// own name, at most 30 words, whoever is calling and however big the form.
+test("the opening line is at most 30 words besides the form's name", async ({ page }) => {
+  await load(page, "<p>no form needed</p>");
+  const title = "Software Engineer, Backend at Glean";
+  const specs = [
+    f("first_name", "First Name"), f("last_name", "Last Name"), f("email", "Email", "email"), f("phone", "Phone", "tel"),
+    f("city", "Current city"), f("linkedin", "LinkedIn Profile"), f("github", "GitHub"), f("site", "Website"),
+    ...Array.from({ length: 30 }, (_, i) => f(`q${i}`, `Question ${i}`)),
+  ];
+  const lines = await page.evaluate(([s, t]) => {
+    const L = window.__longtake;
+    return [
+      L.openingLine(s as never, t as string),
+      L.openingLine(s as never, t as string, { learns: true }),
+      L.openingLine(s as never, t as string, { filled: ["first_name", "last_name", "email"], remembered: true, recalled: 14, fresh: 22, toConfirm: ["Phone", "Current city", "LinkedIn Profile"] }),
+      L.openingLine(s as never, t as string, { filled: ["first_name", "last_name", "email"], remembered: true, recalled: 14, fresh: 22 }),
+    ];
+  }, [specs, title] as const);
+  for (const line of lines) {
+    const words = line.replace(title, "").split(/\s+/).filter((w) => /\w/.test(w));
+    expect(words.length, line).toBeLessThanOrEqual(30);
+  }
+});
