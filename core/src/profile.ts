@@ -88,6 +88,8 @@ export type LongAnswer = {
   host: string;
   at: number;
   uses: number;
+  /** What the question means (concepts.ts) — how a later form's question finds it. */
+  concept?: string;
 };
 
 export type ProfileSettings = {

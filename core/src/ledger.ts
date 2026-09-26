@@ -18,7 +18,8 @@ import type { FieldSpec, SpokenValue } from "./types";
 
 /** Something we put into the form, and the words it came from. */
 export type LedgerEntry = {
-  source: "spoken" | "memory";
+  /** Said, from last time, or drafted from what they said and approved (draft.ts). */
+  source: "spoken" | "memory" | "drafted";
   value: SpokenValue["value"];
   evidence: string;
   /** The field as it was when written — its wording survives the field being hidden. */
@@ -37,14 +38,17 @@ export type Pending = {
   /**
    * Not named: they said something the form does not offer. Hedged: they were not sure. Inferred:
    * the agent worked it out rather than heard it. From last
-   * time: an answer from an earlier form that is not certain enough to go in unasked.
+   * time: an answer from an earlier form that is not certain enough to go in unasked. Draft: a long
+   * answer written from their words (draft.ts), read to them, waiting for their yes.
    */
-  reason: "not_named" | "hedged" | "inferred" | "from_last_time";
+  reason: "not_named" | "hedged" | "inferred" | "from_last_time" | "draft";
   /** The exact value to write on a yes, when it is not just the suggestion (a list, a yes/no). */
   value?: SpokenValue["value"];
   /** From last time: the saved answer, and why it waits. */
   factId?: string;
   why?: string;
+  /** A draft: its words they said, what the model saw missing, names found in no source. */
+  draft?: { said: string[]; missing: string[]; flagged: string[] };
 };
 
 /**

@@ -98,12 +98,19 @@ const RETURNING: Metric[] = [
   { key: "wrongRecall", label: "Wrong from last time", better: "lower", gate: true, value: (c) => c.wrong ?? 0 },
 ];
 
+const CONTEXT: Metric[] = [
+  { key: "contextText", label: "Page has context", better: "higher", value: (c) => ratio(c.withText, c.pages) },
+  { key: "contextFound", label: "Who is asking, found", better: "higher", value: (c) => ratio(c.found, c.named) },
+  { key: "contextLeaks", label: "Questions read as the page", better: "lower", gate: true, value: (c) => c.leaked ?? 0 },
+];
+
 export const SCORERS: Scorer[] = [
   { name: "read", title: "reading", size: (t) => `${t.fields ?? 0} fields`, metrics: READ },
   { name: "fill", title: "filling", size: (t) => `${t.cases ?? 0} answers`, metrics: FILL },
   { name: "talk", title: "talking", size: (t) => `${t.checks ?? 0} checks`, metrics: TALK },
   { name: "meaning", title: "meaning", size: (t) => `${t.fields ?? 0} fields`, metrics: MEANING },
   { name: "returning", title: "a returning person", size: (t) => `${t.known ?? 0} known answers`, metrics: RETURNING },
+  { name: "context", title: "the page around the form", size: (t) => `${t.named ?? 0} named phrases`, metrics: CONTEXT },
 ];
 
 /** Deterministic reads and writes: any move is a real move. Raise per metric here only if one turns out noisy. */
@@ -267,7 +274,7 @@ export function report(options: {
 function details(stored: Stored[]): string[] {
   const lines = ["<details><summary>What is wrong, field by field</summary>", ""];
   for (const form of stored) {
-    const wrong = form.rows.filter((row) => row.problems.length > 0);
+    const wrong = (form.rows ?? []).filter((row) => row.problems.length > 0);
     const extras = form.extras ?? [];
     if (wrong.length === 0 && extras.length === 0) continue;
     lines.push(`**${form.id}**`);

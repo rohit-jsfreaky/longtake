@@ -27,7 +27,7 @@ import { readValue, type FieldValue } from "./writer";
  * is the person's own hand — including a value of ours they since changed. `page` was already there
  * when the session opened: autofill, or the site's own default.
  */
-export type Source = "spoken" | "memory" | "typed" | "page" | "empty";
+export type Source = "spoken" | "memory" | "drafted" | "typed" | "page" | "empty";
 
 export type FieldState = {
   spec: FieldSpec;
@@ -50,6 +50,8 @@ export type FieldState = {
   recalled?: { factId: string; sure: boolean };
   /** The agent told them this went in, and it did not: its words. */
   claimedIn?: string;
+  /** A long answer they gave on an earlier form to a question meaning the same — theirs to reuse. */
+  library?: { id: string; question: string; text: string };
 };
 
 export type FormState = {
@@ -106,7 +108,7 @@ export function snapshot(read: FormRead, ledger: Ledger, title = "", buttons?: A
 
     const state: FieldState = { spec, value, source, declined: ledger.isDeclined(spec.id) };
     if (ledger.isSetAside(spec.id)) state.later = true;
-    if ((source === "spoken" || source === "memory") && entry) state.evidence = entry.evidence;
+    if ((source === "spoken" || source === "memory" || source === "drafted") && entry) state.evidence = entry.evidence;
     const pending = ledger.pendingFor(spec.id);
     if (pending && value === null) state.pending = pending;
     const claimed = ledger.claimFor(spec.id);

@@ -1825,10 +1825,10 @@
         }
       }
       const above = deepQueryAll(root, "h1,h2,h3,h4,h5,h6,[role='heading']").filter(isVisible).filter((heading) => heading.compareDocumentPosition(firstField) & FOLLOWING).filter((heading) => cleanLabel(textOf(heading)) !== "").filter((heading) => !labelling.has(heading) && !questions.has(cleanLabel(textOf(heading)).toLowerCase()));
-      const flat2 = (text5) => text5.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
-      const pageTitle = flat2(ownerDocumentOf(root).title ?? "");
+      const flat3 = (text5) => text5.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+      const pageTitle = flat3(ownerDocumentOf(root).title ?? "");
       const named = above.filter((heading) => {
-        const text5 = flat2(textOf(heading));
+        const text5 = flat3(textOf(heading));
         return text5.length >= 4 && pageTitle.includes(text5);
       });
       const chosen = named[0] ?? above[above.length - 1];
@@ -2042,9 +2042,9 @@
     return (real.length > 0 ? real : options ?? []).map((option) => option.label).filter(Boolean);
   }
   function sayableChoices(labels) {
-    const clean = labels.map((label) => label.trim()).filter(Boolean);
-    const shown2 = clean.slice(0, MOST_CHOICES_TO_SAY);
-    const rest = clean.length - shown2.length;
+    const clean2 = labels.map((label) => label.trim()).filter(Boolean);
+    const shown2 = clean2.slice(0, MOST_CHOICES_TO_SAY);
+    const rest = clean2.length - shown2.length;
     return rest > 0 ? `${shown2.join(", ")}, and ${rest} more` : shown2.join(", ");
   }
 
@@ -2411,9 +2411,9 @@
     return spoken.split(/[\s,]+/).filter((word) => word.length >= 4 && !GENERIC_WORD.test(word)).sort((a, b) => b.length - a.length).slice(0, 2);
   }
   function everyWordIn(candidates, spoken) {
-    const words3 = normalise(spoken).split(" ").filter(Boolean);
-    if (words3.length === 0) return null;
-    const hits = candidates.map((candidate, index) => ({ text: normalise(candidate), index })).filter(({ text: text4 }) => words3.every((word) => text4.includes(word)));
+    const words4 = normalise(spoken).split(" ").filter(Boolean);
+    if (words4.length === 0) return null;
+    const hits = candidates.map((candidate, index) => ({ text: normalise(candidate), index })).filter(({ text: text4 }) => words4.every((word) => text4.includes(word)));
     return hits.length === 1 ? hits[0].index : null;
   }
   async function typeAndPick(spec, el, spoken) {
@@ -2652,8 +2652,8 @@
     return shape.replace(/[09#]/g, () => digits[next++]);
   }
   function sameCharacters(a, b) {
-    const flat2 = (v) => v.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
-    return flat2(a) !== "" && flat2(a) === flat2(b);
+    const flat3 = (v) => v.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+    return flat3(a) !== "" && flat3(a) === flat3(b);
   }
   var text = {
     name: "text",
@@ -2999,6 +2999,31 @@
       timeout_seconds: TIMEOUT_SECONDS
     };
   }
+  var DRAFT_TOOL_NAME = "draft_answer";
+  function buildDraftTool(specs) {
+    const ids = specs.filter((spec) => spec.longForm && !spec.suspectedHoneypot).map((spec) => spec.id);
+    if (ids.length === 0) return null;
+    return {
+      type: "function",
+      name: DRAFT_TOOL_NAME,
+      description: "Draft a long answer (why this role, about you, a cover letter) from their points, once they've said them \u2014 any order, any language. mode new: from their points; revise: change the draft you read them; reuse: last time's answer as it was. Nothing goes in yet: read the draft word for word, then confirm_answer on their yes.",
+      parameters: {
+        type: "object",
+        properties: {
+          field: { type: "string", enum: ids, description: "The long-answer field." },
+          mode: { type: "string", enum: ["new", "revise", "reuse"], description: "new, revise or reuse." },
+          evidence: {
+            type: "string",
+            description: "Their own words, quoted exactly: their points (new), what to change (revise), or their yes (reuse)."
+          }
+        },
+        required: ["field", "mode", "evidence"],
+        additionalProperties: false
+      },
+      execution_mode: EXECUTION_MODE,
+      timeout_seconds: TIMEOUT_SECONDS
+    };
+  }
   var SAVE_TOOL_NAME = "save_for_next_time";
   function buildSaveTool(specs) {
     const ids = specs.filter((spec) => !spec.suspectedHoneypot && spec.kind !== "file").map((spec) => spec.id);
@@ -3304,18 +3329,18 @@
     return { count: count2, words: found };
   }
   function countRestarts(verbatim) {
-    const words3 = normalise3(verbatim).split(" ").filter(Boolean);
+    const words4 = normalise3(verbatim).split(" ").filter(Boolean);
     const examples = [];
     let count2 = 0;
-    for (let i = 1; i < words3.length; i++) {
-      if (words3[i] && words3[i] === words3[i - 1] && words3[i].length > 1) {
+    for (let i = 1; i < words4.length; i++) {
+      if (words4[i] && words4[i] === words4[i - 1] && words4[i].length > 1) {
         count2++;
-        if (examples.length < 3) examples.push(words3[i]);
+        if (examples.length < 3) examples.push(words4[i]);
       }
     }
     return { count: count2, examples };
   }
-  function readHesitation(fieldId, verbatim, clean, secondsBeforeSpeaking) {
+  function readHesitation(fieldId, verbatim, clean2, secondsBeforeSpeaking) {
     const marks = [];
     const fillers = countFillers(verbatim);
     if (fillers.count >= FILLER_THRESHOLD) {
@@ -3326,7 +3351,7 @@
       marks.push({ kind: "restart", count: restarts.count, examples: restarts.examples });
     }
     const spoken = normalise3(verbatim).length;
-    const written = normalise3(clean).length;
+    const written = normalise3(clean2).length;
     if (spoken > 0 && written < spoken) {
       const removedRatio = (spoken - written) / spoken;
       if (removedRatio >= HEAVILY_EDITED_RATIO) {
@@ -3468,6 +3493,10 @@
         return;
       }
       if (type === "reply.done") this.speaking = false;
+    }
+    /** What is finished but not yet sent — a page that goes now takes these with it (conductor.ts). */
+    peek() {
+      return [...this.waiting];
     }
     /** A tool has finished. `now` is only read to start the deadline. */
     add(item, now) {
@@ -3816,8 +3845,8 @@
     const toSay = easyGroups.filter((group) => !alreadyIn.includes(group)).map((group) => group.say).slice(0, MOST_EASY_TO_NAME);
     const kept = alreadyIn.length ? ` I've already put in ${spokenList(alreadyIn.map((group) => group.say).slice(0, MOST_EASY_TO_NAME))}${remembered ? " from last time" : ""} \u2014 give ${alreadyIn.length === 1 ? "it" : "them"} a quick look.` : "";
     const shortKept = alreadyIn.length ? ` I've already put in ${spokenList(alreadyIn.map((group) => group.say).slice(0, 3))}${remembered ? " from last time" : ""}.` : "";
-    const words3 = (line) => line.replace(name, "").split(/\s+/).filter((word) => /\w/.test(word)).length;
-    const fits = (lines) => lines.find((line) => words3(line) <= MOST_WORDS) ?? lines[lines.length - 1];
+    const words4 = (line) => line.replace(name, "").split(/\s+/).filter((word) => /\w/.test(word)).length;
+    const fits = (lines) => lines.find((line) => words4(line) <= MOST_WORDS) ?? lines[lines.length - 1];
     const counts = (n) => Array.from({ length: n }, (_, i) => n - i);
     if (remembered && recalled > 0) {
       const all = alreadyIn.map((group) => group.say).slice(0, 3);
@@ -4265,10 +4294,10 @@
   // core/src/form-state.ts
   function sameAnswer(written, onPage) {
     if (onPage === null) return false;
-    const flat2 = (v) => (Array.isArray(v) ? v.join(" ") : String(v)).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+    const flat3 = (v) => (Array.isArray(v) ? v.join(" ") : String(v)).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
     if (typeof onPage === "boolean") return onPage === Boolean(written);
-    const a = flat2(written);
-    const b = flat2(onPage);
+    const a = flat3(written);
+    const b = flat3(onPage);
     return a === b || a.length > 0 && (b.startsWith(a) || a.startsWith(b) || b.length >= 2 && a.endsWith(b));
   }
   function isOpen(field) {
@@ -4288,7 +4317,7 @@
       else source = "typed";
       const state = { spec, value, source, declined: ledger.isDeclined(spec.id) };
       if (ledger.isSetAside(spec.id)) state.later = true;
-      if ((source === "spoken" || source === "memory") && entry) state.evidence = entry.evidence;
+      if ((source === "spoken" || source === "memory" || source === "drafted") && entry) state.evidence = entry.evidence;
       const pending = ledger.pendingFor(spec.id);
       if (pending && value === null) state.pending = pending;
       const claimed = ledger.claimFor(spec.id);
@@ -4349,8 +4378,8 @@
     return { write: true };
   }
   function sameText(a, b) {
-    const flat2 = (s) => s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
-    return flat2(a) === flat2(b);
+    const flat3 = (s) => s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+    return flat3(a) === flat3(b);
   }
 
   // core/src/profile.ts
@@ -4395,8 +4424,8 @@
   }
   function sameValue(a, b) {
     if (typeof a === "boolean" || typeof b === "boolean") return a === b;
-    const flat2 = (v) => (Array.isArray(v) ? [...v].map((x) => normalise(String(x))).sort() : [normalise(v)]).join("|");
-    return flat2(a) === flat2(b);
+    const flat3 = (v) => (Array.isArray(v) ? [...v].map((x) => normalise(String(x))).sort() : [normalise(v)]).join("|");
+    return flat3(a) === flat3(b);
   }
   function isEmpty(value) {
     if (typeof value === "boolean") return false;
@@ -4639,9 +4668,9 @@
     }
     if (key.concept === "identity.first_name" || key.concept === "identity.last_name") {
       const full = get("identity.full_name");
-      const words3 = typeof full?.value === "string" ? full.value.trim().split(/\s+/) : [];
-      if (full && words3.length === 2) {
-        return { id: full.id, fact: full, value: key.concept === "identity.first_name" ? words3[0] : words3[1], evidence: evidenceOf(full), why: "taken_apart" };
+      const words4 = typeof full?.value === "string" ? full.value.trim().split(/\s+/) : [];
+      if (full && words4.length === 2) {
+        return { id: full.id, fact: full, value: key.concept === "identity.first_name" ? words4[0] : words4[1], evidence: evidenceOf(full), why: "taken_apart" };
       }
     }
     if (key.concept === PHONE_NUMBER || key.concept === PHONE_CODE) {
@@ -4909,6 +4938,8 @@
         const together = open.filter((f) => later.has(first.field) || !later.has(f.spec.id)).map((f) => factsOf(f.spec, specs)).filter((facts) => facts.group === first.group && facts.section === first.section && facts.whole === first.whole);
         return { kind: "ask", fields: together };
       }
+      const library = open.find((f) => f.spec.id === first.field)?.library;
+      if (library) return { kind: "ask", fields: [first], library: { question: library.question, text: library.text } };
       return { kind: "ask", fields: batch(required.map((spec) => factsOf(spec, specs)).filter((f) => !f.group || f.field === first.field)) };
     }
     const optional = lastIfLater(inAskingOrder(open.filter((f) => !toAsk(f)).map((f) => f.spec))).map(
@@ -4931,6 +4962,7 @@
   var SOURCE_WORDS = {
     spoken: "they said it",
     memory: "from their last form",
+    drafted: "drafted from their words, and they said yes",
     typed: "they typed it",
     page: "was already there",
     empty: ""
@@ -4946,7 +4978,7 @@
     if (facts.choices) return `${facts.question}${where} \u2014 choices: ${facts.choices.join(", ")}`;
     if (facts.choice_count) return `${facts.question}${where} \u2014 ${facts.choice_count} options; ask them to look at the list on screen`;
     if (facts.answer_type === "yes or no") return `${facts.question}${where} \u2014 yes or no`;
-    if (facts.answer_type === "long answer") return `${facts.question}${where} \u2014 a longer answer`;
+    if (facts.answer_type === "long answer") return `${facts.question}${where} \u2014 a longer answer: they say their points in their own words, any order, and you draft it with draft_answer`;
     return `${facts.question}${where}`;
   }
   function waitingCount(state) {
@@ -4971,6 +5003,7 @@
   function doNext(move2) {
     switch (move2.kind) {
       case "confirm":
+        if (move2.reason === "draft") return `A draft for "${move2.field.question}" is ready, written from their words. Read it to them word for word, exactly as written, nothing added: "${move2.suggestion}". Then ask if it should go in as it is, or what to change. On their yes, confirm_answer for ${move2.field.field} with agreed true; to change it, draft_answer with mode revise and their words.`;
         if (move2.reason === "hedged") return `They weren't sure for "${move2.field.question}" (they said: "${move2.heard}"). Ask which it is before anything goes in.`;
         if (move2.reason === "inferred") return `You worked out "${move2.suggestion}" for "${move2.field.question}" from "${move2.heard}" \u2014 they did not say it. Ask if that's right, then call confirm_answer for ${move2.field.field} with agreed true or false.`;
         return `"${move2.field.question}" is waiting for their yes: they said "${move2.heard}", and the closest the form offers is "${move2.suggestion}". Ask if that's right, then call confirm_answer for ${move2.field.field} with agreed true or false \u2014 you judge their reply, in whatever words. If not, offer the other choices.`;
@@ -4999,6 +5032,9 @@
         }
         if (move2.fields.length > 1) {
           return `Ask for these together in one short question \u2014 they can answer them all at once: ${move2.fields.map(describe2).join("; ")}.`;
+        }
+        if (move2.library) {
+          return `For "${move2.fields[0].question}": last time, for "${move2.library.question}", they answered: "${move2.library.text}". Tell them briefly, and ask whether to use it as it is, change it, or start fresh. Use it: draft_answer with mode reuse. Change it: draft_answer with mode revise and their words. Fresh: ask for their points.`;
         }
         return `Ask for ${describe2(move2.fields[0])}.`;
       }
@@ -5112,11 +5148,11 @@
     const own = el.tagName.toLowerCase() === "input" ? el.value : el.innerText ?? el.textContent ?? "";
     return (own || el.getAttribute("aria-label") || el.getAttribute("title") || "").replace(/\s+/g, " ").trim();
   }
-  function classify(words3) {
-    if (!words3) return null;
-    if (SUBMIT.test(words3)) return "submit";
-    if (NEXT.test(words3)) return "next";
-    if (ADD_ANOTHER.test(words3)) return "add-another";
+  function classify(words4) {
+    if (!words4) return null;
+    if (SUBMIT.test(words4)) return "submit";
+    if (NEXT.test(words4)) return "next";
+    if (ADD_ANOTHER.test(words4)) return "add-another";
     return null;
   }
   function slug2(raw) {
@@ -5131,16 +5167,16 @@
       if (ignore && el.closest(ignore)) continue;
       if (el.disabled && classify(wordsOf(el)) !== "submit") continue;
       if (!isVisible(el)) continue;
-      const words3 = wordsOf(el);
-      const kind = classify(words3);
+      const words4 = wordsOf(el);
+      const kind = classify(words4);
       if (kind === "submit") {
-        if (submitLabel === void 0) submitLabel = words3;
+        if (submitLabel === void 0) submitLabel = words4;
         continue;
       }
       if (!kind) continue;
-      let id = slug2(`${kind === "next" ? "next" : "add"} ${words3}`) || kind;
-      for (let n = 2; handles.has(id); n++) id = `${slug2(`${kind} ${words3}`)}_${n}`;
-      actions.push({ id, kind, label: words3 });
+      let id = slug2(`${kind === "next" ? "next" : "add"} ${words4}`) || kind;
+      for (let n = 2; handles.has(id); n++) id = `${slug2(`${kind} ${words4}`)}_${n}`;
+      actions.push({ id, kind, label: words4 });
       handles.set(id, el);
     }
     return { actions, handles, ...submitLabel ? { submitLabel } : {} };
@@ -5347,7 +5383,48 @@
       if (!this.current) {
         return { title: "", fields: [], theirs: [], actions: [], asks: [], progress: { filled: 0, total: 0, requiredLeft: 0, optionalLeft: 0 } };
       }
-      return snapshot(this.current, this.ledger, this.title, this.buttons());
+      const state = snapshot(this.current, this.ledger, this.title, this.buttons());
+      for (const field of state.fields) {
+        const library = this.libraryFor(field);
+        if (library) field.library = { id: library.id, question: library.question, text: library.text };
+      }
+      return state;
+    }
+    /**
+     * A long answer they gave on an earlier form, to a question meaning the same (the model's reading
+     * of both), for an empty long field that has nothing waiting — the newest one.
+     */
+    libraryFor(field) {
+      if (!field.spec.longForm || field.value !== null || field.pending || field.declined) return null;
+      const concept = this.meanings[field.spec.id]?.concept;
+      if (!concept || concept === "other") return null;
+      const same = Object.values(this.profile.answers).filter((answer) => answer.concept === concept);
+      return same.sort((a, b) => b.at - a.at)[0] ?? null;
+    }
+    /**
+     * What a draft for this field is written from, beside their words: the question, the form's
+     * limit, their saved answers (never a personal one), and what is waiting or saved for it.
+     */
+    draftRequest(fieldId) {
+      const spec = this.current?.specs.find((s) => s.id === fieldId);
+      if (!spec?.longForm) return null;
+      const field = this.state().fields.find((f) => f.spec.id === fieldId);
+      const facts = Object.values(this.profile.facts).filter((fact) => !fact.sensitive).slice(0, 12).map((fact) => ({ name: sayFact(fact), value: shownValue(fact.value) }));
+      const pending = this.ledger.pendingFor(fieldId);
+      const library = field ? this.libraryFor({ ...field, pending: void 0 }) : null;
+      return {
+        question: fieldName(spec),
+        ...spec.maxLength ? { maxChars: spec.maxLength } : {},
+        facts,
+        ...pending?.reason === "draft" ? { pending } : {},
+        ...library ? { library } : {}
+      };
+    }
+    /** A draft, waiting for their yes — never written until they give it. */
+    holdDraft(fieldId, text4, said2, missing, flagged) {
+      this.ledger.hold(fieldId, { reason: "draft", suggestion: text4, heard: said2.join(" \u2026 "), value: text4, draft: { said: said2, missing, flagged } });
+      this.options.onChange?.();
+      return { do_next: doNext(this.move()) };
     }
     /** What to do next. Offering the optional fields is a one-time move, so it is recorded. */
     move() {
@@ -5372,7 +5449,8 @@
       const specs = this.current?.specs ?? [];
       const press2 = this.current ? buildPressTool(this.buttons().actions) : null;
       const always = [buildFillTool(specs), buildConfirmTool(specs), buildClearTool(specs), buildLaterTool(specs), buildLeaveTool(specs), buildSaveTool(specs)];
-      return press2 ? [...always, press2] : always;
+      const draft = buildDraftTool(specs);
+      return [...always, ...draft ? [draft] : [], ...press2 ? [press2] : []];
     }
     /**
      * The `confirm_answer` tool: their reply to "is that right?", as the agent understood it.
@@ -5407,6 +5485,7 @@
         };
       }
       const recalled = pending.reason === "from_last_time";
+      const drafted = pending.reason === "draft";
       const claim = { fieldId: id, value: pending.value ?? pending.suggestion, evidence: `${pending.heard} \u2014 ${evidence}` };
       this.writing = true;
       this.movedWhileWriting = false;
@@ -5416,7 +5495,8 @@
       } finally {
         this.writing = false;
       }
-      await this.record(results, [claim], read, recalled ? "memory" : "spoken", recalled && pending.factId ? { [id]: pending.factId } : {});
+      await this.record(results, [claim], read, recalled ? "memory" : drafted ? "drafted" : "spoken", recalled && pending.factId ? { [id]: pending.factId } : {});
+      if (drafted && results[0]?.status === "written") await this.keepLongAnswer(spec, String(claim.value), pending.draft?.said ?? [], read);
       if (recalled) await this.learn([{ ...claim, value: pending.value ?? pending.suggestion }], read, "confirmed");
       const reshaped = results[0]?.status === "written" && CHOICE_KINDS2.has(spec.kind) || this.movedWhileWriting ? await this.pageChanged() : null;
       const result = this.report(results, [claim], reshaped, { waiting_for_yes: [] });
@@ -5508,7 +5588,7 @@
           submitted: false
         };
       }
-      return { error: "The page changed before this finished, so nothing from it is on this page. FORM NOW is the new page.", submitted: false };
+      return { error: "The page moved on before this finished. Whatever went in on the last page stays there; FORM NOW is the new page.", submitted: false };
     }
     async press(args, heard) {
       const id = typeof args.action === "string" ? args.action : "";
@@ -5746,6 +5826,38 @@
         said2.push(whole ? { ...claim, value: whole } : claim);
       }
       if (source === "spoken" && said2.length > 0) await this.learn(said2, read, "spoken");
+    }
+    /**
+     * An approved long answer, kept whole for a later form's question meaning the same — one per
+     * meaning per site, the newest. Never a personal one (health, documents), and never one that is
+     * not to be kept at all.
+     */
+    async keepLongAnswer(spec, text4, said2, read) {
+      const meaning = this.meanings[spec.id];
+      const concept = meaning?.concept && meaning.concept !== "other" ? meaning.concept : void 0;
+      const scope = concept ? conceptById(concept)?.scope : void 0;
+      if (scope === "sensitive" || scope === "never") return;
+      let host = "";
+      try {
+        host = new URL(read.url).host;
+      } catch {
+      }
+      const answer = {
+        id: `answer:${concept ?? spec.id}:${host}`,
+        gist: meaning?.gist || fieldName(spec),
+        question: fieldName(spec),
+        text: text4,
+        said: said2,
+        host,
+        at: Date.now(),
+        uses: 0,
+        ...concept ? { concept } : {}
+      };
+      try {
+        this.profile = (await this.store.apply([{ type: "saveAnswer", answer }])).profile;
+      } catch (cause) {
+        this.options.log?.(`could not keep the answer for next time: ${cause instanceof Error ? cause.message : String(cause)}`);
+      }
     }
     /** Where an answer was given, for its history. */
     provenance(value, read, how) {
@@ -6429,7 +6541,8 @@
       onReconnecting,
       onReconnected,
       onResultsSent,
-      onToolCall
+      onToolCall,
+      toolDeadlineMs
     } = options;
     let transcriptionMode = options.transcriptionMode ?? LONG_TAKE_MODE;
     if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
@@ -6670,7 +6783,7 @@
       const args = message.arguments ?? {};
       let result;
       try {
-        result = onToolCall ? await withDeadline(onToolCall(name, args, callId), TOOL_DEADLINE_MS) : { error: `No handler for "${name}" in this client.` };
+        result = onToolCall ? await withDeadline(onToolCall(name, args, callId), toolDeadlineMs?.(name) ?? TOOL_DEADLINE_MS) : { error: `No handler for "${name}" in this client.` };
       } catch (cause) {
         result = { error: cause instanceof Error ? cause.message : String(cause) };
       }
@@ -6867,6 +6980,7 @@
         replies.add(instructions, Date.now());
         flushReplies();
       },
+      unsentResults: () => results.peek().map((held) => ({ callId: held.call_id, result: held.result })),
       stop: async () => {
         closing = true;
         clearTimeout(reconnectTimer);
@@ -6972,6 +7086,187 @@
     return `You told them ${which} went in, but it did not \u2014 nothing was put in. If they said it, call fill_fields now for ${found.map((m) => m.field).join(", ")}, quoting their exact words. If they did not, say plainly that it is not in yet and ask for it. Do not apologise at length.`;
   }
 
+  // core/src/draft.ts
+  var SOURCES = /* @__PURE__ */ new Set(["said", "fact", "page"]);
+  var EXACT = /[\w.+-]+@[\w-]+(?:\.[\w-]+)+|(?:https?:\/\/|www\.)\S+|\b[\w-]+\.(?:com|org|net|io|dev|ai|in|co|app)\b\S*|\d[\d,.]*/gi;
+  var NAME = /(?<=[^.!?]\s)[A-Z][\p{L}'’-]+/gu;
+  var flat2 = (text4) => text4.toLowerCase().replace(/[\s,]+/g, "");
+  var NUMBER_WORDS = {
+    zero: 0,
+    two: 2,
+    three: 3,
+    four: 4,
+    five: 5,
+    six: 6,
+    seven: 7,
+    eight: 8,
+    nine: 9,
+    ten: 10,
+    eleven: 11,
+    twelve: 12,
+    thirteen: 13,
+    fourteen: 14,
+    fifteen: 15,
+    sixteen: 16,
+    seventeen: 17,
+    eighteen: 18,
+    nineteen: 19,
+    twenty: 20,
+    thirty: 30,
+    forty: 40,
+    fifty: 50,
+    sixty: 60,
+    seventy: 70,
+    eighty: 80,
+    ninety: 90,
+    hundred: 100,
+    thousand: 1e3,
+    third: 3,
+    fourth: 4,
+    fifth: 5,
+    dozen: 12
+  };
+  var NUMBER_WORD = new RegExp(`\\b(${Object.keys(NUMBER_WORDS).join("|")})\\b`, "gi");
+  function unbackedNumberWords(text4, cited) {
+    const sourceWords = new Set(cited.toLowerCase().match(NUMBER_WORD) ?? []);
+    const sourceDigits = new Set((cited.match(/\d+(?:\.\d+)?/g) ?? []).map(Number));
+    return (text4.match(NUMBER_WORD) ?? []).filter((word) => {
+      const w = word.toLowerCase();
+      return !sourceWords.has(w) && !sourceDigits.has(NUMBER_WORDS[w]);
+    });
+  }
+  var words3 = (text4) => text4.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ");
+  function sourceText(input, support) {
+    if (support.source === "said") return input.said[support.ref] ?? null;
+    if (support.source === "fact") {
+      const fact = input.facts[support.ref];
+      return fact ? `${fact.name}: ${fact.value}` : null;
+    }
+    return `${input.page.title}
+${input.page.text}`;
+  }
+  function verifyDraft(raw, input) {
+    const body = raw && typeof raw === "object" ? raw : {};
+    const list = Array.isArray(body.sentences) ? body.sentences : [];
+    const missing = Array.isArray(body.missing) ? body.missing.filter((m) => typeof m === "string").map((m) => m.slice(0, 120)) : [];
+    const everything = words3([input.question, input.page.title, input.page.text, ...input.said, ...input.facts.map((f) => `${f.name} ${f.value}`)].join(" "));
+    const kept = [];
+    const dropped = [];
+    const flagged = /* @__PURE__ */ new Set();
+    for (const item of list) {
+      const text4 = typeof item?.text === "string" ? item.text.trim() : "";
+      if (!text4) continue;
+      const supports = [];
+      for (const s of Array.isArray(item?.supports) ? item.supports : []) {
+        const source = typeof s?.source === "string" && SOURCES.has(s.source) ? s.source : null;
+        const ref = typeof s?.ref === "number" && Number.isInteger(s.ref) ? s.ref : source === "page" ? 0 : -1;
+        const quote2 = typeof s?.quote === "string" ? s.quote.trim() : "";
+        if (!source || ref < 0 || !quote2) continue;
+        const from = sourceText(input, { source, ref, quote: quote2 });
+        if (from === null || !checkEvidence(from, quote2).ok) continue;
+        supports.push({ source, ref, quote: quote2 });
+      }
+      const theirs = supports.filter((s) => s.source !== "page");
+      if (theirs.length === 0) {
+        dropped.push({ text: text4, why: supports.length > 0 ? "only the page says this, not them" : "none of their words behind it" });
+        continue;
+      }
+      const cited = flat2(supports.map((s) => sourceText(input, s) ?? "").join(" "));
+      const citedText = supports.map((s) => sourceText(input, s) ?? "").join(" ");
+      const unbacked = [
+        ...(text4.match(EXACT) ?? []).filter((token) => !cited.includes(flat2(token).replace(/[.,]+$/, ""))),
+        ...unbackedNumberWords(text4, citedText)
+      ];
+      if (unbacked.length > 0) {
+        dropped.push({ text: text4, why: `"${unbacked[0]}" is not in what they said` });
+        continue;
+      }
+      for (const name of text4.match(NAME) ?? []) if (!/^I(['’]|$)/.test(name) && !everything.includes(words3(name).trim())) flagged.add(name);
+      kept.push({ text: text4, supports });
+    }
+    let answer = kept;
+    if (input.maxChars) {
+      while (answer.length > 0 && answer.map((s) => s.text).join(" ").length > input.maxChars) {
+        const last = answer[answer.length - 1];
+        dropped.push({ text: last.text, why: "over the form's length limit" });
+        answer = answer.slice(0, -1);
+      }
+    }
+    return { text: answer.map((s) => s.text).join(" "), sentences: answer, dropped, flagged: [...flagged], missing };
+  }
+  var READ_BACK_MIN = 0.85;
+  function readBack2(draft, spoken) {
+    const a = words3(draft).split(" ").filter(Boolean);
+    const b = words3(spoken).split(" ").filter(Boolean);
+    if (a.length === 0) return 1;
+    let prev = new Array(b.length + 1).fill(0);
+    for (let i = 1; i <= a.length; i++) {
+      const row = new Array(b.length + 1).fill(0);
+      for (let j = 1; j <= b.length; j++) row[j] = a[i - 1] === b[j - 1] ? prev[j - 1] + 1 : Math.max(prev[j], row[j - 1]);
+      prev = row;
+    }
+    return prev[b.length] / a.length;
+  }
+
+  // core/src/page-context.ts
+  var PAGE_CONTEXT_MAX = 4e3;
+  var BLOCKS = "h1,h2,h3,h4,h5,h6,p,li,dd,dt,blockquote,[role='heading']";
+  var CHROME = "nav,header,footer,[role='navigation'],[role='banner'],[role='contentinfo'],[aria-modal='true'],dialog";
+  var NOT_PROSE = "input,select,textarea,button,option,label,legend,[role='option'],[role='listbox'],[role='combobox'],[role='radiogroup'],[role='button'],[contenteditable='true'],script,style,noscript,template";
+  var clean = (text4) => text4.replace(/\s+/g, " ").trim();
+  function notContent(el) {
+    const view = el.ownerDocument.defaultView;
+    for (let at = el; at; at = at.parentElement) {
+      const style = view?.getComputedStyle(at);
+      if (!style) break;
+      if (style.display === "none" || style.visibility === "hidden" || style.position === "fixed") return true;
+      if (at.getAttribute("aria-hidden") === "true") return true;
+    }
+    return el.getClientRects().length === 0;
+  }
+  var CONTROL = "input,select,textarea,button,[role='combobox'],[role='listbox'],[role='radiogroup'],[contenteditable='true']";
+  var FORM_PROSE_MIN = 40;
+  function pageContext(root, read, ignore) {
+    const doc = root instanceof Document ? root : root.ownerDocument;
+    const title = (doc.title ?? "").split(/\s[|·–-]\s/)[0].trim().slice(0, 160);
+    const formWords = /* @__PURE__ */ new Set();
+    for (const spec of read?.specs ?? []) {
+      for (const text4 of [spec.label, spec.part, spec.description, spec.placeholder, ...(spec.options ?? []).map((o) => o.label)]) {
+        const t = clean(text4 ?? "").toLowerCase();
+        if (t.length > 0) formWords.add(t);
+      }
+    }
+    const longQuestions = [...formWords].filter((words4) => words4.length >= 8);
+    const controls = /* @__PURE__ */ new Set([...read?.handles.values() ?? []]);
+    const insideAQuestion = (el) => {
+      for (const control of controls) if (el.contains(control)) return true;
+      return false;
+    };
+    const seen2 = /* @__PURE__ */ new Set();
+    const parts = [];
+    let length = 0;
+    const ownText = (el) => [...el.childNodes].filter((n) => n.nodeType === 3).map((n) => n.textContent ?? "").join(" ");
+    const candidates = deepQueryAll(doc, `${BLOCKS},div`).filter((el) => el.matches(BLOCKS) || clean(ownText(el)).length >= 40);
+    for (const el of candidates) {
+      if (length >= PAGE_CONTEXT_MAX) break;
+      if (el.closest(CHROME) || el.closest(NOT_PROSE) || ignore && el.closest(ignore)) continue;
+      const outer = el.parentElement?.closest(BLOCKS);
+      if (outer && !outer.closest(CHROME) && !(ignore && outer.closest(ignore))) continue;
+      if (insideAQuestion(el) || el.querySelector(CONTROL) || notContent(el)) continue;
+      if (el.closest("form") && clean(el.textContent ?? "").length < FORM_PROSE_MIN) continue;
+      const text4 = clean(el.matches(BLOCKS) ? el.textContent ?? "" : ownText(el));
+      const key = text4.toLowerCase();
+      if (text4.length < 2 || seen2.has(key) || formWords.has(key)) continue;
+      if (formWords.has(key.replace(/\s*\*$/, ""))) continue;
+      if (longQuestions.some((question) => key.includes(question))) continue;
+      seen2.add(key);
+      const cut2 = text4.slice(0, PAGE_CONTEXT_MAX - length);
+      parts.push(cut2);
+      length += cut2.length + 1;
+    }
+    return { title, text: parts.join("\n") };
+  }
+
   // core/src/overlay.ts
   var LABEL = {
     spoken: "Spoken",
@@ -6979,6 +7274,7 @@
     typed: "Typed",
     page: "Already there",
     waiting: "Waiting for your yes",
+    drafted: "Drafted",
     not_in: "Not in",
     look: "Another look?"
   };
@@ -6995,7 +7291,7 @@
 }
 .badge:active { transform: translate(-100%, -55%) scale(0.97); }
 .badge::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 5px; vertical-align: 1px; background: currentColor; }
-.spoken { color: #43c39b; } .memory { color: #6aa8ff; } .typed, .page { color: #b8b8c0; }
+.spoken, .drafted { color: #43c39b; } .memory { color: #6aa8ff; } .typed, .page { color: #b8b8c0; }
 .waiting, .look { color: #e0b060; } .not_in { color: #1a1206; background: #e0b060; border-color: #e0b060; }
 .not_in::before { background: #1a1206; }
 .flash { animation: flash 900ms ease-out 1; }
@@ -7193,6 +7489,7 @@
     waiting: "Waiting for your yes",
     not_in: "Said, but not in",
     memory: "From your last form",
+    drafted: "Drafted from your words",
     spoken: "Spoken",
     typed: "Typed by you",
     theirs: "Yours to do"
@@ -7200,17 +7497,21 @@
   var quote = (text4, max = 70) => text4.length > max ? `\u201C${text4.slice(0, max)}\u2026\u201D` : `\u201C${text4}\u201D`;
   var fromLastTime = (field) => field.recalled && !field.recalled.sure ? "from your last form \u2014 you said yes" : "from your last form";
   function reviewList(form, missed = []) {
-    const groups = { waiting: [], not_in: [], memory: [], spoken: [], typed: [], theirs: [] };
+    const groups = { waiting: [], not_in: [], memory: [], drafted: [], spoken: [], typed: [], theirs: [] };
     const missing = new Map(missed.map((m) => [m.fieldId, m]));
     for (const field of form.fields) {
       const question = fieldName(field.spec);
       const fieldId = field.spec.id;
-      if (field.pending) {
+      if (field.pending?.reason === "draft") {
+        groups.waiting.push({ fieldId, question, detail: `a draft from your words: ${quote(field.pending.suggestion)}` });
+      } else if (field.pending) {
         groups.waiting.push({ fieldId, question, detail: `${field.pending.suggestion} \u2014 you said ${quote(field.pending.heard)}` });
       } else if (field.value === null && (missing.has(fieldId) || field.claimedIn)) {
         groups.not_in.push({ fieldId, question, detail: missing.get(fieldId)?.why ?? "the agent said it went in, but it did not" });
       } else if (field.source === "memory") {
         groups.memory.push({ fieldId, question, detail: fromLastTime(field) });
+      } else if (field.source === "drafted") {
+        groups.drafted.push({ fieldId, question, detail: "written from what you said \u2014 read it once more before you send" });
       } else if (field.source === "spoken") {
         groups.spoken.push({ fieldId, question, detail: field.evidence ? `you said ${quote(field.evidence)}` : "" });
       } else if (field.source === "typed") {
@@ -7225,12 +7526,16 @@
     const badges = [];
     for (const field of form.fields) {
       const fieldId = field.spec.id;
-      if (field.pending) {
+      if (field.pending?.reason === "draft") {
+        badges.push({ fieldId, state: "waiting", detail: "A draft from your words is waiting for your yes." });
+      } else if (field.pending) {
         badges.push({ fieldId, state: "waiting", detail: `${field.pending.suggestion}? You said ${quote(field.pending.heard)}.` });
       } else if (field.value === null && (missing.has(fieldId) || field.claimedIn)) {
         badges.push({ fieldId, state: "not_in", detail: `Not in: ${missing.get(fieldId)?.why ?? "the agent said it went in, but it did not"}.` });
       } else if (hesitations[fieldId]?.worthAnotherLook && field.value !== null) {
         badges.push({ fieldId, state: "look", detail: "Want another look at this one?" });
+      } else if (field.source === "drafted") {
+        badges.push({ fieldId, state: "drafted", detail: "Drafted from what you said, and you said yes." });
       } else if (field.source === "spoken") {
         badges.push({ fieldId, state: "spoken", detail: field.evidence ? `You said ${quote(field.evidence, 120)}.` : "You said it." });
       } else if (field.source === "memory") {
@@ -7266,6 +7571,7 @@
   }
 
   // core/src/conductor.ts
+  var DRAFT_DEADLINE_MS = 25e3;
   var PAGE_TURNED = "The form has moved on to a new page (they may have pressed Next themselves). In a few words say you're on the next page, then do what DO NEXT says. Don't repeat anything from before.";
   var EMPTY_FORM = {
     title: "",
@@ -7332,6 +7638,10 @@
       /** The voice session the call is in now, and the tool calls not answered yet. */
       this.currentSession = null;
       this.openCalls = /* @__PURE__ */ new Map();
+      /** Every call's tool, by id — a held result is carried with its name. */
+      this.callNames = /* @__PURE__ */ new Map();
+      /** A draft just handed to the agent to read out, word for word — checked against what it said. */
+      this.readBackFor = null;
       /** What each reply said, until it is done. */
       this.replyText = /* @__PURE__ */ new Map();
       /** The form's answers when the person last spoke — to tell whether a reply changed anything. */
@@ -7453,7 +7763,10 @@
     }
     /** Tool calls the agent made that have not been answered yet — what a page load would cut off. */
     pendingCalls() {
-      return [...this.openCalls].map(([callId, name]) => ({ callId, name }));
+      const unsent = this.voice?.unsentResults() ?? [];
+      const held = unsent.map((r) => ({ callId: r.callId, name: this.callNames.get(r.callId) ?? "", result: r.result }));
+      const running = [...this.openCalls].filter(([callId]) => !unsent.some((r) => r.callId === callId)).map(([callId, name]) => ({ callId, name }));
+      return [...held, ...running];
     }
     // ── The call ───────────────────────────────────────────────────────────────────────
     async start(carry) {
@@ -7500,8 +7813,13 @@
             this.sentPrompt = this.session.prompt();
             return { systemPrompt: this.sentPrompt, greeting: this.session.resumeGreeting(), tools: this.session.tools() };
           },
+          // A draft is written, checked, maybe written once more: longer than any other tool.
+          toolDeadlineMs: (name) => name === DRAFT_TOOL_NAME ? DRAFT_DEADLINE_MS : void 0,
           onToolCall: async (name, args, callId) => {
-            if (callId) this.openCalls.set(callId, name);
+            if (callId) {
+              this.openCalls.set(callId, name);
+              this.callNames.set(callId, name);
+            }
             try {
               return await this.runTool(name, args, callId);
             } finally {
@@ -7509,7 +7827,7 @@
             }
           },
           // Carried from the page before: the same conversation, and its unanswered calls answered.
-          ...carry ? { resume: { sessionId: carry.sessionId, answers: () => carry.pending.map((call) => ({ callId: call.callId, result: this.session.carriedResult(call.name) })) } } : {},
+          ...carry ? { resume: { sessionId: carry.sessionId, answers: () => carry.pending.map((call) => ({ callId: call.callId, result: call.result ?? this.session.carriedResult(call.name) })) } } : {},
           onSession: (id) => {
             this.currentSession = id;
             this.options.onSession?.(id);
@@ -7555,6 +7873,7 @@
           onUserTranscript: (text4, audio, timeline) => this.heardTurn(text4, audio, timeline),
           onAgentTranscript: (text4, reply) => {
             if (reply?.id) this.replyText.set(reply.id, text4);
+            if (reply && !reply.interrupted && !reply.id.startsWith("fc-")) this.checkReadBack(text4);
             this.askedAt = Date.now();
             this.note("agent", text4);
             this.update({ turns: [...this.current.turns, { who: "agent", text: text4 }] });
@@ -7681,8 +8000,82 @@ ${text4}`.trim();
       if (name === PRESS_TOOL_NAME) return (await session.press(args, heard)).result;
       if (name === LATER_TOOL_NAME) return session.setAside(args, heard).result;
       if (name === LEAVE_TOOL_NAME) return session.leaveEmpty(args, heard).result;
+      if (name === DRAFT_TOOL_NAME) return this.draftAnswer(args, heard);
       if (name === SAVE_TOOL_NAME) return (await session.saveForNextTime(args, heard)).result;
       return { error: `Unknown tool "${name}".` };
+    }
+    // ── Long answers, drafted from their words ────────────────────────────────────────────
+    /**
+     * The `draft_answer` tool. Their points (or the change they want) must be their words, like any
+     * answer; the draft is written by the model, held to those words by `verifyDraft`, and waits for
+     * their yes — the agent reads it out word for word, and `confirm_answer` puts it in.
+     */
+    async draftAnswer(args, heard) {
+      const session = this.session;
+      const fieldId = typeof args.field === "string" ? args.field : "";
+      const mode = args.mode === "revise" || args.mode === "reuse" ? args.mode : "new";
+      const evidence = typeof args.evidence === "string" ? args.evidence.trim() : "";
+      if (!evidence || !checkEvidence(heard, evidence).ok) return { drafted: false, why: "quote_not_found", submitted: false };
+      const ask = session.draftRequest(fieldId);
+      if (!ask) return { drafted: false, error: `"${fieldId}" is not a long answer on this form.`, submitted: false };
+      if (mode === "reuse") {
+        if (!ask.library) return { drafted: false, why: "nothing from last time for this question", submitted: false };
+        const next2 = session.holdDraft(fieldId, ask.library.text, ask.library.said, [], []);
+        this.readBackFor = { fieldId, text: ask.library.text };
+        this.refresh();
+        return { draft: ask.library.text, from_last_time: true, read_it_word_for_word: true, ...next2, submitted: false };
+      }
+      const draft = this.options.services.draft;
+      if (!draft) return { drafted: false, why: "drafting is not available here \u2014 put their words in as they said them, with fill_fields", submitted: false };
+      const prior = ask.pending?.suggestion ?? ask.library?.text;
+      const earlier = this.current.turns.filter((t) => t.who === "you").slice(-4).map((t) => t.text);
+      const said2 = mode === "revise" ? [.../* @__PURE__ */ new Set([...ask.pending?.draft?.said ?? ask.library?.said ?? [], evidence])] : [.../* @__PURE__ */ new Set([evidence, ...earlier.filter((t) => !t.includes(evidence))])];
+      const read = this.session.read;
+      const input = {
+        question: ask.question,
+        ...ask.maxChars ? { maxChars: ask.maxChars } : {},
+        page: pageContext(this.options.root(), read ?? null, this.options.ignore),
+        said: said2,
+        facts: ask.facts,
+        ...mode === "revise" && prior ? { prior, change: evidence } : {}
+      };
+      let raw;
+      try {
+        raw = await draft(input);
+      } catch (cause) {
+        this.note("app", `draft failed: ${cause instanceof Error ? cause.message : String(cause)}`);
+        return { drafted: false, why: "the draft could not be written just now \u2014 ask them to try again, or put their words in as they said them", submitted: false };
+      }
+      const checked = verifyDraft(raw, input);
+      this.note("app", `draft: ${checked.sentences.length} sentences kept, ${checked.dropped.length} dropped${checked.flagged.length ? `, names to check: ${checked.flagged.join(", ")}` : ""}`);
+      if (!checked.text) {
+        return { drafted: false, why: "nothing could be written from their words alone", ...checked.missing.length ? { missing: checked.missing } : {}, submitted: false };
+      }
+      const next = session.holdDraft(fieldId, checked.text, said2, checked.missing, checked.flagged);
+      this.readBackFor = { fieldId, text: checked.text };
+      this.refresh();
+      return {
+        draft: checked.text,
+        read_it_word_for_word: true,
+        ...checked.missing.length ? { they_did_not_say: checked.missing } : {},
+        ...checked.flagged.length ? { ask_them_to_check_these_names: checked.flagged } : {},
+        ...next,
+        submitted: false
+      };
+    }
+    /**
+     * They are about to say yes to words they heard, so they must hear the words that will go in.
+     * The first reply after a draft is held to it; a paraphrase is caught and the agent asked, once,
+     * to read it exactly.
+     */
+    checkReadBack(said2) {
+      const waiting = this.readBackFor;
+      if (!waiting) return;
+      this.readBackFor = null;
+      const score = readBack2(waiting.text, said2);
+      if (score >= READ_BACK_MIN) return;
+      this.note("app", `the draft was not read word for word (${Math.round(score * 100)}%) \u2014 asked to read it again`);
+      this.voice?.createReply(`You did not read the draft word for word. Read it again, exactly as written, nothing added or left out: "${waiting.text}". Then ask if it should go in.`);
     }
     // ── The trust layer ────────────────────────────────────────────────────────────────
     /** Every answer on the form, as one string — to tell whether a reply changed anything. */
@@ -7865,7 +8258,9 @@ ${text4}`.trim();
           setSystemPrompt: (value) => this.sent.push({ kind: "systemPrompt", value }),
           setTools: (value) => this.sent.push({ kind: "tools", value }),
           setTranscriptionMode: (value) => this.sent.push({ kind: "transcriptionMode", value }),
-          createReply: (value) => this.sent.push({ kind: "reply", value })
+          createReply: (value) => this.sent.push({ kind: "reply", value }),
+          // Results go out at once here: nothing is ever held.
+          unsentResults: () => []
         };
       });
     }
@@ -7990,9 +8385,9 @@ ${text4}`.trim();
           const got = value(ref);
           if (got !== null) fail(index, `${ref} should be empty, is ${JSON.stringify(got)}`);
         }
-        for (const words3 of step.expectFinal.promptHas ?? []) {
+        for (const words4 of step.expectFinal.promptHas ?? []) {
           checks++;
-          if (!fake.prompt.includes(words3)) fail(index, `the agent's prompt lacks "${words3}"`);
+          if (!fake.prompt.includes(words4)) fail(index, `the agent's prompt lacks "${words4}"`);
         }
       }
     }
@@ -8095,6 +8490,8 @@ ${text4}`.trim();
     Overlay,
     reviewList,
     badgesFor,
+    pageContext,
+    verifyDraft,
     Conductor,
     FakeVoice,
     runScript,

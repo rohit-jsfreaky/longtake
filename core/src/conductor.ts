@@ -18,7 +18,9 @@
 
 import { checkEvidence } from "./evidence";
 import { clipFor, type TimelinePoint } from "./clip";
-import { CLEAR_TOOL_NAME, CONFIRM_TOOL_NAME, FILL_TOOL_NAME, LATER_TOOL_NAME, LEAVE_TOOL_NAME, PRESS_TOOL_NAME, SAVE_TOOL_NAME } from "./binder";
+import { CLEAR_TOOL_NAME, CONFIRM_TOOL_NAME, DRAFT_TOOL_NAME, FILL_TOOL_NAME, LATER_TOOL_NAME, LEAVE_TOOL_NAME, PRESS_TOOL_NAME, SAVE_TOOL_NAME } from "./binder";
+import { readBack, READ_BACK_MIN, verifyDraft, type DraftInput } from "./draft";
+import { pageContext } from "./page-context";
 import { configForField, fieldsWorthShaping, shapeResult, type DictationConfig, type DictationResult, type ShapedAnswer } from "./dictation";
 import type { FormState } from "./form-state";
 import { readHesitation, type Hesitation } from "./hesitation";
@@ -91,6 +93,12 @@ export type ConductorServices = {
    * is judged — the trust layer never guesses without it.
    */
   check?: (input: CheckInput) => Promise<unknown>;
+  /**
+   * A long answer written from their words (`/api/draft`). Absent: no drafts — their words go in
+   * as they said them. Its answer is held to their words here again (`verifyDraft`), whatever the
+   * server already did.
+   */
+  draft?: (input: DraftInput) => Promise<unknown>;
   /** The call itself. A fake in tests; `startVoiceSession` everywhere else. */
   startVoice?: (options: VoiceSessionOptions) => Promise<VoiceSession>;
 };
@@ -99,7 +107,14 @@ export type ConductorServices = {
  * A call the page's last document was in, to carry on here: the session to resume, and the tool
  * calls it made that the page never answered (a Next that loaded this page, above all).
  */
-export type CarriedCall = { sessionId: string; pending: { callId: string; name: string }[] };
+export type CarriedCall = {
+  sessionId: string;
+  /** Each call the agent is still waiting on: its result when it had finished, only not been sent. */
+  pending: { callId: string; name: string; result?: unknown }[];
+};
+
+/** A draft: written, checked, perhaps written once more (`/api/draft`) — longer than any other tool. */
+const DRAFT_DEADLINE_MS = 25_000;
 
 /** What the agent is asked to say when the page changed and no pressed Next of its own says so. */
 const PAGE_TURNED =
@@ -195,6 +210,10 @@ export class Conductor {
   /** The voice session the call is in now, and the tool calls not answered yet. */
   private currentSession: string | null = null;
   private openCalls = new Map<string, string>();
+  /** Every call's tool, by id — a held result is carried with its name. */
+  private callNames = new Map<string, string>();
+  /** A draft just handed to the agent to read out, word for word — checked against what it said. */
+  private readBackFor: { fieldId: string; text: string } | null = null;
   /** What each reply said, until it is done. */
   private replyText = new Map<string, string>();
   /** The form's answers when the person last spoke — to tell whether a reply changed anything. */
@@ -338,8 +357,13 @@ export class Conductor {
   }
 
   /** Tool calls the agent made that have not been answered yet — what a page load would cut off. */
-  pendingCalls(): { callId: string; name: string }[] {
-    return [...this.openCalls].map(([callId, name]) => ({ callId, name }));
+  pendingCalls(): CarriedCall["pending"] {
+    // Finished but held for the end of the agent's reply: the real result goes with the page. Still
+    // running: the next page answers it (session.carriedResult).
+    const unsent = this.voice?.unsentResults() ?? [];
+    const held = unsent.map((r) => ({ callId: r.callId, name: this.callNames.get(r.callId) ?? "", result: r.result }));
+    const running = [...this.openCalls].filter(([callId]) => !unsent.some((r) => r.callId === callId)).map(([callId, name]) => ({ callId, name }));
+    return [...held, ...running];
   }
 
   // ── The call ───────────────────────────────────────────────────────────────────────
@@ -393,8 +417,13 @@ export class Conductor {
           this.sentPrompt = this.session.prompt();
           return { systemPrompt: this.sentPrompt, greeting: this.session.resumeGreeting(), tools: this.session.tools() };
         },
+        // A draft is written, checked, maybe written once more: longer than any other tool.
+        toolDeadlineMs: (name) => (name === DRAFT_TOOL_NAME ? DRAFT_DEADLINE_MS : undefined),
         onToolCall: async (name, args, callId) => {
-          if (callId) this.openCalls.set(callId, name);
+          if (callId) {
+            this.openCalls.set(callId, name);
+            this.callNames.set(callId, name);
+          }
           try {
             return await this.runTool(name, args, callId);
           } finally {
@@ -403,7 +432,7 @@ export class Conductor {
         },
         // Carried from the page before: the same conversation, and its unanswered calls answered.
         ...(carry
-          ? { resume: { sessionId: carry.sessionId, answers: () => carry.pending.map((call) => ({ callId: call.callId, result: this.session.carriedResult(call.name) })) } }
+          ? { resume: { sessionId: carry.sessionId, answers: () => carry.pending.map((call) => ({ callId: call.callId, result: call.result ?? this.session.carriedResult(call.name) })) } }
           : {}),
         onSession: (id) => {
           this.currentSession = id;
@@ -454,6 +483,7 @@ export class Conductor {
         onUserTranscript: (text, audio, timeline) => this.heardTurn(text, audio, timeline),
         onAgentTranscript: (text, reply) => {
           if (reply?.id) this.replyText.set(reply.id, text);
+          if (reply && !reply.interrupted && !reply.id.startsWith("fc-")) this.checkReadBack(text);
           this.askedAt = Date.now();
           this.note("agent", text);
           this.update({ turns: [...this.current.turns, { who: "agent", text }] });
@@ -598,8 +628,92 @@ export class Conductor {
     if (name === PRESS_TOOL_NAME) return (await session.press(args, heard)).result;
     if (name === LATER_TOOL_NAME) return session.setAside(args, heard).result;
     if (name === LEAVE_TOOL_NAME) return session.leaveEmpty(args, heard).result;
+    if (name === DRAFT_TOOL_NAME) return this.draftAnswer(args, heard);
     if (name === SAVE_TOOL_NAME) return (await session.saveForNextTime(args, heard)).result;
     return { error: `Unknown tool "${name}".` };
+  }
+
+  // ── Long answers, drafted from their words ────────────────────────────────────────────
+
+  /**
+   * The `draft_answer` tool. Their points (or the change they want) must be their words, like any
+   * answer; the draft is written by the model, held to those words by `verifyDraft`, and waits for
+   * their yes — the agent reads it out word for word, and `confirm_answer` puts it in.
+   */
+  private async draftAnswer(args: Record<string, unknown>, heard: string): Promise<Record<string, unknown>> {
+    const session = this.session;
+    const fieldId = typeof args.field === "string" ? args.field : "";
+    const mode = args.mode === "revise" || args.mode === "reuse" ? args.mode : "new";
+    const evidence = typeof args.evidence === "string" ? args.evidence.trim() : "";
+    if (!evidence || !checkEvidence(heard, evidence).ok) return { drafted: false, why: "quote_not_found", submitted: false };
+    const ask = session.draftRequest(fieldId);
+    if (!ask) return { drafted: false, error: `"${fieldId}" is not a long answer on this form.`, submitted: false };
+
+    if (mode === "reuse") {
+      if (!ask.library) return { drafted: false, why: "nothing from last time for this question", submitted: false };
+      const next = session.holdDraft(fieldId, ask.library.text, ask.library.said, [], []);
+      this.readBackFor = { fieldId, text: ask.library.text };
+      this.refresh();
+      return { draft: ask.library.text, from_last_time: true, read_it_word_for_word: true, ...next, submitted: false };
+    }
+
+    const draft = this.options.services.draft;
+    if (!draft) return { drafted: false, why: "drafting is not available here — put their words in as they said them, with fill_fields", submitted: false };
+
+    const prior = ask.pending?.suggestion ?? ask.library?.text;
+    // Their words for it: what they just gave, and what they said before it in this call.
+    const earlier = this.current.turns.filter((t) => t.who === "you").slice(-4).map((t) => t.text);
+    const said =
+      mode === "revise"
+        ? [...new Set([...(ask.pending?.draft?.said ?? ask.library?.said ?? []), evidence])]
+        : [...new Set([evidence, ...earlier.filter((t) => !t.includes(evidence))])];
+    const read = this.session.read;
+    const input: DraftInput = {
+      question: ask.question,
+      ...(ask.maxChars ? { maxChars: ask.maxChars } : {}),
+      page: pageContext(this.options.root(), read ?? null, this.options.ignore),
+      said,
+      facts: ask.facts,
+      ...(mode === "revise" && prior ? { prior, change: evidence } : {}),
+    };
+    let raw: unknown;
+    try {
+      raw = await draft(input);
+    } catch (cause) {
+      this.note("app", `draft failed: ${cause instanceof Error ? cause.message : String(cause)}`);
+      return { drafted: false, why: "the draft could not be written just now — ask them to try again, or put their words in as they said them", submitted: false };
+    }
+    const checked = verifyDraft(raw, input);
+    this.note("app", `draft: ${checked.sentences.length} sentences kept, ${checked.dropped.length} dropped${checked.flagged.length ? `, names to check: ${checked.flagged.join(", ")}` : ""}`);
+    if (!checked.text) {
+      return { drafted: false, why: "nothing could be written from their words alone", ...(checked.missing.length ? { missing: checked.missing } : {}), submitted: false };
+    }
+    const next = session.holdDraft(fieldId, checked.text, said, checked.missing, checked.flagged);
+    this.readBackFor = { fieldId, text: checked.text };
+    this.refresh();
+    return {
+      draft: checked.text,
+      read_it_word_for_word: true,
+      ...(checked.missing.length ? { they_did_not_say: checked.missing } : {}),
+      ...(checked.flagged.length ? { ask_them_to_check_these_names: checked.flagged } : {}),
+      ...next,
+      submitted: false,
+    };
+  }
+
+  /**
+   * They are about to say yes to words they heard, so they must hear the words that will go in.
+   * The first reply after a draft is held to it; a paraphrase is caught and the agent asked, once,
+   * to read it exactly.
+   */
+  private checkReadBack(said: string): void {
+    const waiting = this.readBackFor;
+    if (!waiting) return;
+    this.readBackFor = null;
+    const score = readBack(waiting.text, said);
+    if (score >= READ_BACK_MIN) return;
+    this.note("app", `the draft was not read word for word (${Math.round(score * 100)}%) — asked to read it again`);
+    this.voice?.createReply(`You did not read the draft word for word. Read it again, exactly as written, nothing added or left out: "${waiting.text}". Then ask if it should go in.`);
   }
 
   // ── The trust layer ────────────────────────────────────────────────────────────────

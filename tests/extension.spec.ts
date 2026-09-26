@@ -215,12 +215,13 @@ test.describe("the extension on someone else's page", () => {
       serve(before + 1, { type: "session.ready", session_id: "sess_p1" });
 
       // Caught up with the new page's form, and the Next it pressed answered from this page.
-      await expect.poll(() => agent.received[before + 1]!.some((m) => m.type === "tool.result"), { timeout: 10_000 }).toBe(true);
+      await expect.poll(() => agent.received[before + 1]!.some((m) => m.type === "tool.result" && m.call_id === "c2"), { timeout: 10_000 }).toBe(true);
       const update = agent.received[before + 1]!.find((m) => m.type === "session.update") as unknown as { session: { tools: { name: string; parameters: { properties: object } }[] } };
       const fill = update.session.tools.find((t) => t.name === "fill_fields")!;
       expect(Object.keys(fill.parameters.properties)).toEqual(["city"]);
-      const answered = agent.received[before + 1]!.find((m) => m.type === "tool.result")!;
-      expect(answered.call_id).toBe("c2");
+      // The Next it pressed, answered from this page. (The fill before it may be answered too: its
+      // result, if it had not been sent, travels with the page.)
+      const answered = agent.received[before + 1]!.find((m) => m.type === "tool.result" && m.call_id === "c2")!;
       expect(JSON.parse(String(answered.result))).toMatchObject({ pressed: true, form_changed: { new_page: true, new_questions: ["City"] }, submitted: false });
       await expect(page.locator("longtake-panel")).toHaveCount(1);
     } finally {

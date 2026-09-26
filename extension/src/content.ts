@@ -15,7 +15,7 @@
  * Built by `npm run build:extension` into `extension/dist/content.js`.
  */
 
-import { Conductor, readForm, type CarriedCall, type CheckInput, type ConductorView, type FormSnapshot } from "@longtake/core";
+import { Conductor, readForm, type CarriedCall, type CheckInput, type ConductorView, type DictationConfig, type DictationResult, type DraftInput, type FormSnapshot } from "@longtake/core";
 
 import { miss, notice, Panel, type PanelView } from "./panel";
 import { profileClient } from "./profile-client";
@@ -135,6 +135,9 @@ async function begin(): Promise<void> {
       voice: settings.voice ?? "charles",
       understand: (snapshot: FormSnapshot) => siteApi("/api/understand", snapshot),
       check: (input: CheckInput) => siteApi("/api/check", input),
+      draft: (input: DraftInput) => siteApi("/api/draft", input),
+      // A long answer's own audio, re-heard by Dictation (dictation.ts) — through the site, like the rest.
+      dictate: async (config: DictationConfig, audio: string) => (await siteApi("/api/dictate", { config, audio })) as DictationResult,
     },
     onActive: (active) => tellBackground({ type: "longtake:active", active }),
     onSession: (sessionId) => tellBackground({ type: "longtake:active", active: true, sessionId }),

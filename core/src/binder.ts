@@ -377,6 +377,39 @@ export function buildLeaveTool(specs: FieldSpec[]): VoiceAgentTool {
   };
 }
 
+export const DRAFT_TOOL_NAME = "draft_answer";
+
+/**
+ * A long answer — why this role, tell us about yourself — drafted from their points (draft.ts).
+ * Only on a form that has one. Nothing is written: the draft waits for their yes, like any answer
+ * the agent did not hear word for word, and goes in through confirm_answer.
+ */
+export function buildDraftTool(specs: FieldSpec[]): VoiceAgentTool | null {
+  const ids = specs.filter((spec) => spec.longForm && !spec.suspectedHoneypot).map((spec) => spec.id);
+  if (ids.length === 0) return null;
+  return {
+    type: "function",
+    name: DRAFT_TOOL_NAME,
+    description:
+      "Draft a long answer (why this role, about you, a cover letter) from their points, once they've said them — any order, any language. mode new: from their points; revise: change the draft you read them; reuse: last time's answer as it was. Nothing goes in yet: read the draft word for word, then confirm_answer on their yes.",
+    parameters: {
+      type: "object",
+      properties: {
+        field: { type: "string", enum: ids, description: "The long-answer field." },
+        mode: { type: "string", enum: ["new", "revise", "reuse"], description: "new, revise or reuse." },
+        evidence: {
+          type: "string",
+          description: "Their own words, quoted exactly: their points (new), what to change (revise), or their yes (reuse).",
+        },
+      },
+      required: ["field", "mode", "evidence"],
+      additionalProperties: false,
+    },
+    execution_mode: EXECUTION_MODE,
+    timeout_seconds: TIMEOUT_SECONDS,
+  };
+}
+
 export const SAVE_TOOL_NAME = "save_for_next_time";
 
 /**

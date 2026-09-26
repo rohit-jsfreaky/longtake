@@ -79,6 +79,8 @@ import {
   Overlay,
   reviewList,
   badgesFor,
+  pageContext,
+  verifyDraft,
 } from "@longtake/core";
 import { FakeVoice } from "./replay/fake-voice";
 import { runScript } from "./replay/run-script";
@@ -160,6 +162,8 @@ declare global {
       Overlay: typeof Overlay;
       reviewList: typeof reviewList;
       badgesFor: typeof badgesFor;
+      pageContext: typeof pageContext;
+      verifyDraft: typeof verifyDraft;
       Conductor: typeof Conductor;
       FakeVoice: typeof FakeVoice;
       runScript: typeof runScript;
@@ -246,6 +250,8 @@ window.__longtake = {
   Overlay,
   reviewList,
   badgesFor,
+  pageContext,
+  verifyDraft,
   Conductor,
   FakeVoice,
   runScript,

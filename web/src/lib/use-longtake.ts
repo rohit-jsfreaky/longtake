@@ -19,7 +19,7 @@ import {
   type DictationConfig,
   type DictationResult,
   type FormState,
-  type CheckInput,
+  type CheckInput, DraftInput,
   type FormSnapshot,
   type Hesitation,
   type KnownFact,
@@ -104,6 +104,18 @@ async function check(input: CheckInput): Promise<unknown> {
   return payload;
 }
 
+/** A long answer drafted from their words, from our own route (`verifyDraft` holds it again here). */
+async function draft(input: DraftInput): Promise<unknown> {
+  const response = await fetch("/api/draft", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload.error ?? `draft failed (${response.status})`);
+  return payload;
+}
+
 export type UseLongtake = {
   status: Status;
   live: boolean;
@@ -181,7 +193,7 @@ export function useLongtake({
       ignore,
       profile: store(),
       logFrames: true,
-      services: { getToken: siteToken, workletUrl: "/pcm-processor.js", voice: chooseVoice(), dictate, understand, check },
+      services: { getToken: siteToken, workletUrl: "/pcm-processor.js", voice: chooseVoice(), dictate, understand, check, draft },
     });
     return conductorRef.current;
   }, [ignore, root, store]);

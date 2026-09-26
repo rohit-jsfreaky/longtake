@@ -21,15 +21,18 @@ import { fieldName } from "./types";
 
 export type Move =
   /** An answer is waiting for their yes. Always first: nothing else makes sense until it is settled. */
-  | { kind: "confirm"; field: FieldFacts; suggestion: string; heard: string; reason: "not_named" | "hedged" | "inferred" }
+  | { kind: "confirm"; field: FieldFacts; suggestion: string; heard: string; reason: "not_named" | "hedged" | "inferred" | "draft" }
   /** Answers from last time that wait for a yes — a few at once, since one yes can settle them all. */
   | { kind: "confirm_recalled"; fields: { field: FieldFacts; suggestion: string; why?: string }[] }
   /** The form rejected something that went in. Before anything new — it is a mistake on the page now. */
   | { kind: "resolve"; field: FieldFacts; problem: string; value: string }
   /** What to keep for next time: an answer that changed, or one they cleared. Straight after it happened. */
   | { kind: "update_profile"; asks: ProfileQuestionFacts[] }
-  /** Ask for the next required field — or group of fields that is one question to a person. */
-  | { kind: "ask"; fields: FieldFacts[] }
+  /**
+   * Ask for the next required field — or group of fields that is one question to a person. A long
+   * answer they gave on an earlier form to the same question comes with it, to offer.
+   */
+  | { kind: "ask"; fields: FieldFacts[]; library?: { question: string; text: string } }
   /** The required part is done. Offer the optional part, once — and, if another page follows, that. */
   | { kind: "offer_optional"; fields: FieldFacts[]; next?: string }
   /** The offer has been made: go through these if they wanted them, move on if not. */
@@ -160,6 +163,9 @@ export function nextMove(state: FormState, plan: Plan): Move {
         .filter((facts) => facts.group === first.group && facts.section === first.section && facts.whole === first.whole);
       return { kind: "ask", fields: together };
     }
+    // A long answer they gave before, to a question meaning the same: offered on its own.
+    const library = open.find((f) => f.spec.id === first.field)?.library;
+    if (library) return { kind: "ask", fields: [first], library: { question: library.question, text: library.text } };
     // The next few, together — but not across into a group, which is asked as its own question.
     return { kind: "ask", fields: batch(required.map((spec) => factsOf(spec, specs)).filter((f) => !f.group || f.field === first.field)) };
   }
@@ -197,6 +203,7 @@ export function nextMove(state: FormState, plan: Plan): Move {
 const SOURCE_WORDS: Record<FieldState["source"], string> = {
   spoken: "they said it",
   memory: "from their last form",
+  drafted: "drafted from their words, and they said yes",
   typed: "they typed it",
   page: "was already there",
   empty: "",
@@ -215,7 +222,7 @@ function describe(facts: FieldFacts): string {
   if (facts.choices) return `${facts.question}${where} — choices: ${facts.choices.join(", ")}`;
   if (facts.choice_count) return `${facts.question}${where} — ${facts.choice_count} options; ask them to look at the list on screen`;
   if (facts.answer_type === "yes or no") return `${facts.question}${where} — yes or no`;
-  if (facts.answer_type === "long answer") return `${facts.question}${where} — a longer answer`;
+  if (facts.answer_type === "long answer") return `${facts.question}${where} — a longer answer: they say their points in their own words, any order, and you draft it with draft_answer`;
   return `${facts.question}${where}`;
 }
 
@@ -250,6 +257,8 @@ function keepFirst(keep: KeepFacts | undefined): string {
 export function doNext(move: Move): string {
   switch (move.kind) {
     case "confirm":
+      // Read word for word: they are agreeing to the words that will go in, so they must hear them.
+      if (move.reason === "draft") return `A draft for "${move.field.question}" is ready, written from their words. Read it to them word for word, exactly as written, nothing added: "${move.suggestion}". Then ask if it should go in as it is, or what to change. On their yes, confirm_answer for ${move.field.field} with agreed true; to change it, draft_answer with mode revise and their words.`;
       if (move.reason === "hedged") return `They weren't sure for "${move.field.question}" (they said: "${move.heard}"). Ask which it is before anything goes in.`;
       if (move.reason === "inferred") return `You worked out "${move.suggestion}" for "${move.field.question}" from "${move.heard}" — they did not say it. Ask if that's right, then call confirm_answer for ${move.field.field} with agreed true or false.`;
       return `"${move.field.question}" is waiting for their yes: they said "${move.heard}", and the closest the form offers is "${move.suggestion}". Ask if that's right, then call confirm_answer for ${move.field.field} with agreed true or false — you judge their reply, in whatever words. If not, offer the other choices.`;
@@ -282,6 +291,9 @@ export function doNext(move: Move): string {
       }
       if (move.fields.length > 1) {
         return `Ask for these together in one short question — they can answer them all at once: ${move.fields.map(describe).join("; ")}.`;
+      }
+      if (move.library) {
+        return `For "${move.fields[0]!.question}": last time, for "${move.library.question}", they answered: "${move.library.text}". Tell them briefly, and ask whether to use it as it is, change it, or start fresh. Use it: draft_answer with mode reuse. Change it: draft_answer with mode revise and their words. Fresh: ask for their points.`;
       }
       return `Ask for ${describe(move.fields[0]!)}.`;
     }

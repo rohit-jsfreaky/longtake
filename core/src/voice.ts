@@ -158,6 +158,8 @@ export type VoiceSessionOptions = {
    * Throwing is also fine: the message becomes an `error` the agent reads verbatim.
    */
   onToolCall?: (name: string, args: Record<string, unknown>, callId?: string) => Promise<unknown>;
+  /** How long a tool may take before it is answered on its behalf; the default suits most. */
+  toolDeadlineMs?: (name: string) => number | undefined;
   /** Every frame in both directions, for the on-screen log. */
   onEvent?: (direction: "in" | "out", message: AgentMessage) => void;
   onReady?: (sessionId: string) => void;
@@ -212,6 +214,8 @@ export type VoiceSession = {
    * not mid-reply, the person is not mid-sentence, and no tool result is out or owed (dispatch.ts).
    */
   createReply: (instructions: string) => void;
+  /** Results finished but held for the end of the agent's reply — not yet sent. */
+  unsentResults: () => { callId: string; result: unknown }[];
 };
 
 /**
@@ -283,6 +287,7 @@ export async function startVoiceSession(options: VoiceSessionOptions): Promise<V
     onReconnected,
     onResultsSent,
     onToolCall,
+    toolDeadlineMs,
   } = options;
   let transcriptionMode = options.transcriptionMode ?? LONG_TAKE_MODE;
 
@@ -609,7 +614,7 @@ export async function startVoiceSession(options: VoiceSessionOptions): Promise<V
     let result: unknown;
     try {
       result = onToolCall
-        ? await withDeadline(onToolCall(name, args, callId), TOOL_DEADLINE_MS)
+        ? await withDeadline(onToolCall(name, args, callId), toolDeadlineMs?.(name) ?? TOOL_DEADLINE_MS)
         : { error: `No handler for "${name}" in this client.` };
     } catch (cause) {
       result = { error: cause instanceof Error ? cause.message : String(cause) };
@@ -846,6 +851,7 @@ export async function startVoiceSession(options: VoiceSessionOptions): Promise<V
       replies.add(instructions, Date.now());
       flushReplies();
     },
+    unsentResults: () => results.peek().map((held) => ({ callId: held.call_id, result: held.result })),
     stop: async () => {
       closing = true;
       clearTimeout(reconnectTimer);

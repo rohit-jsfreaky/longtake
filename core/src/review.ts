@@ -13,7 +13,7 @@ import type { Missed } from "./notices";
 import type { Badge } from "./overlay";
 import { fieldName } from "./types";
 
-export type ReviewKind = "waiting" | "not_in" | "memory" | "spoken" | "typed" | "theirs";
+export type ReviewKind = "waiting" | "not_in" | "memory" | "drafted" | "spoken" | "typed" | "theirs";
 
 export type ReviewItem = { fieldId?: string; question: string; detail: string };
 export type ReviewGroup = { kind: ReviewKind; title: string; items: ReviewItem[] };
@@ -22,6 +22,7 @@ const TITLES: Record<ReviewKind, string> = {
   waiting: "Waiting for your yes",
   not_in: "Said, but not in",
   memory: "From your last form",
+  drafted: "Drafted from your words",
   spoken: "Spoken",
   typed: "Typed by you",
   theirs: "Yours to do",
@@ -39,18 +40,22 @@ const fromLastTime = (field: FormState["fields"][number]) =>
 
 /** The groups, in the order a person should work through them. Empty groups are left out. */
 export function reviewList(form: FormState, missed: Missed[] = []): ReviewGroup[] {
-  const groups: Record<ReviewKind, ReviewItem[]> = { waiting: [], not_in: [], memory: [], spoken: [], typed: [], theirs: [] };
+  const groups: Record<ReviewKind, ReviewItem[]> = { waiting: [], not_in: [], memory: [], drafted: [], spoken: [], typed: [], theirs: [] };
   const missing = new Map(missed.map((m) => [m.fieldId, m]));
 
   for (const field of form.fields) {
     const question = fieldName(field.spec);
     const fieldId = field.spec.id;
-    if (field.pending) {
+    if (field.pending?.reason === "draft") {
+      groups.waiting.push({ fieldId, question, detail: `a draft from your words: ${quote(field.pending.suggestion)}` });
+    } else if (field.pending) {
       groups.waiting.push({ fieldId, question, detail: `${field.pending.suggestion} — you said ${quote(field.pending.heard)}` });
     } else if (field.value === null && (missing.has(fieldId) || field.claimedIn)) {
       groups.not_in.push({ fieldId, question, detail: missing.get(fieldId)?.why ?? "the agent said it went in, but it did not" });
     } else if (field.source === "memory") {
       groups.memory.push({ fieldId, question, detail: fromLastTime(field) });
+    } else if (field.source === "drafted") {
+      groups.drafted.push({ fieldId, question, detail: "written from what you said — read it once more before you send" });
     } else if (field.source === "spoken") {
       groups.spoken.push({ fieldId, question, detail: field.evidence ? `you said ${quote(field.evidence)}` : "" });
     } else if (field.source === "typed") {
@@ -70,12 +75,16 @@ export function badgesFor(form: FormState, missed: Missed[] = [], hesitations: R
   const badges: Badge[] = [];
   for (const field of form.fields) {
     const fieldId = field.spec.id;
-    if (field.pending) {
+    if (field.pending?.reason === "draft") {
+      badges.push({ fieldId, state: "waiting", detail: "A draft from your words is waiting for your yes." });
+    } else if (field.pending) {
       badges.push({ fieldId, state: "waiting", detail: `${field.pending.suggestion}? You said ${quote(field.pending.heard)}.` });
     } else if (field.value === null && (missing.has(fieldId) || field.claimedIn)) {
       badges.push({ fieldId, state: "not_in", detail: `Not in: ${missing.get(fieldId)?.why ?? "the agent said it went in, but it did not"}.` });
     } else if (hesitations[fieldId]?.worthAnotherLook && field.value !== null) {
       badges.push({ fieldId, state: "look", detail: "Want another look at this one?" });
+    } else if (field.source === "drafted") {
+      badges.push({ fieldId, state: "drafted", detail: "Drafted from what you said, and you said yes." });
     } else if (field.source === "spoken") {
       badges.push({ fieldId, state: "spoken", detail: field.evidence ? `You said ${quote(field.evidence, 120)}.` : "You said it." });
     } else if (field.source === "memory") {

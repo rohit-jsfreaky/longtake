@@ -25,7 +25,7 @@
 
 import type { FieldHandles } from "./types";
 
-export type BadgeState = "spoken" | "memory" | "typed" | "page" | "waiting" | "not_in" | "look";
+export type BadgeState = "spoken" | "memory" | "drafted" | "typed" | "page" | "waiting" | "not_in" | "look";
 
 export type Badge = { fieldId: string; state: BadgeState; detail: string };
 
@@ -35,6 +35,7 @@ const LABEL: Record<BadgeState, string> = {
   typed: "Typed",
   page: "Already there",
   waiting: "Waiting for your yes",
+  drafted: "Drafted",
   not_in: "Not in",
   look: "Another look?",
 };
@@ -53,7 +54,7 @@ const STYLE = `
 }
 .badge:active { transform: translate(-100%, -55%) scale(0.97); }
 .badge::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 5px; vertical-align: 1px; background: currentColor; }
-.spoken { color: #43c39b; } .memory { color: #6aa8ff; } .typed, .page { color: #b8b8c0; }
+.spoken, .drafted { color: #43c39b; } .memory { color: #6aa8ff; } .typed, .page { color: #b8b8c0; }
 .waiting, .look { color: #e0b060; } .not_in { color: #1a1206; background: #e0b060; border-color: #e0b060; }
 .not_in::before { background: #1a1206; }
 .flash { animation: flash 900ms ease-out 1; }

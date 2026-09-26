@@ -22,6 +22,7 @@ import {
   buildConfirmTool,
   buildFillTool,
   buildLaterTool,
+  buildDraftTool,
   buildLeaveTool,
   buildPressTool,
   buildSaveTool,
@@ -35,7 +36,7 @@ import { exclusively, whenSettled } from "./dom-path";
 import { checkEvidence, keepOnlyWhatWasSaid } from "./evidence";
 import { snapshot, type FormState } from "./form-state";
 import { gate } from "./gate";
-import { Ledger } from "./ledger";
+import { Ledger, type Pending } from "./ledger";
 import { systemPrompt } from "./persona";
 import { brief, doNext, nextMove, resumeLine, type Move, type Plan } from "./planner";
 import {
@@ -45,8 +46,10 @@ import {
   knownFacts,
   RECALL_WHY_WORDS,
   recallFor,
+  sayFact,
   shownValue,
   type KnownFact,
+  type LongAnswer,
   type Profile,
   type ProfileChange,
   type Provenance,
@@ -134,7 +137,54 @@ export class LongtakeSession {
     if (!this.current) {
       return { title: "", fields: [], theirs: [], actions: [], asks: [], progress: { filled: 0, total: 0, requiredLeft: 0, optionalLeft: 0 } };
     }
-    return snapshot(this.current, this.ledger, this.title, this.buttons());
+    const state = snapshot(this.current, this.ledger, this.title, this.buttons());
+    for (const field of state.fields) {
+      const library = this.libraryFor(field);
+      if (library) field.library = { id: library.id, question: library.question, text: library.text };
+    }
+    return state;
+  }
+
+  /**
+   * A long answer they gave on an earlier form, to a question meaning the same (the model's reading
+   * of both), for an empty long field that has nothing waiting — the newest one.
+   */
+  private libraryFor(field: FormState["fields"][number]): LongAnswer | null {
+    if (!field.spec.longForm || field.value !== null || field.pending || field.declined) return null;
+    const concept = this.meanings[field.spec.id]?.concept;
+    if (!concept || concept === "other") return null;
+    const same = Object.values(this.profile.answers).filter((answer) => answer.concept === concept);
+    return same.sort((a, b) => b.at - a.at)[0] ?? null;
+  }
+
+  /**
+   * What a draft for this field is written from, beside their words: the question, the form's
+   * limit, their saved answers (never a personal one), and what is waiting or saved for it.
+   */
+  draftRequest(fieldId: string): { question: string; maxChars?: number; facts: { name: string; value: string }[]; pending?: Pending; library?: LongAnswer } | null {
+    const spec = this.current?.specs.find((s) => s.id === fieldId);
+    if (!spec?.longForm) return null;
+    const field = this.state().fields.find((f) => f.spec.id === fieldId);
+    const facts = Object.values(this.profile.facts)
+      .filter((fact) => !fact.sensitive)
+      .slice(0, 12)
+      .map((fact) => ({ name: sayFact(fact), value: shownValue(fact.value) }));
+    const pending = this.ledger.pendingFor(fieldId);
+    const library = field ? this.libraryFor({ ...field, pending: undefined }) : null;
+    return {
+      question: fieldName(spec),
+      ...(spec.maxLength ? { maxChars: spec.maxLength } : {}),
+      facts,
+      ...(pending?.reason === "draft" ? { pending } : {}),
+      ...(library ? { library } : {}),
+    };
+  }
+
+  /** A draft, waiting for their yes — never written until they give it. */
+  holdDraft(fieldId: string, text: string, said: string[], missing: string[], flagged: string[]): Record<string, unknown> {
+    this.ledger.hold(fieldId, { reason: "draft", suggestion: text, heard: said.join(" … "), value: text, draft: { said, missing, flagged } });
+    this.options.onChange?.();
+    return { do_next: doNext(this.move()) };
   }
 
   /** What to do next. Offering the optional fields is a one-time move, so it is recorded. */
@@ -164,7 +214,8 @@ export class LongtakeSession {
     const specs = this.current?.specs ?? [];
     const press = this.current ? buildPressTool(this.buttons().actions) : null;
     const always = [buildFillTool(specs), buildConfirmTool(specs), buildClearTool(specs), buildLaterTool(specs), buildLeaveTool(specs), buildSaveTool(specs)];
-    return press ? [...always, press] : always;
+    const draft = buildDraftTool(specs);
+    return [...always, ...(draft ? [draft] : []), ...(press ? [press] : [])];
   }
 
   /**
@@ -203,6 +254,7 @@ export class LongtakeSession {
     }
 
     const recalled = pending.reason === "from_last_time";
+    const drafted = pending.reason === "draft";
     const claim: SpokenValue = { fieldId: id, value: pending.value ?? pending.suggestion, evidence: `${pending.heard} — ${evidence}` };
     this.writing = true;
     this.movedWhileWriting = false;
@@ -213,7 +265,8 @@ export class LongtakeSession {
       this.writing = false;
     }
     // An answer from last time, now confirmed: from last time on the page, and trusted next time.
-    await this.record(results, [claim], read, recalled ? "memory" : "spoken", recalled && pending.factId ? { [id]: pending.factId } : {});
+    await this.record(results, [claim], read, recalled ? "memory" : drafted ? "drafted" : "spoken", recalled && pending.factId ? { [id]: pending.factId } : {});
+    if (drafted && results[0]?.status === "written") await this.keepLongAnswer(spec, String(claim.value), pending.draft?.said ?? [], read);
     if (recalled) await this.learn([{ ...claim, value: pending.value ?? pending.suggestion }], read, "confirmed");
     const reshaped =
       (results[0]?.status === "written" && CHOICE_KINDS.has(spec.kind)) || this.movedWhileWriting ? await this.pageChanged() : null;
@@ -307,7 +360,7 @@ export class LongtakeSession {
         submitted: false,
       };
     }
-    return { error: "The page changed before this finished, so nothing from it is on this page. FORM NOW is the new page.", submitted: false };
+    return { error: "The page moved on before this finished. Whatever went in on the last page stays there; FORM NOW is the new page.", submitted: false };
   }
 
   async press(args: Record<string, unknown>, heard: string): Promise<Done<Record<string, unknown>>> {
@@ -582,7 +635,7 @@ export class LongtakeSession {
     results: WriteOutcome[],
     values: SpokenValue[],
     read: FormRead,
-    source: "spoken" | "memory",
+    source: "spoken" | "memory" | "drafted",
     facts: Record<string, string> = {},
     wholePhones: Map<string, string> = new Map(),
   ): Promise<void> {
@@ -606,6 +659,40 @@ export class LongtakeSession {
       said.push(whole ? { ...claim, value: whole } : claim);
     }
     if (source === "spoken" && said.length > 0) await this.learn(said, read, "spoken");
+  }
+
+  /**
+   * An approved long answer, kept whole for a later form's question meaning the same — one per
+   * meaning per site, the newest. Never a personal one (health, documents), and never one that is
+   * not to be kept at all.
+   */
+  private async keepLongAnswer(spec: FieldSpec, text: string, said: string[], read: FormRead): Promise<void> {
+    const meaning = this.meanings[spec.id];
+    const concept = meaning?.concept && meaning.concept !== "other" ? meaning.concept : undefined;
+    const scope = concept ? conceptById(concept)?.scope : undefined;
+    if (scope === "sensitive" || scope === "never") return;
+    let host = "";
+    try {
+      host = new URL(read.url).host;
+    } catch {
+      // a page with no URL (a test) keeps its answers under no site
+    }
+    const answer: LongAnswer = {
+      id: `answer:${concept ?? spec.id}:${host}`,
+      gist: meaning?.gist || fieldName(spec),
+      question: fieldName(spec),
+      text,
+      said,
+      host,
+      at: Date.now(),
+      uses: 0,
+      ...(concept ? { concept } : {}),
+    };
+    try {
+      this.profile = (await this.store.apply([{ type: "saveAnswer", answer }])).profile;
+    } catch (cause) {
+      this.options.log?.(`could not keep the answer for next time: ${cause instanceof Error ? cause.message : String(cause)}`);
+    }
   }
 
   /** Where an answer was given, for its history. */

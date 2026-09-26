@@ -98,6 +98,11 @@ export class ToolResultQueue {
     if (type === "reply.done") this.speaking = false;
   }
 
+  /** What is finished but not yet sent — a page that goes now takes these with it (conductor.ts). */
+  peek(): QueuedResult[] {
+    return [...this.waiting];
+  }
+
   /** A tool has finished. `now` is only read to start the deadline. */
   add(item: QueuedResult, now: number): void {
     this.waiting.push(item);

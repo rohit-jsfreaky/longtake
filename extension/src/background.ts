@@ -32,13 +32,13 @@ const DEFAULT_SITE = "http://localhost:3000";
 const CARRY_OVER_MS = 60_000;
 
 /** The site's server routes a content script may reach through here, and no others. */
-const API_PATHS = new Set(["/api/understand", "/api/check"]);
+const API_PATHS = new Set(["/api/understand", "/api/check", "/api/draft", "/api/dictate"]);
 
 /**
  * A tab with a call in it. `sessionId` and `pending` are what the next page needs to carry the
  * same conversation on: the session to resume, and the tool calls the page went before answering.
  */
-type Live = { frameId: number; origin: string; at: number; sessionId?: string; pending?: { callId: string; name: string }[] };
+type Live = { frameId: number; origin: string; at: number; sessionId?: string; pending?: { callId: string; name: string; result?: unknown }[] };
 
 async function site(): Promise<string> {
   const { site: override } = (await chrome.storage.local.get("site")) as { site?: string };
@@ -214,7 +214,7 @@ type Message =
   | { type: "longtake:profile"; op: "load" }
   | { type: "longtake:profile"; op: "apply"; changes: ProfileChange[] }
   | { type: "longtake:settings"; tab?: string }
-  | { type: "longtake:active"; active: boolean; sessionId?: string; pending?: { callId: string; name: string }[] }
+  | { type: "longtake:active"; active: boolean; sessionId?: string; pending?: { callId: string; name: string; result?: unknown }[] }
   | { type: "longtake:loaded"; top: boolean };
 
 chrome.runtime.onMessage.addListener((message: Message, sender, reply) => {

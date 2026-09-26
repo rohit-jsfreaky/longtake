@@ -72,6 +72,8 @@ import type {
   Overlay,
   reviewList,
   badgesFor,
+  pageContext,
+  verifyDraft,
 } from "@longtake/core";
 import type { FakeVoice } from "../tools/replay/fake-voice";
 import type { runScript } from "../tools/replay/run-script";
@@ -154,6 +156,8 @@ declare global {
       Overlay: typeof Overlay;
       reviewList: typeof reviewList;
       badgesFor: typeof badgesFor;
+      pageContext: typeof pageContext;
+      verifyDraft: typeof verifyDraft;
       FakeVoice: typeof FakeVoice;
       runScript: typeof runScript;
       inspect: () => unknown;

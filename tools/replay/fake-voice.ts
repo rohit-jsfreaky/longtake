@@ -37,6 +37,8 @@ export class FakeVoice {
       setTools: (value) => this.sent.push({ kind: "tools", value }),
       setTranscriptionMode: (value) => this.sent.push({ kind: "transcriptionMode", value }),
       createReply: (value) => this.sent.push({ kind: "reply", value }),
+      // Results go out at once here: nothing is ever held.
+      unsentResults: () => [],
     };
   };
 
