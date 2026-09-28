@@ -660,13 +660,15 @@ export class Conductor {
     const draft = this.options.services.draft;
     if (!draft) return { drafted: false, why: "drafting is not available here — put their words in as they said them, with fill_fields", submitted: false };
 
-    const prior = ask.pending?.suggestion ?? ask.library?.text;
-    // Their words for it: what they just gave, and what they said before it in this call.
+    // What is being improved: the draft they heard, last time's answer, or what's in the box now.
+    const prior = ask.pending?.suggestion ?? ask.library?.text ?? ask.current;
+    const improving = mode === "revise" || Boolean(ask.current && !ask.pending);
+    // Their words for it: what they just gave, what's in the box, and what they said before it.
     const earlier = this.current.turns.filter((t) => t.who === "you").slice(-4).map((t) => t.text);
     const said =
       mode === "revise"
-        ? [...new Set([...(ask.pending?.draft?.said ?? ask.library?.said ?? []), evidence])]
-        : [...new Set([evidence, ...earlier.filter((t) => !t.includes(evidence))])];
+        ? [...new Set([...(ask.pending?.draft?.said ?? ask.library?.said ?? []), ...(ask.current ? [ask.current] : []), evidence])]
+        : [...new Set([evidence, ...(ask.current ? [ask.current] : []), ...earlier.filter((t) => !t.includes(evidence))])];
     const read = this.session.read;
     const input: DraftInput = {
       question: ask.question,
@@ -674,7 +676,7 @@ export class Conductor {
       page: pageContext(this.options.root(), read ?? null, this.options.ignore),
       said,
       facts: ask.facts,
-      ...(mode === "revise" && prior ? { prior, change: evidence } : {}),
+      ...(improving && prior ? { prior, change: evidence } : {}),
     };
     let raw: unknown;
     try {

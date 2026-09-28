@@ -200,7 +200,7 @@ export function checkPrompt(input: CheckInput): { system: string; user: string }
     '- claim: "put_in" when it said that answer is in, filled, done or got ("Got that in", "Your email\'s in"); "not_in" when it said it is not in or could not go in; "asked" when it asked for it.',
     'One reply can make two claims: "Got that in. Anything else?" says the answer is in (put_in, quoting "Got that in") and asks something (asked). List each, with the words that make it — never let a question at the end hide a "got that in" before it.',
     "- quote: the assistant's own words that make the claim, copied exactly.",
-    "Only claims about specific fields. A \"got that in\" with no field named points at the fields in asking — what the person was answering. No claims: {\"claims\":[]}.",
+    "Only claims about specific fields. A \"got that in\" with no field named points at the fields in asking — what the person was answering: when asking holds several, it is a put_in for each of them, quoting the same words. No claims: {\"claims\":[]}.",
   ].join("\n");
   return { system, user: JSON.stringify(input) };
 }

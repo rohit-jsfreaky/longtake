@@ -332,6 +332,32 @@ test.describe("5 · several questions at once, not one per turn", () => {
   });
 });
 
+// Live, on the Glean form: after the opening batch the call went one question per turn — "how did
+// you hear" (a list too long to read out), then "years of experience", then "what AI tools".
+test.describe("5b · small questions together, a long one counted double", () => {
+  const MIXED = `
+    <label for="a">First Name*</label><input id="a" required>
+    <label for="h">How did you hear about us?*</label>
+    <select id="h" required><option value=""></option>${Array.from({ length: 14 }, (_, i) => `<option>Source ${i + 1}</option>`).join("")}</select>
+    <label for="y">Total years of experience relevant for this role*</label><input id="y" required>
+    <label for="t">What AI tools are you currently using today and how are you using them?*</label><textarea id="t" required></textarea>
+    <label for="w">Why do you want to work here?*</label><textarea id="w" required></textarea>`;
+
+  test("a long list, a number and a long answer are asked in one go; two long answers are the most at once", async ({ page }) => {
+    await session(page, MIXED);
+    const r = await page.evaluate(async () => {
+      const s = (window as unknown as { __s: S }).__s;
+      const next = String((await s.fill({ first_name: { value: "Rohit", evidence: "Rohit" } }, "Rohit")).result.do_next);
+      return next;
+    });
+    expect(r).toContain("Ask for these together");
+    expect(r).toContain("How did you hear about us?");
+    expect(r).toContain("Total years of experience");
+    expect(r).toContain("What AI tools");
+    expect(r).not.toContain("Why do you want"); // 1 + 1 + 2 is the whole budget
+  });
+});
+
 test.describe("6 · the call is patient first, quick after — through the documented knob", () => {
   test("no raw VAD settings are sent: semantic barge-in stays on", async ({ page }) => {
     await load(page, "<p>x</p>");

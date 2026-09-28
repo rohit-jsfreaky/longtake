@@ -161,7 +161,15 @@ export class LongtakeSession {
    * What a draft for this field is written from, beside their words: the question, the form's
    * limit, their saved answers (never a personal one), and what is waiting or saved for it.
    */
-  draftRequest(fieldId: string): { question: string; maxChars?: number; facts: { name: string; value: string }[]; pending?: Pending; library?: LongAnswer } | null {
+  draftRequest(fieldId: string): {
+    question: string;
+    maxChars?: number;
+    facts: { name: string; value: string }[];
+    pending?: Pending;
+    library?: LongAnswer;
+    /** What is in the box now, when it is theirs — "make it better" means make this better. */
+    current?: string;
+  } | null {
     const spec = this.current?.specs.find((s) => s.id === fieldId);
     if (!spec?.longForm) return null;
     const field = this.state().fields.find((f) => f.spec.id === fieldId);
@@ -171,12 +179,14 @@ export class LongtakeSession {
       .map((fact) => ({ name: sayFact(fact), value: shownValue(fact.value) }));
     const pending = this.ledger.pendingFor(fieldId);
     const library = field ? this.libraryFor({ ...field, pending: undefined }) : null;
+    const theirs = field && typeof field.value === "string" && field.value.trim() && field.source !== "page" ? field.value.trim() : undefined;
     return {
       question: fieldName(spec),
       ...(spec.maxLength ? { maxChars: spec.maxLength } : {}),
       facts,
       ...(pending?.reason === "draft" ? { pending } : {}),
       ...(library ? { library } : {}),
+      ...(theirs ? { current: theirs } : {}),
     };
   }
 

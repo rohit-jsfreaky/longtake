@@ -391,7 +391,7 @@ export function buildDraftTool(specs: FieldSpec[]): VoiceAgentTool | null {
     type: "function",
     name: DRAFT_TOOL_NAME,
     description:
-      "Draft a long answer (why this role, about you, a cover letter) from their points, once they've said them — any order, any language. mode new: from their points; revise: change the draft you read them; reuse: last time's answer as it was. Nothing goes in yet: read the draft word for word, then confirm_answer on their yes.",
+      "When they ask you to improve, expand, polish or write up a longer answer — never refuse — draft it from their words and what's already in the box. new: from their points; revise: change the draft, or the answer that's there, as they ask; reuse: last time's answer. It uses only what they said: if they want more than that holds, ask for more points. Nothing goes in yet: read the draft word for word, then confirm_answer on their yes.",
     parameters: {
       type: "object",
       properties: {

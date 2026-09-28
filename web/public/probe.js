@@ -3006,7 +3006,7 @@
     return {
       type: "function",
       name: DRAFT_TOOL_NAME,
-      description: "Draft a long answer (why this role, about you, a cover letter) from their points, once they've said them \u2014 any order, any language. mode new: from their points; revise: change the draft you read them; reuse: last time's answer as it was. Nothing goes in yet: read the draft word for word, then confirm_answer on their yes.",
+      description: "When they ask you to improve, expand, polish or write up a longer answer \u2014 never refuse \u2014 draft it from their words and what's already in the box. new: from their points; revise: change the draft, or the answer that's there, as they ask; reuse: last time's answer. It uses only what they said: if they want more than that holds, ask for more points. Nothing goes in yet: read the draft word for word, then confirm_answer on their yes.",
       parameters: {
         type: "object",
         properties: {
@@ -4142,13 +4142,13 @@
       "Only when a result says not_an_option (a fixed list without their answer):",
       "  Bad: asking the same question again.",
       `  Good: "BTech isn't on their list \u2014 Bachelor's Degree is closest. That one?"`,
-      "A box they type into takes their words as they said them. If they say Twitter, Twitter goes in. Never swap their answer for another.",
+      "A box they type into takes their words as they said them. If they say Twitter, Twitter goes in. Never swap their answer for another. If they ask you to improve it or write it up, use draft_answer \u2014 never refuse.",
       "When several answers land at once:",
       '  Bad: "I have filled your first name, last name, email and phone number."',
       '  Good: "Got all four. LinkedIn?"',
       "",
       // ── 3. What you can and cannot do ──────────────────────────────────────────────
-      "You can: type into this form, clear what's in it when they ask, tell them what a field accepts, and remember answers from a form they filled before. You cannot: submit, attach files, sign, or see anything outside this form.",
+      "You can: type into this form, clear what's in it when they ask, tell them what a field accepts, remember answers from a form they filled before, and write up a longer answer from their own points when they ask. You cannot: submit, attach files, sign, or see anything outside this form.",
       "Only say something is done when the result says it is. If it didn't happen, say so.",
       "",
       // ── 4. The form, the plan, and the tools ───────────────────────────────────────
@@ -4870,19 +4870,21 @@
   var UPDATES_AT_ONCE = 3;
   var ASK_AT_ONCE = 4;
   function batch(facts) {
-    const [first] = facts;
-    if (!first) return [];
-    if (alone(first)) return [first];
     const out = [];
+    let weight = 0;
+    let long = 0;
     for (const f of facts) {
-      if (out.length >= ASK_AT_ONCE || alone(f)) break;
+      const isLong = f.answer_type === "long answer";
+      const w = isLong ? LONG_WEIGHT : 1;
+      if (out.length > 0 && (weight + w > ASK_AT_ONCE || isLong && long >= LONG_AT_ONCE)) break;
       out.push(f);
+      weight += w;
+      if (isLong) long++;
     }
     return out;
   }
-  function alone(facts) {
-    return facts.answer_type === "long answer" || facts.choice_count !== void 0;
-  }
+  var LONG_WEIGHT = 2;
+  var LONG_AT_ONCE = 2;
   function nextMove(state, plan) {
     const specs = state.fields.map((f) => f.spec);
     const waiting = state.fields.find((f) => f.pending && f.pending.reason !== "from_last_time");
@@ -4978,7 +4980,7 @@
     if (facts.choices) return `${facts.question}${where} \u2014 choices: ${facts.choices.join(", ")}`;
     if (facts.choice_count) return `${facts.question}${where} \u2014 ${facts.choice_count} options; ask them to look at the list on screen`;
     if (facts.answer_type === "yes or no") return `${facts.question}${where} \u2014 yes or no`;
-    if (facts.answer_type === "long answer") return `${facts.question}${where} \u2014 a longer answer: they say their points in their own words, any order, and you draft it with draft_answer`;
+    if (facts.answer_type === "long answer") return `${facts.question}${where} \u2014 a longer answer: put in what they say, in their words; only if they ask you to improve it or write it up, draft it with draft_answer`;
     return `${facts.question}${where}`;
   }
   function waitingCount(state) {
@@ -5412,12 +5414,14 @@
       const facts = Object.values(this.profile.facts).filter((fact) => !fact.sensitive).slice(0, 12).map((fact) => ({ name: sayFact(fact), value: shownValue(fact.value) }));
       const pending = this.ledger.pendingFor(fieldId);
       const library = field ? this.libraryFor({ ...field, pending: void 0 }) : null;
+      const theirs = field && typeof field.value === "string" && field.value.trim() && field.source !== "page" ? field.value.trim() : void 0;
       return {
         question: fieldName(spec),
         ...spec.maxLength ? { maxChars: spec.maxLength } : {},
         facts,
         ...pending?.reason === "draft" ? { pending } : {},
-        ...library ? { library } : {}
+        ...library ? { library } : {},
+        ...theirs ? { current: theirs } : {}
       };
     }
     /** A draft, waiting for their yes — never written until they give it. */
@@ -8027,9 +8031,10 @@ ${text4}`.trim();
       }
       const draft = this.options.services.draft;
       if (!draft) return { drafted: false, why: "drafting is not available here \u2014 put their words in as they said them, with fill_fields", submitted: false };
-      const prior = ask.pending?.suggestion ?? ask.library?.text;
+      const prior = ask.pending?.suggestion ?? ask.library?.text ?? ask.current;
+      const improving = mode === "revise" || Boolean(ask.current && !ask.pending);
       const earlier = this.current.turns.filter((t) => t.who === "you").slice(-4).map((t) => t.text);
-      const said2 = mode === "revise" ? [.../* @__PURE__ */ new Set([...ask.pending?.draft?.said ?? ask.library?.said ?? [], evidence])] : [.../* @__PURE__ */ new Set([evidence, ...earlier.filter((t) => !t.includes(evidence))])];
+      const said2 = mode === "revise" ? [.../* @__PURE__ */ new Set([...ask.pending?.draft?.said ?? ask.library?.said ?? [], ...ask.current ? [ask.current] : [], evidence])] : [.../* @__PURE__ */ new Set([evidence, ...ask.current ? [ask.current] : [], ...earlier.filter((t) => !t.includes(evidence))])];
       const read = this.session.read;
       const input = {
         question: ask.question,
@@ -8037,7 +8042,7 @@ ${text4}`.trim();
         page: pageContext(this.options.root(), read ?? null, this.options.ignore),
         said: said2,
         facts: ask.facts,
-        ...mode === "revise" && prior ? { prior, change: evidence } : {}
+        ...improving && prior ? { prior, change: evidence } : {}
       };
       let raw;
       try {

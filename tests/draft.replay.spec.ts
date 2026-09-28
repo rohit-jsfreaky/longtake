@@ -112,6 +112,30 @@ test("their points become a draft that waits; a change is a revise; their yes pu
   expect(out.review).toContain("Drafted from your words");
 });
 
+// Live: "What AI tools…" held "I'm using Claude, Conan, and Codex."; asked to "improve it and make
+// it better", the agent refused — "I can't rewrite your answers". Asked, it drafts; not asked, it
+// puts their words in as they said them.
+test("'make it better' on an answer already in the box drafts from that answer — the agent is told it may, and only when asked", async ({ page }) => {
+  await start(page);
+  const out = await page.evaluate(async (why) => {
+    const w = window as unknown as Win;
+    const said = "mujhe search problems pasand hain, maine 3 saal Elasticsearch pe kaam kiya hai";
+    w.__fake.userSays(said);
+    await w.__fake.toolCall("fill_fields", { [why]: { value: said, evidence: said, how: "named" } });
+    const ask = "can you improve it for me and make it better";
+    w.__fake.userSays(ask);
+    const drafted = (await w.__fake.toolCall("draft_answer", { field: why, mode: "new", evidence: ask })) as Record<string, unknown>;
+    const tool = w.__c.session.tools().find((t) => t.name === "draft_answer")!.description;
+    return { drafted, input: w.__drafts[0], tool, prompt: w.__fake.prompt };
+  }, WHY);
+  expect(out.input).toMatchObject({ prior: "mujhe search problems pasand hain, maine 3 saal Elasticsearch pe kaam kiya hai", change: "can you improve it for me and make it better" });
+  expect(out.input.said).toContain("mujhe search problems pasand hain, maine 3 saal Elasticsearch pe kaam kiya hai");
+  expect(out.drafted).toMatchObject({ read_it_word_for_word: true });
+  expect(out.tool).toContain("never refuse");
+  expect(out.prompt).toContain("write up a longer answer from their own points when they ask");
+  expect(out.prompt).toContain("If they ask you to improve it or write it up, use draft_answer — never refuse.");
+});
+
 test("a draft paraphrased instead of read out is caught, and the agent asked to read it exactly", async ({ page }) => {
   await start(page);
   const asked = await page.evaluate(async (why) => {

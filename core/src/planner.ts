@@ -72,21 +72,32 @@ const ASK_AT_ONCE = 4;
  * list item — and ends the batch when it comes up. A list read out from the screen (more choices
  * than can be said aloud) is also asked on its own: "look at the list" does not combine.
  */
+/**
+ * The next questions, asked together, by how much each asks of a person. A short one — a pick from
+ * a list, a number, a name — is 1; a long answer is 2, and no more than two long ones at once.
+ *
+ * Live, a list too long to read out ("How did you hear about Glean?") and every long answer were
+ * asked alone, so after the opening batch the call went one question per turn: "how did you hear",
+ * then "years of experience", then "what AI tools" — three turns for three small asks.
+ */
 function batch(facts: FieldFacts[]): FieldFacts[] {
-  const [first] = facts;
-  if (!first) return [];
-  if (alone(first)) return [first];
   const out: FieldFacts[] = [];
+  let weight = 0;
+  let long = 0;
   for (const f of facts) {
-    if (out.length >= ASK_AT_ONCE || alone(f)) break;
+    const isLong = f.answer_type === "long answer";
+    const w = isLong ? LONG_WEIGHT : 1;
+    if (out.length > 0 && (weight + w > ASK_AT_ONCE || (isLong && long >= LONG_AT_ONCE))) break;
     out.push(f);
+    weight += w;
+    if (isLong) long++;
   }
   return out;
 }
 
-function alone(facts: FieldFacts): boolean {
-  return facts.answer_type === "long answer" || facts.choice_count !== undefined;
-}
+/** A long answer counts double; two of them at most in one question. */
+const LONG_WEIGHT = 2;
+const LONG_AT_ONCE = 2;
 
 /** What the planner has to remember between moves. Tiny on purpose — the form is the rest. */
 export type Plan = { optionalOffered: boolean };
@@ -222,7 +233,7 @@ function describe(facts: FieldFacts): string {
   if (facts.choices) return `${facts.question}${where} — choices: ${facts.choices.join(", ")}`;
   if (facts.choice_count) return `${facts.question}${where} — ${facts.choice_count} options; ask them to look at the list on screen`;
   if (facts.answer_type === "yes or no") return `${facts.question}${where} — yes or no`;
-  if (facts.answer_type === "long answer") return `${facts.question}${where} — a longer answer: they say their points in their own words, any order, and you draft it with draft_answer`;
+  if (facts.answer_type === "long answer") return `${facts.question}${where} — a longer answer: put in what they say, in their words; only if they ask you to improve it or write it up, draft it with draft_answer`;
   return `${facts.question}${where}`;
 }
 
