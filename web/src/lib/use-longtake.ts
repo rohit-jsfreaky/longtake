@@ -144,6 +144,8 @@ export type UseLongtake = {
   partial: string;
   /** They are talking right now, as the microphone hears it — before their words come back. */
   hearing: boolean;
+  /** They finished and the agent has not answered yet. */
+  thinking: boolean;
   shaped: Record<string, ShapedAnswer>;
   hesitations: Record<string, Hesitation>;
   /** Everything known about the person, newest first. */
@@ -265,6 +267,7 @@ export function useLongtake({
     turns: view?.turns ?? [],
     partial: view?.partial ?? "",
     hearing: view?.hearing ?? false,
+    thinking: view?.thinking ?? false,
     shaped: view?.shaped ?? {},
     hesitations: view?.hesitations ?? {},
     known: view?.known ?? [],

@@ -33,6 +33,8 @@ export type PanelView = {
   heard?: string;
   /** They are talking right now, as the microphone hears it — said before their words come back. */
   hearing?: boolean;
+  /** They finished and the agent has not answered yet: said, so the call never looks dead. */
+  thinking?: boolean;
   said?: string;
   notices: string[];
   /** What to look at before sending, grouped; an item with a field jumps to it on the page. */
@@ -324,7 +326,7 @@ export class Panel {
       case "live":
       case "reconnecting":
         body = `
-          <div class="status">${state.kind === "live" ? `${dot("live")}${view.hearing ? "Hearing you…" : "Listening"}` : `${dot("warn")}<span class="warn">Line dropped — getting it back. Keep talking.</span>`}</div>
+          <div class="status">${state.kind === "live" ? `${dot("live")}${view.hearing ? "Hearing you…" : view.thinking ? "Thinking… putting it in" : "Listening"}` : `${dot("warn")}<span class="warn">Line dropped — getting it back. Keep talking.</span>`}</div>
           ${view.progress ? `<div class="muted">${esc(view.progress)}</div>` : ""}
           ${view.heard ? `<div class="you"><span class="who">You · </span>${esc(view.heard)}</div>` : ""}
           ${view.said ? `<div class="agent"><span class="who">Longtake · </span>${esc(view.said)}</div>` : ""}

@@ -5122,8 +5122,8 @@
       case "confirm":
         if (move2.reason === "draft") return `A draft for "${move2.field.question}" is ready, written from their words. Read it to them word for word, exactly as written, nothing added: "${move2.suggestion}". Then ask if it should go in as it is, or what to change. On their yes, confirm_answer for ${move2.field.field} with agreed true; to change it, draft_answer with mode revise and their words.`;
         if (move2.reason === "hedged") return `They weren't sure for "${move2.field.question}" (they said: "${move2.heard}"). Ask which it is before anything goes in.`;
-        if (move2.reason === "inferred") return `You worked out "${move2.suggestion}" for "${move2.field.question}" from "${move2.heard}" \u2014 they did not say it. Ask if that's right, then call confirm_answer for ${move2.field.field} with agreed true or false.`;
-        return `"${move2.field.question}" is waiting for their yes: they said "${move2.heard}", and the closest the form offers is "${move2.suggestion}". Ask if that's right, then call confirm_answer for ${move2.field.field} with agreed true or false \u2014 you judge their reply, in whatever words. If not, offer the other choices.`;
+        if (move2.reason === "inferred") return `You worked out "${move2.suggestion}" for "${move2.field.question}" from "${move2.heard}" \u2014 they did not say it. Ask if that's right \u2014 it is not in yet, so never say you put it in \u2014 then call confirm_answer for ${move2.field.field} with agreed true or false.`;
+        return `"${move2.field.question}" is waiting for their yes: they said "${move2.heard}", and the closest the form offers is "${move2.suggestion}". Ask if that's right \u2014 it is not in yet, so never say you put it in \u2014 then call confirm_answer for ${move2.field.field} with agreed true or false; you judge their reply, in whatever words. If not, offer the other choices.`;
       case "confirm_recalled": {
         const list = move2.fields.map((f) => `${f.field.question}: "${f.suggestion}"`).join("; ");
         return `From their last form, ready to go in on their yes: ${list}. Say them briefly and ask if they are still right. For each, call confirm_answer with agreed true if they accept it, in any words, or false if not; if they give a new answer, fill it with fill_fields instead.`;
@@ -6655,6 +6655,7 @@
       onUserTranscript,
       onAgentTranscript,
       onReply,
+      onAgentSpeaking,
       onToolCallStarted,
       onSpeechStart,
       onSession,
@@ -6751,6 +6752,7 @@
       liveSources.add(src);
       nextStartTime = startAt + buffer.duration;
     }
+    let audible = false;
     function flushPlayback() {
       for (const src of liveSources) {
         try {
@@ -6930,7 +6932,10 @@
       if (message.type !== "reply.audio") onEvent?.("in", message);
       results.note(message.type);
       replies.note(message.type, Date.now(), typeof message.call_id === "string" ? message.call_id : void 0);
-      if (message.type === "reply.started") onReply?.({ type: "started", id: String(message.reply_id ?? "") });
+      if (message.type === "reply.started") {
+        audible = false;
+        onReply?.({ type: "started", id: String(message.reply_id ?? "") });
+      }
       if (message.type === "reply.done") onReply?.({ type: "done", id: String(message.reply_id ?? ""), status: String(message.status ?? "") });
       switch (message.type) {
         case "session.ready": {
@@ -6960,6 +6965,10 @@
           break;
         }
         case "reply.audio":
+          if (!audible) {
+            audible = true;
+            onAgentSpeaking?.();
+          }
           playReplyAudio(String(message.data));
           break;
         case "tool.call":
@@ -7774,6 +7783,9 @@ ${input.page.text}`;
       this.detach = null;
       /** The badges on the page, made once, on the page's own document. */
       this.overlay = null;
+      // ── A reply that says nothing ──────────────────────────────────────────────────────
+      /** What they said that the agent has not answered yet — by voice or by a tool call. */
+      this.unanswered = [];
       const session = new LongtakeSession({
         root: options.root,
         ignore: options.ignore,
@@ -7811,6 +7823,7 @@ ${input.page.text}`;
         turns: [],
         partial: "",
         hearing: false,
+        thinking: false,
         shaped: {},
         hesitations: {},
         known: [],
@@ -7959,10 +7972,20 @@ ${input.page.text}`;
             this.currentSession = id;
             this.options.onSession?.(id);
           },
-          onToolCallStarted: (callId, name) => this.trust.toolCall(callId, name),
+          onToolCallStarted: (callId, name) => {
+            this.trust.toolCall(callId, name);
+            this.answered();
+          },
+          onAgentSpeaking: () => {
+            this.answered();
+            if (this.current.thinking) this.update({ thinking: false });
+          },
           onReply: (event) => {
             if (event.type === "started") this.trust.replyStarted(event.id);
-            else this.replyOver(event.id);
+            else {
+              this.replyOver(event.id);
+              this.nudgeIfUnanswered(event.status);
+            }
           },
           // After results are out, the agent's prompt catches up with the form — so even a turn with
           // no tool call ("hello?", "what's left?") is answered from the form as it is.
@@ -7999,6 +8022,10 @@ ${input.page.text}`;
           },
           onUserTranscript: (text4, audio, timeline) => this.heardTurn(text4, audio, timeline),
           onAgentTranscript: (text4, reply) => {
+            if (text4.trim()) {
+              this.answered();
+              if (this.current.thinking) this.update({ thinking: false });
+            }
             if (reply?.id) this.replyText.set(reply.id, text4);
             if (reply && !reply.interrupted && !reply.id.startsWith("fc-")) this.checkReadBack(text4);
             this.askedAt = Date.now();
@@ -8009,6 +8036,7 @@ ${input.page.text}`;
             if (this.current.hearing !== speaking) this.update({ hearing: speaking });
           },
           onSpeechStart: () => {
+            if (this.current.thinking) this.update({ thinking: false });
             const now = Date.now();
             this.pauseBeforeAnswer = this.askedAt ? (now - this.askedAt) / 1e3 : void 0;
           },
@@ -8041,7 +8069,7 @@ ${input.page.text}`;
     async stop() {
       if (this.stopped) return;
       this.finish();
-      this.update({ status: "stopped", partial: "", hearing: false });
+      this.update({ status: "stopped", partial: "", hearing: false, thinking: false });
       await this.voice?.stop();
       this.voice = null;
     }
@@ -8072,7 +8100,8 @@ ${this.partial}`.trim();
       this.transcript = `${this.transcript}
 ${text4}`.trim();
       this.note("you", text4);
-      this.update({ partial: "", turns: [...this.current.turns, { who: "you", text: text4 }] });
+      this.unanswered.push(text4);
+      this.update({ partial: "", thinking: this.current.status === "live", turns: [...this.current.turns, { who: "you", text: text4 }] });
     }
     // ── The tools ──────────────────────────────────────────────────────────────────────
     /** Runs one tool call and returns what goes back to the agent. Public so replays can drive it. */
@@ -8218,6 +8247,25 @@ ${text4}`.trim();
       if (score >= READ_BACK_MIN) return;
       this.note("app", `the draft was not read word for word (${Math.round(score * 100)}%) \u2014 asked to read it again`);
       this.voice?.createReply(`You did not read the draft word for word. Read it again, exactly as written, nothing added or left out: "${waiting.text}". Then ask if it should go in.`);
+    }
+    /** The agent spoke or acted: what they said has been taken up. */
+    answered() {
+      this.unanswered = [];
+    }
+    /**
+     * A reply ended with no voice and no tool call while what they said still waits. Live: they
+     * kept talking while the agent was working out a long take; the reply finished 17 s later with
+     * nothing in it, and the call sat silent — 0 of 14 filled — until they said "hello". The server
+     * only answers a new turn, so we ask it to answer this one.
+     */
+    nudgeIfUnanswered(status) {
+      if (status === "interrupted" || this.unanswered.length === 0 || !this.voice || this.stopped) return;
+      const said2 = this.unanswered.join(" ").slice(-1200);
+      this.unanswered = [];
+      this.note("app", "a reply ended with nothing said or done \u2014 asked the agent to answer them");
+      this.voice.createReply(
+        `They spoke and you have not answered yet. They said: "${said2}". Call fill_fields now for every answer in that which is not on the form yet, quoting their exact words, then reply in one short sentence and do what DO NEXT says.`
+      );
     }
     // ── The trust layer ────────────────────────────────────────────────────────────────
     /** Every answer on the form, as one string — to tell whether a reply changed anything. */
@@ -8446,7 +8494,14 @@ ${text4}`.trim();
     agentSays(text4) {
       const id = `reply_${++this.replies}`;
       this.o.onReply?.({ type: "started", id });
+      this.o.onAgentSpeaking?.();
       this.o.onAgentTranscript?.(text4, { id, interrupted: false });
+      this.o.onReply?.({ type: "done", id, status: "completed" });
+    }
+    /** A reply that ends with nothing in it: no voice, no tool call (seen live after a long take). */
+    emptyReply() {
+      const id = `reply_${++this.replies}`;
+      this.o.onReply?.({ type: "started", id });
       this.o.onReply?.({ type: "done", id, status: "completed" });
     }
     /** Every reply the conductor asked for, with its instructions. */

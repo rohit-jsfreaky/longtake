@@ -189,3 +189,67 @@ test.describe("what the conductor does around the tools", () => {
     expect(tools.some((t) => t.startsWith("result confirm_answer") && t.includes("Social Media"))).toBe(true);
   });
 });
+
+/**
+ * Live, 30 Sep: they finished a long take and kept talking while the agent worked it out; the reply
+ * ended 17 s later with no voice and no tool call, the call sat silent at 0 of 14, and nothing moved
+ * until they said "hello". Now the page says it is thinking, and an empty reply is answered for them.
+ */
+test.describe("a reply with nothing in it", () => {
+  /** A conductor on the form with a FakeVoice, started; returned as names on window for each test. */
+  async function started(page: Page) {
+    await load(page, FORM);
+    await page.evaluate(async () => {
+      const L = window.__longtake;
+      const fake = new L.FakeVoice();
+      const conductor = new L.Conductor({ root: () => document, ignore: "[data-longtake-ignore]", services: { getToken: async () => "token", workletUrl: "", startVoice: fake.start } });
+      await conductor.start();
+      await new Promise((r) => setTimeout(r, 20));
+      Object.assign(window, { __fake: fake, __conductor: conductor });
+    });
+  }
+  type Live = { __fake: InstanceType<typeof window.__longtake.FakeVoice>; __conductor: InstanceType<typeof window.__longtake.Conductor> };
+
+  test("after they finish, it says it is thinking until the agent speaks", async ({ page }) => {
+    await started(page);
+    const views = await page.evaluate(() => {
+      const { __fake: fake, __conductor: conductor } = window as unknown as Live;
+      fake.userSays("I'm Rohit Kashyap, rohit@example.com");
+      const before = conductor.view().thinking;
+      fake.agentSays("Got both.");
+      return [before, conductor.view().thinking];
+    });
+    expect(views).toEqual([true, false]);
+  });
+
+  test("an empty reply is followed by one request to answer what they said", async ({ page }) => {
+    await started(page);
+    const asked = await page.evaluate(() => {
+      const { __fake: fake } = window as unknown as Live;
+      fake.userSays("I'm Rohit Kashyap, rohit@example.com, I heard from Twitter");
+      fake.userSays("and I am not a veteran");
+      fake.emptyReply();
+      fake.emptyReply();
+      return fake.asked;
+    });
+    expect(asked).toHaveLength(1);
+    expect(asked[0]).toContain("I heard from Twitter");
+    expect(asked[0]).toContain("not a veteran");
+    expect(asked[0]).toContain("fill_fields");
+  });
+
+  test("a reply that spoke, or a tool call, needs no nudge", async ({ page }) => {
+    await started(page);
+    const asked = await page.evaluate(async () => {
+      const { __fake: fake } = window as unknown as Live;
+      fake.userSays("I'm Rohit Kashyap");
+      fake.agentSays("Got it.");
+      fake.emptyReply();
+      fake.userSays("rohit@example.com");
+      await fake.toolCall("fill_fields", { email: { value: "rohit@example.com", evidence: "rohit@example.com", how: "named" } });
+      fake.emptyReply();
+      return fake.asked;
+    });
+    expect(asked).toEqual([]);
+  });
+});

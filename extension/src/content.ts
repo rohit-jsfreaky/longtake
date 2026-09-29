@@ -102,6 +102,7 @@ function toPanel(view: ConductorView): PanelView {
     progress: `${form.progress.filled} of ${form.progress.total} in · ${form.progress.requiredLeft} required left`,
     ...(lastHeard ? { heard: lastHeard } : {}),
     hearing: view.hearing,
+    thinking: view.thinking,
     ...(lastSaid ? { said: lastSaid } : {}),
     review: view.review,
     notices: [

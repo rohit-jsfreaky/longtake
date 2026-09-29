@@ -105,6 +105,7 @@ export function Stage() {
     turns,
     partial,
     hearing,
+    thinking,
     start,
     stop,
     forgetEverything,
@@ -293,6 +294,9 @@ export function Stage() {
                     {/* Over the agent, their words can take seconds to come back (the server
                         waits to understand before it interrupts); this says it heard them now. */}
                     {hearing && !partial && <p className="text-dim">Hearing you…</p>}
+                    {/* A long take can take the agent several seconds to work through; without
+                        this the call looks dead and people start talking again over it. */}
+                    {thinking && !hearing && !partial && <p className="text-dim">Thinking… putting it in</p>}
                   </>
                 )}
               </div>

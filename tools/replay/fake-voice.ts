@@ -73,7 +73,15 @@ export class FakeVoice {
   agentSays(text: string): void {
     const id = `reply_${++this.replies}`;
     this.o.onReply?.({ type: "started", id });
+    this.o.onAgentSpeaking?.();
     this.o.onAgentTranscript?.(text, { id, interrupted: false });
+    this.o.onReply?.({ type: "done", id, status: "completed" });
+  }
+
+  /** A reply that ends with nothing in it: no voice, no tool call (seen live after a long take). */
+  emptyReply(): void {
+    const id = `reply_${++this.replies}`;
+    this.o.onReply?.({ type: "started", id });
     this.o.onReply?.({ type: "done", id, status: "completed" });
   }
 

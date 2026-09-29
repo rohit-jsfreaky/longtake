@@ -69,6 +69,11 @@ export type ConductorView = {
    * server can take seconds to decide it was interrupted; this says "heard you" at once.
    */
   hearing: boolean;
+  /**
+   * They have finished and the agent has not answered yet — no voice, nothing typed. Live, a reply
+   * took 17 s and looked like a dead call; this says "Thinking…" instead of nothing.
+   */
+  thinking: boolean;
   shaped: Record<string, ShapedAnswer>;
   hesitations: Record<string, Hesitation>;
   /** Everything known about the person, newest first. */
@@ -262,6 +267,7 @@ export class Conductor {
       turns: [],
       partial: "",
       hearing: false,
+      thinking: false,
       shaped: {},
       hesitations: {},
       known: [],
@@ -442,10 +448,20 @@ export class Conductor {
           this.currentSession = id;
           this.options.onSession?.(id);
         },
-        onToolCallStarted: (callId, name) => this.trust.toolCall(callId, name),
+        onToolCallStarted: (callId, name) => {
+          this.trust.toolCall(callId, name);
+          this.answered();
+        },
+        onAgentSpeaking: () => {
+          this.answered();
+          if (this.current.thinking) this.update({ thinking: false });
+        },
         onReply: (event) => {
           if (event.type === "started") this.trust.replyStarted(event.id);
-          else this.replyOver(event.id);
+          else {
+            this.replyOver(event.id);
+            this.nudgeIfUnanswered(event.status);
+          }
         },
         // After results are out, the agent's prompt catches up with the form — so even a turn with
         // no tool call ("hello?", "what's left?") is answered from the form as it is.
@@ -486,6 +502,10 @@ export class Conductor {
         },
         onUserTranscript: (text, audio, timeline) => this.heardTurn(text, audio, timeline),
         onAgentTranscript: (text, reply) => {
+          if (text.trim()) {
+            this.answered();
+            if (this.current.thinking) this.update({ thinking: false });
+          }
           if (reply?.id) this.replyText.set(reply.id, text);
           if (reply && !reply.interrupted && !reply.id.startsWith("fc-")) this.checkReadBack(text);
           this.askedAt = Date.now();
@@ -496,6 +516,7 @@ export class Conductor {
           if (this.current.hearing !== speaking) this.update({ hearing: speaking });
         },
         onSpeechStart: () => {
+          if (this.current.thinking) this.update({ thinking: false });
           const now = Date.now();
           this.pauseBeforeAnswer = this.askedAt ? (now - this.askedAt) / 1000 : undefined;
         },
@@ -529,7 +550,7 @@ export class Conductor {
   async stop(): Promise<void> {
     if (this.stopped) return;
     this.finish();
-    this.update({ status: "stopped", partial: "", hearing: false });
+    this.update({ status: "stopped", partial: "", hearing: false, thinking: false });
     await this.voice?.stop();
     this.voice = null;
   }
@@ -565,7 +586,8 @@ export class Conductor {
     // Accumulated, not replaced: a quote may span two turns of one long take.
     this.transcript = `${this.transcript}\n${text}`.trim();
     this.note("you", text);
-    this.update({ partial: "", turns: [...this.current.turns, { who: "you", text }] });
+    this.unanswered.push(text);
+    this.update({ partial: "", thinking: this.current.status === "live", turns: [...this.current.turns, { who: "you", text }] });
   }
 
   // ── The tools ──────────────────────────────────────────────────────────────────────
@@ -735,6 +757,32 @@ export class Conductor {
     if (score >= READ_BACK_MIN) return;
     this.note("app", `the draft was not read word for word (${Math.round(score * 100)}%) — asked to read it again`);
     this.voice?.createReply(`You did not read the draft word for word. Read it again, exactly as written, nothing added or left out: "${waiting.text}". Then ask if it should go in.`);
+  }
+
+  // ── A reply that says nothing ──────────────────────────────────────────────────────
+
+  /** What they said that the agent has not answered yet — by voice or by a tool call. */
+  private unanswered: string[] = [];
+
+  /** The agent spoke or acted: what they said has been taken up. */
+  private answered(): void {
+    this.unanswered = [];
+  }
+
+  /**
+   * A reply ended with no voice and no tool call while what they said still waits. Live: they
+   * kept talking while the agent was working out a long take; the reply finished 17 s later with
+   * nothing in it, and the call sat silent — 0 of 14 filled — until they said "hello". The server
+   * only answers a new turn, so we ask it to answer this one.
+   */
+  private nudgeIfUnanswered(status: string | undefined): void {
+    if (status === "interrupted" || this.unanswered.length === 0 || !this.voice || this.stopped) return;
+    const said = this.unanswered.join(" ").slice(-1200);
+    this.unanswered = [];
+    this.note("app", "a reply ended with nothing said or done — asked the agent to answer them");
+    this.voice.createReply(
+      `They spoke and you have not answered yet. They said: "${said}". Call fill_fields now for every answer in that which is not on the form yet, quoting their exact words, then reply in one short sentence and do what DO NEXT says.`,
+    );
   }
 
   // ── The trust layer ────────────────────────────────────────────────────────────────

@@ -173,6 +173,8 @@ export type VoiceSessionOptions = {
   onReply?: (event: { type: "started" | "done"; id: string; status?: string }) => void;
   /** A tool call arrived, before its handler runs. */
   onToolCallStarted?: (callId: string, name: string) => void;
+  /** The agent's voice starts: the first audio of a reply. Until then it is still thinking. */
+  onAgentSpeaking?: () => void;
   /**
    * Carry on the call this page's last document was in. A form that loads each page afresh ends
    * the page's scripts — and the call with them — at every Next. The server keeps a dropped session
@@ -277,6 +279,7 @@ export async function startVoiceSession(options: VoiceSessionOptions): Promise<V
     onUserTranscript,
     onAgentTranscript,
     onReply,
+    onAgentSpeaking,
     onToolCallStarted,
     onSpeechStart,
     onSession,
@@ -398,6 +401,9 @@ export async function startVoiceSession(options: VoiceSessionOptions): Promise<V
     liveSources.add(src);
     nextStartTime = startAt + buffer.duration;
   }
+
+  /** Whether this reply's voice has started — its first audio ends the thinking. */
+  let audible = false;
 
   function flushPlayback() {
     for (const src of liveSources) {
@@ -644,7 +650,10 @@ export async function startVoiceSession(options: VoiceSessionOptions): Promise<V
     // Every frame, before the switch: any frame is a chance to send a held result.
     results.note(message.type);
     replies.note(message.type, Date.now(), typeof message.call_id === "string" ? message.call_id : undefined);
-    if (message.type === "reply.started") onReply?.({ type: "started", id: String(message.reply_id ?? "") });
+    if (message.type === "reply.started") {
+      audible = false;
+      onReply?.({ type: "started", id: String(message.reply_id ?? "") });
+    }
     if (message.type === "reply.done") onReply?.({ type: "done", id: String(message.reply_id ?? ""), status: String(message.status ?? "") });
 
     switch (message.type) {
@@ -683,6 +692,10 @@ export async function startVoiceSession(options: VoiceSessionOptions): Promise<V
         break;
       }
       case "reply.audio":
+        if (!audible) {
+          audible = true;
+          onAgentSpeaking?.();
+        }
         playReplyAudio(String(message.data));
         break;
       case "tool.call":
