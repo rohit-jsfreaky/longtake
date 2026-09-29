@@ -61,7 +61,7 @@ export function GetExtension() {
               </a>
             </div>
             <p className="tag mt-6 text-faint" data-reveal>
-              Chrome, Edge, Brave · Version 1.0.0
+              Chrome, Edge, Brave · Version 1.0.0 · In review on the Chrome Web Store
             </p>
           </Reveal>
 
