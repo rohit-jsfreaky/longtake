@@ -52,7 +52,7 @@ export function Receipt() {
     <Section id="trust">
       <Container>
         <Reveal>
-          <Eyebrow n="05">What it will not do</Eyebrow>
+          <Eyebrow n="06">What it will not do</Eyebrow>
           <h2 className="display mt-6 max-w-[20ch] text-[clamp(30px,4.4vw,52px)]" data-reveal>
             A form full of things you never said
             <br />

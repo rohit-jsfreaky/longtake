@@ -23,10 +23,10 @@ import { applyChanges, emptyProfile, migrateV1, PROFILE_VERSION, type Memory, ty
 import { PROFILE_KEY, V1_KEY } from "./profile-client";
 
 /**
- * Where the token comes from. The deployed Longtake site once it is live; the dev server until then.
- * `chrome.storage.local.set({ site })` overrides it without a rebuild.
+ * Where the token comes from: the deployed Longtake site. `chrome.storage.local.set({ site })` points it
+ * at a dev server without a rebuild (the tests point it at their fake one).
  */
-const DEFAULT_SITE = "http://localhost:3000";
+const DEFAULT_SITE = "https://longtake-web.vercel.app";
 
 /** A tab stays "live" across a page load for this long — long enough to load, not to wander off. */
 const CARRY_OVER_MS = 60_000;

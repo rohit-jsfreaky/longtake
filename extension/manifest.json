@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Longtake — the whole form, in one take",
-  "version": "0.2.0",
+  "version": "1.0.0",
   "description": "Speak once, like telling a friend, and the whole form fills. It asks out loud only for what you did not cover.",
   "icons": {
     "16": "icons/icon-16.png",
@@ -23,9 +23,9 @@
     "webNavigation"
   ],
   "host_permissions": [
+    "https://longtake-web.vercel.app/*",
     "http://localhost/*",
-    "http://127.0.0.1/*",
-    "https://*.vercel.app/*"
+    "http://127.0.0.1/*"
   ],
   "background": {
     "service_worker": "dist/background.js"

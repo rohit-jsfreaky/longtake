@@ -7,6 +7,7 @@ import { Mark } from "./Mark";
 const LINKS = [
   { href: "#try", label: "Try it" },
   { href: "#how", label: "How it works" },
+  { href: "#extension", label: "Extension" },
   { href: "#trust", label: "Trust" },
 ];
 

@@ -3,6 +3,7 @@ import { SiteFooter } from "@/components/SiteFooter";
 import { SmoothScroll } from "@/components/motion";
 import { Closing } from "@/components/sections/Closing";
 import { Faq } from "@/components/sections/Faq";
+import { GetExtension } from "@/components/sections/GetExtension";
 import { HowItWorks } from "@/components/sections/HowItWorks";
 import { LogoRow } from "@/components/sections/LogoRow";
 import { Problem } from "@/components/sections/Problem";
@@ -26,6 +27,7 @@ export default function Home() {
         <Steps />
         <HowItWorks />
         <Stage />
+        <GetExtension />
         <Receipt />
         <Faq />
         <Closing />

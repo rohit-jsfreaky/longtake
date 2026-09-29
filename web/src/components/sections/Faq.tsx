@@ -57,7 +57,7 @@ export function Faq() {
       <Container>
         <div className="grid gap-12 lg:grid-cols-[0.8fr_1.2fr] lg:gap-20">
           <Reveal>
-            <Eyebrow n="06">Questions</Eyebrow>
+            <Eyebrow n="07">Questions</Eyebrow>
             <h2 className="display mt-6 max-w-[12ch] text-[clamp(30px,4.4vw,52px)]" data-reveal>
               The ones
               <br />

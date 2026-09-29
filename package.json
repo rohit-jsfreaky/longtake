@@ -17,6 +17,7 @@
     "test:ui": "npm run build:probe && playwright test --ui",
     "probe:agent": "esbuild tools/agent-probe.ts --bundle --format=esm --platform=node --outfile=.probe/agent-probe.mjs && node .probe/agent-probe.mjs",
     "build:extension": "node tools/build-extension.mjs",
+    "pack:extension": "node tools/pack-extension.mjs",
     "corpus:build": "esbuild tools/corpus/cli.ts --bundle --format=esm --platform=node --packages=external --outfile=.probe/corpus.mjs",
     "corpus:capture": "npm run corpus:build --silent && node .probe/corpus.mjs capture",
     "corpus:seed": "npm run corpus:build --silent && node .probe/corpus.mjs seed",

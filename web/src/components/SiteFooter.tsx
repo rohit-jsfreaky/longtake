@@ -30,6 +30,9 @@ export function SiteFooter() {
           >
             Source
           </Link>
+          <Link href="/privacy" className="text-[13px] text-faint transition-colors hover:text-paper">
+            Privacy
+          </Link>
           <span className="text-[13px] text-faint">MIT</span>
         </div>
       </Container>
