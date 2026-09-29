@@ -393,6 +393,9 @@ export class LongtakeSession {
       return { result: { not_pressed: "That button is not on the page.", submitted: false }, outcomes: [], spoken: [] };
     }
 
+    // Watched from before the click: a Next that loads a whole new document (Google Forms) starts
+    // to go a moment later, while this page still looks exactly as it did.
+    const leaving = action.kind === "next" ? watchLeaving(NEXT_PAGE_LOAD_MS) : null;
     this.writing = true;
     let pressed: ReturnType<typeof pressAction>;
     try {
@@ -401,10 +404,16 @@ export class LongtakeSession {
       this.writing = false;
     }
     if (!pressed.pressed) {
+      leaving?.cancel();
       return { result: { not_pressed: pressed.reason, submitted: false }, outcomes: [], spoken: [] };
     }
 
     const reshaped = await this.pageChanged();
+    // Live: the agent pressed Next on a Google Form, was told "page_did_not_change" while the next
+    // page was on its way, and the call never came back on it. A page that is going is answered as
+    // it goes (Conductor.leavePage); this call is left to that.
+    if (!reshaped && leaving && (await leaving.going)) return new Promise(() => undefined);
+    leaving?.cancel();
     // Buttons change even when fields do not — a Next that became Submit on the last page.
     this.options.onReshape?.();
 
@@ -1200,4 +1209,25 @@ export class LongtakeSession {
   specs(): FieldSpec[] {
     return this.current?.specs ?? [];
   }
+}
+
+/** How long after a Next a page may take to start loading the next one. */
+const NEXT_PAGE_LOAD_MS = 4000;
+
+/** Whether this document starts to unload within `ms` — a Next that loads a new page. */
+function watchLeaving(ms: number): { going: Promise<boolean>; cancel: () => void } {
+  if (typeof window === "undefined") return { going: Promise.resolve(false), cancel: () => undefined };
+  let finish: (going: boolean) => void = () => undefined;
+  const going = new Promise<boolean>((resolve) => (finish = resolve));
+  const on = () => done(true);
+  const timer = setTimeout(() => done(false), ms);
+  function done(value: boolean): void {
+    clearTimeout(timer);
+    window.removeEventListener("beforeunload", on);
+    window.removeEventListener("pagehide", on);
+    finish(value);
+  }
+  window.addEventListener("beforeunload", on);
+  window.addEventListener("pagehide", on);
+  return { going, cancel: () => done(false) };
 }

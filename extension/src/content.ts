@@ -159,7 +159,7 @@ async function begin(): Promise<void> {
 window.addEventListener("pagehide", () => {
   if (!conductor?.running) return;
   // The session to resume, and what the agent is still waiting on — a Next it pressed, most often.
-  tellBackground({ type: "longtake:active", active: true, ...(conductor.sessionId ? { sessionId: conductor.sessionId } : {}), pending: conductor.pendingCalls() });
+  tellBackground({ type: "longtake:active", active: true, ...(conductor.sessionId ? { sessionId: conductor.sessionId } : {}), pending: conductor.leavePage() });
 });
 
 // ── Messages from the background worker ─────────────────────────────────────────────────

@@ -218,6 +218,11 @@ export type VoiceSession = {
   createReply: (instructions: string) => void;
   /** Results finished but held for the end of the agent's reply — not yet sent. */
   unsentResults: () => { callId: string; result: unknown }[];
+  /**
+   * The page is going: answer these calls now, whatever the reply is doing, and drop anything held.
+   * A call left unanswered across a page load is what the next page could not carry on from.
+   */
+  answerNow: (answers: { callId: string; result: unknown }[]) => void;
 };
 
 /**
@@ -865,6 +870,10 @@ export async function startVoiceSession(options: VoiceSessionOptions): Promise<V
       flushReplies();
     },
     unsentResults: () => results.peek().map((held) => ({ callId: held.call_id, result: held.result })),
+    answerNow: (answers) => {
+      results.clear();
+      for (const answer of answers) send({ type: "tool.result", call_id: answer.callId, result: JSON.stringify(answer.result) });
+    },
     stop: async () => {
       closing = true;
       clearTimeout(reconnectTimer);

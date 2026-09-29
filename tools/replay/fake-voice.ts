@@ -39,6 +39,9 @@ export class FakeVoice {
       createReply: (value) => this.sent.push({ kind: "reply", value }),
       // Results go out at once here: nothing is ever held.
       unsentResults: () => [],
+      answerNow: (answers) => {
+        for (const answer of answers) this.sent.push({ kind: "reply", value: `answered ${answer.callId}` });
+      },
     };
   };
 

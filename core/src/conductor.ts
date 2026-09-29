@@ -365,6 +365,28 @@ export class Conductor {
     return this.currentSession;
   }
 
+  /**
+   * The page is going, mid-call. Every call the agent is still waiting on is answered from this
+   * page, now: a Next it pressed as pressed, the next page loading. Live: a Next the agent pressed
+   * left its call open across the load, and the next page never came back; a Next pressed by hand
+   * (nothing open) carried on every time. So nothing is left open, and both go the same way.
+   */
+  leavePage(): CarriedCall["pending"] {
+    const pending = this.pendingCalls();
+    if (pending.length === 0 || !this.voice) return pending;
+    this.voice.answerNow(
+      pending.map((call) => ({
+        callId: call.callId,
+        result:
+          call.result ??
+          (call.name === PRESS_TOOL_NAME
+            ? { pressed: true, next_page_loading: true, do_next: "The next page is loading. Say nothing until you are told what is on it.", submitted: false }
+            : { error: "The page moved on before this finished.", submitted: false }),
+      })),
+    );
+    return [];
+  }
+
   /** Tool calls the agent made that have not been answered yet — what a page load would cut off. */
   pendingCalls(): CarriedCall["pending"] {
     // Finished but held for the end of the agent's reply: the real result goes with the page. Still

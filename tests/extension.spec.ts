@@ -214,15 +214,17 @@ test.describe("the extension on someone else's page", () => {
       await expect.poll(() => agent.received[before + 1]?.[0] ?? null, { timeout: 20_000 }).toEqual({ type: "session.resume", session_id: "sess_p1" });
       serve(before + 1, { type: "session.ready", session_id: "sess_p1" });
 
-      // Caught up with the new page's form, and the Next it pressed answered from this page.
-      await expect.poll(() => agent.received[before + 1]!.some((m) => m.type === "tool.result" && m.call_id === "c2"), { timeout: 10_000 }).toBe(true);
+      // The Next it pressed was answered by the page it pressed it on, before that page went: live, a
+      // call left open across the load was the one path that never came back. Nothing is carried.
+      const leaving = agent.received[before]!.find((m) => m.type === "tool.result" && m.call_id === "c2");
+      expect(leaving).toBeTruthy();
+      expect(JSON.parse(String(leaving!.result))).toMatchObject({ pressed: true, next_page_loading: true, submitted: false });
+      // The new page is caught up — its form, its tools — and asks the agent to say where they are.
+      await expect.poll(() => agent.received[before + 1]!.some((m) => m.type === "reply.create"), { timeout: 10_000 }).toBe(true);
+      expect(agent.received[before + 1]!.some((m) => m.type === "tool.result" && m.call_id === "c2")).toBe(false);
       const update = agent.received[before + 1]!.find((m) => m.type === "session.update") as unknown as { session: { tools: { name: string; parameters: { properties: object } }[] } };
       const fill = update.session.tools.find((t) => t.name === "fill_fields")!;
       expect(Object.keys(fill.parameters.properties)).toEqual(["city"]);
-      // The Next it pressed, answered from this page. (The fill before it may be answered too: its
-      // result, if it had not been sent, travels with the page.)
-      const answered = agent.received[before + 1]!.find((m) => m.type === "tool.result" && m.call_id === "c2")!;
-      expect(JSON.parse(String(answered.result))).toMatchObject({ pressed: true, form_changed: { new_page: true, new_questions: ["City"] }, submitted: false });
       await expect(page.locator("longtake-panel")).toHaveCount(1);
     } finally {
       await context.close();
