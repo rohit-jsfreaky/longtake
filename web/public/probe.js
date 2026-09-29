@@ -5353,6 +5353,7 @@
   // core/src/session.ts
   var CHOICE_KINDS2 = /* @__PURE__ */ new Set(["select", "radio", "multiselect", "checkbox"]);
   var UNDERSTAND_WAIT_MS = 4e3;
+  var OPEN_UNDERSTAND_WAIT_MS = 6e3;
   var LongtakeSession = class {
     constructor(options) {
       this.options = options;
@@ -5803,6 +5804,9 @@
       this.title = titleOf(read, this.scope());
       this.plan = { optionalOffered: false };
       void this.understandForm(read);
+      if (Object.keys(this.profile.facts).length > 0 && this.understanding) {
+        await Promise.race([this.understanding, new Promise((done) => setTimeout(done, OPEN_UNDERSTAND_WAIT_MS))]);
+      }
       this.ledger.markAtOpen(
         this.state().fields.filter((f) => f.value !== null && !this.ledger.entry(f.spec.id)).map((f) => f.spec.id)
       );
@@ -7642,6 +7646,8 @@ ${input.page.text}`;
       /** The voice session the call is in now, and the tool calls not answered yet. */
       this.currentSession = null;
       this.openCalls = /* @__PURE__ */ new Map();
+      /** Answers from last time already in when the greeting was written — it named those. */
+      this.recalledAtGreeting = /* @__PURE__ */ new Set();
       /** Every call's tool, by id — a held result is carried with its name. */
       this.callNames = /* @__PURE__ */ new Map();
       /** A draft just handed to the agent to read out, word for word — checked against what it said. */
@@ -7664,6 +7670,7 @@ ${input.page.text}`;
         onPromptStale: () => {
           this.refresh();
           this.syncPrompt();
+          this.announceLateRecall();
         },
         // The form's questions changed under the call: new tools and a new prompt, straight away.
         onReshape: () => {
@@ -7798,6 +7805,7 @@ ${input.page.text}`;
         const problems = this.session.toolProblems();
         if (problems.length > 0) throw new Error(`This form produced a tool the voice service would reject: ${problems[0]}`);
         const greeting = this.session.greeting();
+        this.recalledAtGreeting = new Set(this.session.state().fields.filter((f) => f.source === "memory").map((f) => f.spec.id));
         this.note("app", `opening line: ${greeting}`);
         this.update({ status: "connecting" });
         const { services } = this.options;
@@ -8007,6 +8015,20 @@ ${text4}`.trim();
       if (name === DRAFT_TOOL_NAME) return this.draftAnswer(args, heard);
       if (name === SAVE_TOOL_NAME) return (await session.saveForNextTime(args, heard)).result;
       return { error: `Unknown tool "${name}".` };
+    }
+    /**
+     * Answers from last time that went in after the greeting was spoken — the model's meanings came
+     * late. The prompt alone left the agent asking for a name that was already on the page; it is told
+     * at once, in its own words, and asks only for what is left.
+     */
+    announceLateRecall() {
+      if (!this.voice || this.stopped) return;
+      const late = this.session.state().fields.filter((f) => f.source === "memory" && !this.recalledAtGreeting.has(f.spec.id));
+      if (late.length === 0) return;
+      for (const f of late) this.recalledAtGreeting.add(f.spec.id);
+      const names = late.map((f) => f.spec.label).slice(0, 6).join(", ");
+      this.note("app", `from last time, after the greeting: ${late.length} went in \u2014 the agent is told`);
+      this.voice.createReply(`Answers from their last form just went in: ${names}${late.length > 6 ? ` and ${late.length - 6} more` : ""}. In one short sentence tell them those are already filled from last time, don't ask for them, then do what DO NEXT says.`);
     }
     // ── Long answers, drafted from their words ────────────────────────────────────────────
     /**

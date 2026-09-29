@@ -98,6 +98,12 @@ const CHOICE_KINDS = new Set(["select", "radio", "multiselect", "checkbox"]);
  * this the call starts anyway, and they go in the moment the meanings arrive.
  */
 const UNDERSTAND_WAIT_MS = 4000;
+/**
+ * At Start, for a returning person, how much longer the opening line waits for the form's meanings.
+ * The page-load wait can run out on a slow model; the answers from last time then went in just after
+ * the agent had greeted them as a stranger and asked for their name and email.
+ */
+const OPEN_UNDERSTAND_WAIT_MS = 6000;
 
 type Learned = "spoken" | "confirmed";
 
@@ -627,6 +633,10 @@ export class LongtakeSession {
     this.plan = { optionalOffered: false };
     // Meanings for what was said on this form, and for a form that grew. Never waited for here.
     void this.understandForm(read);
+    // A returning person is greeted with what came back from last time — which needs the meanings.
+    if (Object.keys(this.profile.facts).length > 0 && this.understanding) {
+      await Promise.race([this.understanding, new Promise((done) => setTimeout(done, OPEN_UNDERSTAND_WAIT_MS))]);
+    }
 
     // Anything already in the form that we did not put there was there before we arrived.
     this.ledger.markAtOpen(
