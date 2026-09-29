@@ -3181,6 +3181,7 @@
     const heardWords = new Set(words(transcript));
     const found = quoteWords.filter((word) => heardWords.has(word)).length;
     if (found / quoteWords.length >= MIN_WORD_OVERLAP) return { ok: true };
+    if (heardBySound(quoteWords, heardWords, words(transcript))) return { ok: true };
     return {
       ok: false,
       reason: `Those words were not in what was said, so this field stays empty. Quote the person exactly, or leave the field out.`
@@ -3195,6 +3196,117 @@
       else unsupported.push({ fieldId: value.fieldId, reason: check.reason });
     }
     return { spoken, unsupported };
+  }
+  var CONSONANTS = {
+    \u0915: "k",
+    \u0916: "kh",
+    \u0917: "g",
+    \u0918: "gh",
+    \u0919: "n",
+    \u091A: "ch",
+    \u091B: "chh",
+    \u091C: "j",
+    \u091D: "jh",
+    \u091E: "n",
+    \u091F: "t",
+    \u0920: "th",
+    \u0921: "d",
+    \u0922: "dh",
+    \u0923: "n",
+    \u0924: "t",
+    \u0925: "th",
+    \u0926: "d",
+    \u0927: "dh",
+    \u0928: "n",
+    \u092A: "p",
+    \u092B: "ph",
+    \u092C: "b",
+    \u092D: "bh",
+    \u092E: "m",
+    \u092F: "y",
+    \u0930: "r",
+    \u0932: "l",
+    \u0935: "v",
+    \u0936: "sh",
+    \u0937: "sh",
+    \u0938: "s",
+    \u0939: "h",
+    \u0915\u093C: "k",
+    \u0916\u093C: "kh",
+    \u0917\u093C: "g",
+    \u091C\u093C: "z",
+    \u0921\u093C: "r",
+    \u0922\u093C: "rh",
+    \u092B\u093C: "f",
+    \u092F\u093C: "y"
+  };
+  var VOWELS = {
+    \u0905: "a",
+    \u0906: "aa",
+    \u0907: "i",
+    \u0908: "ii",
+    \u0909: "u",
+    \u090A: "uu",
+    \u090B: "ri",
+    \u090F: "e",
+    \u0910: "ai",
+    \u0913: "o",
+    \u0914: "au",
+    \u0911: "o",
+    \u090D: "e"
+  };
+  var SIGNS = {
+    "\u093E": "aa",
+    "\u093F": "i",
+    "\u0940": "ii",
+    "\u0941": "u",
+    "\u0942": "uu",
+    "\u0943": "ri",
+    "\u0947": "e",
+    "\u0948": "ai",
+    "\u094B": "o",
+    "\u094C": "au",
+    "\u0949": "o",
+    "\u0945": "e",
+    "\u0902": "n",
+    "\u0901": "n",
+    "\u0903": "h",
+    "\u094D": "",
+    "\u093C": ""
+  };
+  var NUKTA = { \u091C: "z", \u092B: "f", \u0921: "r", \u0915: "k", \u0916: "kh", \u0917: "g" };
+  function romanise(word) {
+    let out = "";
+    const chars = [...word.normalize("NFC")];
+    chars.forEach((char, i) => {
+      const next = chars[i + 1];
+      if (CONSONANTS[char] !== void 0) {
+        out += next === "\u093C" && NUKTA[char] ? NUKTA[char] : CONSONANTS[char];
+        const after = next === "\u093C" ? chars[i + 2] : next;
+        if (after === void 0 || SIGNS[after] === void 0 && CONSONANTS[after] !== void 0) out += "a";
+        else if (after !== void 0 && ["\u0902", "\u0901", "\u0903"].includes(after)) out += "a";
+      } else if (VOWELS[char] !== void 0) out += VOWELS[char];
+      else if (SIGNS[char] !== void 0) out += SIGNS[char];
+      else out += char;
+    });
+    return out;
+  }
+  function soundKey(word) {
+    const latin = /[ऀ-ॿ]/.test(word) ? romanise(word) : word;
+    if (/[^\x00-\x7F]/.test(latin)) return "";
+    const key = latin.toLowerCase().replace(/[^a-z0-9]/g, "").replace(/w/g, "v").replace(/z/g, "j").replace(/q/g, "k").replace(/h/g, "").replace(/[aeiou]/g, "").replace(/(.)\1+/g, "$1");
+    return key.length > 1 ? key.replace(/n$/, "") : key;
+  }
+  var NUMBER_WORDS = new Set(
+    "zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty thirty forty fifty sixty seventy eighty ninety hundred thousand lakh crore million half".split(" ")
+  );
+  function heardBySound(quoteWords, heardWords, heard) {
+    const numbers = quoteWords.filter((word) => /\d/.test(word) || NUMBER_WORDS.has(word));
+    if (numbers.some((word) => !heardWords.has(word))) return false;
+    const heardKeys = new Set(heard.map(soundKey));
+    const content = quoteWords.map(soundKey).filter((key) => key.length >= 2);
+    if (content.length === 0) return false;
+    return content.filter((key) => heardKeys.has(key)).length / content.length >= MIN_WORD_OVERLAP;
   }
 
   // core/src/dictation.ts
@@ -7102,7 +7214,7 @@
   var EXACT = /[\w.+-]+@[\w-]+(?:\.[\w-]+)+|(?:https?:\/\/|www\.)\S+|\b[\w-]+\.(?:com|org|net|io|dev|ai|in|co|app)\b\S*|\d[\d,.]*/gi;
   var NAME = /(?<=[^.!?]\s)[A-Z][\p{L}'’-]+/gu;
   var flat2 = (text4) => text4.toLowerCase().replace(/[\s,]+/g, "");
-  var NUMBER_WORDS = {
+  var NUMBER_WORDS2 = {
     zero: 0,
     two: 2,
     three: 3,
@@ -7137,13 +7249,13 @@
     fifth: 5,
     dozen: 12
   };
-  var NUMBER_WORD = new RegExp(`\\b(${Object.keys(NUMBER_WORDS).join("|")})\\b`, "gi");
+  var NUMBER_WORD = new RegExp(`\\b(${Object.keys(NUMBER_WORDS2).join("|")})\\b`, "gi");
   function unbackedNumberWords(text4, cited) {
     const sourceWords = new Set(cited.toLowerCase().match(NUMBER_WORD) ?? []);
     const sourceDigits = new Set((cited.match(/\d+(?:\.\d+)?/g) ?? []).map(Number));
     return (text4.match(NUMBER_WORD) ?? []).filter((word) => {
       const w = word.toLowerCase();
-      return !sourceWords.has(w) && !sourceDigits.has(NUMBER_WORDS[w]);
+      return !sourceWords.has(w) && !sourceDigits.has(NUMBER_WORDS2[w]);
     });
   }
   var words3 = (text4) => text4.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ");

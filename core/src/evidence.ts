@@ -109,6 +109,13 @@ export function checkEvidence(transcript: string, evidence: string): EvidenceChe
 
   if (found / quoteWords.length >= MIN_WORD_OVERLAP) return { ok: true };
 
+  // The same words in the other script. Live: a Hinglish take came back from speech-to-text as
+  // "…और मैं veteran नहीं हूँ", the agent quoted it as "main veteran nahi hoon", and the answer was
+  // refused as unsaid — then asked again. Compared by sound, the quote is what was said.
+  // A sound key is lossy, so two guards: a number must be heard exactly ("ten" is never "था"), and
+  // only words whose key keeps two letters count — "main", "hoon", "ke" say nothing on their own.
+  if (heardBySound(quoteWords, heardWords, words(transcript))) return { ok: true };
+
   return {
     ok: false,
     reason: `Those words were not in what was said, so this field stays empty. Quote the person exactly, or leave the field out.`,
@@ -138,4 +145,75 @@ export function keepOnlyWhatWasSaid(transcript: string, values: SpokenValue[]): 
   }
 
   return { spoken, unsupported };
+}
+
+// ── One word, however it was written: Devanagari or its Latin spelling ──────────────────────────
+
+const CONSONANTS: Record<string, string> = {
+  क: "k", ख: "kh", ग: "g", घ: "gh", ङ: "n", च: "ch", छ: "chh", ज: "j", झ: "jh", ञ: "n",
+  ट: "t", ठ: "th", ड: "d", ढ: "dh", ण: "n", त: "t", थ: "th", द: "d", ध: "dh", न: "n",
+  प: "p", फ: "ph", ब: "b", भ: "bh", म: "m", य: "y", र: "r", ल: "l", व: "v", श: "sh",
+  ष: "sh", स: "s", ह: "h", क़: "k", ख़: "kh", ग़: "g", ज़: "z", ड़: "r", ढ़: "rh", फ़: "f", य़: "y",
+};
+const VOWELS: Record<string, string> = {
+  अ: "a", आ: "aa", इ: "i", ई: "ii", उ: "u", ऊ: "uu", ऋ: "ri", ए: "e", ऐ: "ai", ओ: "o", औ: "au", ऑ: "o", ऍ: "e",
+};
+const SIGNS: Record<string, string> = {
+  "ा": "aa", "ि": "i", "ी": "ii", "ु": "u", "ू": "uu", "ृ": "ri", "े": "e", "ै": "ai", "ो": "o", "ौ": "au",
+  "ॉ": "o", "ॅ": "e", "ं": "n", "ँ": "n", "ः": "h", "्": "", "़": "",
+};
+const NUKTA: Record<string, string> = { ज: "z", फ: "f", ड: "r", क: "k", ख: "kh", ग: "g" };
+
+/** Devanagari spelled out in Latin letters, roughly as people type Hindi in English letters. */
+function romanise(word: string): string {
+  let out = "";
+  const chars = [...word.normalize("NFC")];
+  chars.forEach((char, i) => {
+    const next = chars[i + 1];
+    if (CONSONANTS[char] !== undefined) {
+      out += next === "़" && NUKTA[char] ? NUKTA[char] : CONSONANTS[char];
+      // The vowel every consonant carries, unless a sign replaces or removes it.
+      const after = next === "़" ? chars[i + 2] : next;
+      if (after === undefined || (SIGNS[after] === undefined && CONSONANTS[after] !== undefined)) out += "a";
+      else if (after !== undefined && ["ं", "ँ", "ः"].includes(after)) out += "a";
+    } else if (VOWELS[char] !== undefined) out += VOWELS[char];
+    else if (SIGNS[char] !== undefined) out += SIGNS[char];
+    else out += char;
+  });
+  return out;
+}
+
+/**
+ * A key for how a word sounds, the same for "नहीं" and "nahi", "हूँ" and "hoon", "करता" and "karta":
+ * Latin letters, no vowels (Hindi in Latin letters spells them any way it likes), no h (aspiration
+ * is spelled both ways), doubled letters once, and no nasal n at the end. Names and numbers keep
+ * their consonants, so a made-up name still does not match.
+ */
+function soundKey(word: string): string {
+  const latin = /[ऀ-ॿ]/.test(word) ? romanise(word) : word;
+  if (/[^\x00-\x7F]/.test(latin)) return ""; // another script: only exact matching applies
+  const key = latin
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "")
+    .replace(/w/g, "v")
+    .replace(/z/g, "j")
+    .replace(/q/g, "k")
+    .replace(/h/g, "")
+    .replace(/[aeiou]/g, "")
+    .replace(/(.)\1+/g, "$1");
+  return key.length > 1 ? key.replace(/n$/, "") : key;
+}
+
+const NUMBER_WORDS = new Set(
+  "zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty thirty forty fifty sixty seventy eighty ninety hundred thousand lakh crore million half".split(" "),
+);
+
+/** The quote's words, heard in the other script: numbers exactly, the rest by how they sound. */
+function heardBySound(quoteWords: string[], heardWords: Set<string>, heard: string[]): boolean {
+  const numbers = quoteWords.filter((word) => /\d/.test(word) || NUMBER_WORDS.has(word));
+  if (numbers.some((word) => !heardWords.has(word))) return false;
+  const heardKeys = new Set(heard.map(soundKey));
+  const content = quoteWords.map(soundKey).filter((key) => key.length >= 2);
+  if (content.length === 0) return false;
+  return content.filter((key) => heardKeys.has(key)).length / content.length >= MIN_WORD_OVERLAP;
 }

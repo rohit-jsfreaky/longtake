@@ -194,3 +194,42 @@ test.describe("splitting a tool call into what was and was not said", () => {
     expect(result.unsupported).toEqual([]);
   });
 });
+
+/**
+ * Live, 30 Sep: speech-to-text wrote the Hinglish take in Devanagari ("और मैं veteran नहीं हूँ") and
+ * the agent quoted it in Latin letters ("main veteran nahi hoon"). Every such answer was refused as
+ * unsaid, and the agent asked again for things it had just heard. The same words, in either script,
+ * are what was said; anything else, still not.
+ */
+test.describe("the same words in the other script", () => {
+  const TAKE =
+    "Hi, मेरा नाम रोहित कश्यप है। फ़ोन नंबर इस plus 91 9876543210. And Gleam के बारे में मैंने Twitter पे देखा था and मुझे around four years का experience है। I think actually five years का experience है and मैं cloud use करता हूँ और chat GPT design docs लिखने के लिए। और मैं veteran नहीं हूँ।";
+
+  for (const quote of [
+    "main veteran nahi hoon",
+    "Glean ke baare mein maine Twitter pe dekha tha",
+    "main Claude use karta hoon aur ChatGPT design docs likhne ke liye",
+    "mera naam Rohit Kashyap hai",
+  ]) {
+    test(`heard: "${quote}"`, async ({ page }) => {
+      expect((await check(page, TAKE, quote)).ok).toBe(true);
+    });
+  }
+
+  for (const quote of [
+    "mera naam Arjun Mehta hai",
+    "main Delhi mein rehta hoon",
+    "I have ten years of experience",
+    "phone number plus 91 9123456789",
+    "I am a protected veteran",
+  ]) {
+    test(`not heard: "${quote}"`, async ({ page }) => {
+      expect((await check(page, TAKE, quote)).ok).toBe(false);
+    });
+  }
+
+  test("the original fabrication is still refused; the real words, romanised, are not", async ({ page }) => {
+    expect((await check(page, SAID_HINDI, "My name is Arjun")).ok).toBe(false);
+    expect((await check(page, SAID_HINDI, "mera naam Rohit hai, main Kolkata se hoon")).ok).toBe(true);
+  });
+});
