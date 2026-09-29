@@ -120,7 +120,11 @@ function valueSchema(spec: FieldSpec): JsonSchema {
         return {
           type: "string",
           enum: options,
-          description: "Pick the closest of these. If none of them is what the person said, leave this field out.",
+          // Live: "Twitter" to a list without it was left out here, so the agent asked "how did you
+          // hear?" again, and only the second "Twitter" became "Social Media — that one?". The
+          // closest choice is safe to send: the gate holds any option they did not name for a yes.
+          description:
+            "Pick the one they said. If they said something this list does not have, pick the closest one with how inferred: it waits for their yes. Leave this field out only when nothing here is close.",
         };
       }
       return {

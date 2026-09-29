@@ -903,6 +903,15 @@ export class Conductor {
     try {
       const payload = await dictate(configForField(spec, { specs: read.specs, known }), pcmToBase64(audio));
       const result = shapeResult(spec.id, payload);
+
+      // The tidy text replaces the answer only when it is the same answer. Live, in Hinglish: the
+      // clip was cut a sentence late ("…design docs likhne ke liye, main veteran nahi hoon") and
+      // came back in Devanagari, and it replaced the agent's English answer on an English form.
+      const current = this.session.state().fields.find((field) => field.spec.id === spec.id)?.value;
+      if (typeof current === "string" && result.clean && sameAnswer(current, result.clean) < SAME_ANSWER) {
+        this.note("app", `dictation for ${spec.id} did not match the answer in the box — kept the answer`);
+        return;
+      }
       this.update({ shaped: { ...this.current.shaped, [spec.id]: result } });
 
       const hesitation = readHesitation(spec.id, result.verbatim, result.clean, this.pauseBeforeAnswer);
@@ -919,4 +928,16 @@ export class Conductor {
       this.note("app", `dictation for ${spec.id} errored: ${String(cause)}`);
     }
   }
+}
+
+/** How much of the answer's words a Dictation pass must also hold before it may replace it. */
+const SAME_ANSWER = 0.6;
+
+/** The share of the answer's words (letters and digits, any script) that the other text also has. */
+function sameAnswer(answer: string, other: string): number {
+  const words = (text: string) => text.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
+  const mine = words(answer);
+  if (mine.length === 0) return 1;
+  const theirs = new Set(words(other));
+  return mine.filter((word) => theirs.has(word)).length / mine.length;
 }

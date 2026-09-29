@@ -2810,7 +2810,10 @@
           return {
             type: "string",
             enum: options,
-            description: "Pick the closest of these. If none of them is what the person said, leave this field out."
+            // Live: "Twitter" to a list without it was left out here, so the agent asked "how did you
+            // hear?" again, and only the second "Twitter" became "Social Media — that one?". The
+            // closest choice is safe to send: the gate holds any option they did not name for a yes.
+            description: "Pick the one they said. If they said something this list does not have, pick the closest one with how inferred: it waits for their yes. Leave this field out only when nothing here is close."
           };
         }
         return {
@@ -8248,6 +8251,11 @@ ${text4}`.trim();
       try {
         const payload = await dictate(configForField(spec, { specs: read.specs, known }), pcmToBase64(audio));
         const result = shapeResult(spec.id, payload);
+        const current = this.session.state().fields.find((field) => field.spec.id === spec.id)?.value;
+        if (typeof current === "string" && result.clean && sameAnswer2(current, result.clean) < SAME_ANSWER) {
+          this.note("app", `dictation for ${spec.id} did not match the answer in the box \u2014 kept the answer`);
+          return;
+        }
         this.update({ shaped: { ...this.current.shaped, [spec.id]: result } });
         const hesitation = readHesitation(spec.id, result.verbatim, result.clean, this.pauseBeforeAnswer);
         if (hesitation.worthAnotherLook) this.update({ hesitations: { ...this.current.hesitations, [spec.id]: hesitation } });
@@ -8261,6 +8269,14 @@ ${text4}`.trim();
       }
     }
   };
+  var SAME_ANSWER = 0.6;
+  function sameAnswer2(answer, other) {
+    const words4 = (text4) => text4.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
+    const mine = words4(answer);
+    if (mine.length === 0) return 1;
+    const theirs = new Set(words4(other));
+    return mine.filter((word) => theirs.has(word)).length / mine.length;
+  }
 
   // core/src/index.ts
   var CORE_VERSION = "0.9.0";

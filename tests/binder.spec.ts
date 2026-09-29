@@ -198,9 +198,13 @@ test.describe("choices come from the page, never from the model", () => {
     expect(valueOf(tool, "country").enum).toEqual(["India", "United States"]);
   });
 
-  test("the enum tells the model to leave it out rather than pick a near-miss", async ({ page }) => {
+  // A near-miss is sent as inferred, so it is asked at once ("Social Media's closest — that one?");
+  // the gate holds it for a yes. Only nothing close is left out.
+  test("the enum sends the closest choice as inferred, and leaves out only nothing close", async ({ page }) => {
     const { tool } = await buildFrom(page, COUNTRY);
-    expect(valueOf(tool, "country").description!.toLowerCase()).toContain("leave this field out");
+    const description = valueOf(tool, "country").description!.toLowerCase();
+    expect(description).toContain("closest one with how inferred");
+    expect(description).toContain("leave this field out only when nothing here is close");
   });
 
   test("a radio group becomes an enum", async ({ page }) => {
