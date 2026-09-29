@@ -151,6 +151,7 @@ export function ComboBox({
             role="listbox"
             aria-labelledby={labelId}
             className="frame fixed z-[70] overflow-auto sq-sm border border-hair bg-ink-700 py-1 text-[14px] shadow-[0_8px_32px_rgba(0,0,0,0.45)]"
+            data-lenis-prevent
             style={{
               top: place.top,
               left: place.left,

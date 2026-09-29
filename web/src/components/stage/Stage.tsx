@@ -268,7 +268,8 @@ export function Stage() {
                 ref={feedRef}
                 // A floor, not just `min-h-0`: the notices below used to squeeze this to two lines,
                 // and the conversation is the thing a person is here to watch.
-                className="min-h-[10rem] flex-1 space-y-3 overflow-y-auto text-[13.5px] leading-relaxed"
+                className="min-h-[10rem] flex-1 space-y-3 overflow-y-auto overscroll-contain text-[13.5px] leading-relaxed"
+                data-lenis-prevent
               >
                 {showing === "review" ? (
                   <StageReview groups={review} focus={focus} />
@@ -304,7 +305,7 @@ export function Stage() {
                 status === "reconnecting" ||
                 (showing === "talk" &&
                   (needsYou.length > 0 || waiting.length > 0 || fromMemory.length > 0 || filled > 0))) && (
-                <div className="max-h-[7.5rem] shrink-0 space-y-2 overflow-y-auto text-[12.5px] leading-snug">
+                <div className="max-h-[7.5rem] shrink-0 space-y-2 overflow-y-auto overscroll-contain text-[12.5px] leading-snug" data-lenis-prevent>
                   {/* The microphone stays open through a drop and nothing said is lost, so the one
                       thing worth telling the person is to carry on. */}
                   {status === "reconnecting" && (

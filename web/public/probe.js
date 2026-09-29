@@ -2405,7 +2405,7 @@
     }
     return { fieldId: spec.id, status: "written", wrote: chosen };
   }
-  var SEARCH_WAIT_MS = 2e3;
+  var SEARCH_WAIT_MS = 4e3;
   var GENERIC_WORD = /^(university|college|institute|school|academy|technology|the|and|of|in|at|for|city)$/i;
   function distinctiveWords(spoken) {
     return spoken.split(/[\s,]+/).filter((word) => word.length >= 4 && !GENERIC_WORD.test(word)).sort((a, b) => b.length - a.length).slice(0, 2);

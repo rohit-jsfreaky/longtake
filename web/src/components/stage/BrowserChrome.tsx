@@ -57,7 +57,7 @@ export function BrowserChrome({
           `min-height: auto`, which means "never shrink below my content" — so
           without it the tall form pushes the window open instead of scrolling
           inside it, and every height set above here is quietly ignored. */}
-      <div className="min-h-0 flex-1 overflow-y-auto">{children}</div>
+      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain" data-lenis-prevent>{children}</div>
     </div>
   );
 }

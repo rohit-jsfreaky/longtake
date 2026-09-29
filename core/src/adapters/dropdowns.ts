@@ -116,8 +116,14 @@ export async function pickFromWidget(
 
 // ── Lists that fill as you type ────────────────────────────────────────────────────────
 
-/** How long a search-as-you-type list gets to answer a query before we stop waiting. */
-const SEARCH_WAIT_MS = 2000;
+/**
+ * How long a search-as-you-type list gets to answer a query before we stop waiting. A place search
+ * is a round trip to a real server — OpenStreetMap's took 1.9 s for "Lucknow" — and at 2 s the
+ * answer arrived just after we gave up, so a city the list knew was reported as refused. The poll
+ * stops the moment options appear, so a fast list costs nothing; two queries stay inside a tool's
+ * 12 s.
+ */
+const SEARCH_WAIT_MS = 4000;
 
 /** Words that say what kind of place something is, not which one. Never searched on their own. */
 const GENERIC_WORD = /^(university|college|institute|school|academy|technology|the|and|of|in|at|for|city)$/i;

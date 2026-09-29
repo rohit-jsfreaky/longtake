@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react";
 
 import { FIELD_STYLE, Label } from "./GleanApplication";
-import { SearchSelect, filterList, recordedSearch } from "./SearchSelect";
+import { SearchSelect, filterList, placeSearch, recordedSearch } from "./SearchSelect";
 import {
   DEGREES,
   DISABILITY,
@@ -44,7 +44,7 @@ import {
 const EMPTY: string[] = [];
 const searchPhoneCountries = filterList(PHONE_COUNTRIES);
 const searchSchools = recordedSearch(SCHOOL_SEARCHES, SCHOOLS_ON_OPEN);
-const searchLocations = recordedSearch(LOCATION_SEARCHES);
+const searchLocations = placeSearch(LOCATION_SEARCHES);
 const searchDegrees = filterList(DEGREES);
 const searchDisciplines = filterList(DISCIPLINES);
 const searchYesNo = filterList(YES_NO);

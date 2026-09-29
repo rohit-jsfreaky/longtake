@@ -37,8 +37,8 @@ export function SearchSelect({
   required?: boolean;
   /** What shows when it opens with nothing typed. Empty for a pure search. */
   onOpen: string[];
-  /** The choices for what has been typed. */
-  search: (query: string) => string[];
+  /** The choices for what has been typed — at once, or from a real search. */
+  search: (query: string) => string[] | Promise<string[]>;
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -52,8 +52,15 @@ export function SearchSelect({
   // The search answers a moment after the typing, and only for what is still typed.
   useEffect(() => {
     if (!open || !query.trim()) return;
-    const timer = setTimeout(() => setAnswered({ query, options: search(query) }), SEARCH_DELAY_MS);
-    return () => clearTimeout(timer);
+    let current = true;
+    const timer = setTimeout(async () => {
+      const options = await Promise.resolve(search(query)).catch(() => [] as string[]);
+      if (current) setAnswered({ query, options });
+    }, SEARCH_DELAY_MS);
+    return () => {
+      current = false;
+      clearTimeout(timer);
+    };
   }, [open, query, search]);
 
   // What the menu holds: the opening list, or the search's answer once it has arrived.
@@ -149,6 +156,23 @@ export function SearchSelect({
         )}
       </div>
 
+      {/* A search opens on nothing. Said, so an empty box does not look broken — and not an option,
+          so nothing reading the page takes it for one. */}
+      {open &&
+        place &&
+        shown.length === 0 &&
+        onOpen.length === 0 &&
+        createPortal(
+          <div
+            className="frame fixed z-[70] sq-sm border border-hair bg-ink-700 px-3 py-2 text-[13px] text-faint shadow-[0_8px_32px_rgba(0,0,0,0.45)]"
+            style={{ top: place.top, left: place.left, width: place.width }}
+            onPointerDown={(event) => event.stopPropagation()}
+          >
+            {query.trim() ? "Searching…" : "Type to search"}
+          </div>,
+          document.body,
+        )}
+
       {open &&
         place &&
         shown.length > 0 &&
@@ -160,6 +184,7 @@ export function SearchSelect({
             className="frame fixed z-[70] overflow-auto sq-sm border border-hair bg-ink-700 py-1 text-[14px] shadow-[0_8px_32px_rgba(0,0,0,0.45)]"
             style={{ top: place.top, left: place.left, width: place.width, maxHeight: place.maxHeight }}
             onPointerDown={(event) => event.stopPropagation()}
+            data-lenis-prevent
           >
             {shown.map((option, index) => (
               <li
@@ -177,6 +202,32 @@ export function SearchSelect({
         )}
     </div>
   );
+}
+
+/**
+ * A place search like the live page's: the recorded answers when the words were recorded, else a
+ * real one (Photon, OpenStreetMap's geocoder — free, keyless, answers a browser). Live, a person gave
+ * a city that was never recorded and the box offered nothing: the agent was told "the page won't take
+ * it", as no real Greenhouse form would say. Offline, the recorded answers are all there is.
+ */
+export function placeSearch(recorded: Record<string, string[]>) {
+  const fromRecording = recordedSearch(recorded);
+  return async (query: string): Promise<string[]> => {
+    const known = fromRecording(query);
+    if (known.length > 0) return known;
+    try {
+      const url = `https://photon.komoot.io/api/?q=${encodeURIComponent(query.trim())}&limit=8&layer=city&lang=en`;
+      const response = await fetch(url, { signal: AbortSignal.timeout(4000) });
+      const body = (await response.json()) as { features?: { properties?: Record<string, string | undefined> }[] };
+      const names = (body.features ?? [])
+        .map((f) => f.properties ?? {})
+        .map((p) => [p.name, p.state, p.country].filter(Boolean).join(", "))
+        .filter(Boolean);
+      return [...new Set(names)];
+    } catch {
+      return [];
+    }
+  };
 }
 
 /** Filter a fixed list by what was typed — a short list's own search box. */

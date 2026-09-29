@@ -322,7 +322,7 @@ export function GoogleFormVolunteer() {
           Volunteer Registration &amp; Interest Form
         </div>
         {page === 0 && (
-          <p className="mt-2 max-h-40 overflow-auto whitespace-pre-line text-[13px] leading-relaxed text-dim">{INTRO}</p>
+          <p className="mt-2 max-h-40 overflow-auto whitespace-pre-line text-[13px] leading-relaxed text-dim" data-lenis-prevent>{INTRO}</p>
         )}
       </div>
 
