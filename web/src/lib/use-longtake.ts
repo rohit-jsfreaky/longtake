@@ -208,6 +208,9 @@ export function useLongtake({
   /** Remembered answers go in at page load, before anybody presses anything. */
   useEffect(() => {
     void conductor().prepare();
+    // Every tool call and result of the last call, for a live failure: `copy(longtakeLog())` in the
+    // console. Nothing is sent anywhere; it only reads what this page already holds.
+    (window as unknown as { longtakeLog?: () => string }).longtakeLog = () => conductor().copyLog();
   }, [conductor]);
 
   useEffect(() => () => void conductorRef.current?.stop(), []);
