@@ -106,8 +106,8 @@ You can see, edit, export or delete everything it knows about you. Nothing is ke
 </div>
 
 The site runs on copies of four real forms so anyone can try it without installing anything. The
-Chrome extension runs the same code on the real thing: any page, any site, one hotkey
-(**Ctrl+Shift+L**). It finds the form even inside an iframe (many careers pages embed Greenhouse
+Chrome extension runs the same code on the real thing: any page, any site, one click on the
+Longtake icon in the toolbar. It finds the form even inside an iframe (many careers pages embed Greenhouse
 that way), and when a Google Form loads its next page, the call carries on in the same
 conversation.
 

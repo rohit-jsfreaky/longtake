@@ -7,7 +7,7 @@ import { Reveal } from "@/components/motion";
  * The same thing, on any form on the web: the Chrome extension.
  *
  * The demo above runs on copies of real forms, inside this page. The extension is the product: it
- * opens on the form in front of you — any site, any page of it — with one hotkey. It is offered as
+ * opens on the form in front of you — any site, any page of it — with one click on its icon. It is offered as
  * the exact zip sent to the Chrome Web Store, with the three steps to load it, because a store
  * review takes days and a person trying it today should not have to wait for one. Nothing here says
  * the store listing is live until it is.
@@ -22,8 +22,8 @@ const STEPS = [
   },
   {
     n: "03",
-    lead: "Open any form and press Ctrl+Shift+L.",
-    rest: "Or click the Longtake icon. Press Start, allow the microphone once, and talk. It never submits — that stays yours.",
+    lead: "Open any form and click the Longtake icon.",
+    rest: "Pin it first from the puzzle-piece menu in the toolbar. Press Start, allow the microphone once, and talk. It never submits; that stays yours.",
   },
 ];
 

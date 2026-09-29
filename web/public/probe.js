@@ -2777,7 +2777,7 @@
   var EXECUTION_MODE = "interactive";
   var TIMEOUT_SECONDS = 60;
   var TOOL_DESCRIPTION = [
-    "Write answers into the form. Call it the moment you hear one answer, and again each time you hear more.",
+    "Write answers into the form. Call it as soon as you hear answers, at most five per call; call again for the rest.",
     "Include only fields the person spoke about: leaving one out is always fine; filling one they did not mention never is, even if it seems obvious or is required.",
     "Each answer carries evidence \u2014 their own words, quoted \u2014 and how you heard it:",
     "named (they said this answer, in any words or language), inferred (you worked it out, or chose the closest option to what they said), unsure (they hedged or gave a range).",
@@ -2859,7 +2859,7 @@
         value: valueSchema(spec),
         evidence: {
           type: "string",
-          description: "The person's own words that this answer came from, quoted. Not a paraphrase. If you cannot quote them, you did not hear this answer and the field must be left out."
+          description: "The few words of theirs this answer came from, 2 to 8 words, copied exactly as they said them. Not a paraphrase. If you cannot quote them, you did not hear this answer and the field must be left out."
         },
         // How it was heard is the model's judgement of language — whether "2 or 3 years" is unsure,
         // whether "haan" answered this yes-or-no. The gate (gate.ts) acts on it instead of word lists.
@@ -4268,7 +4268,7 @@
       "",
       // ── 4. The form, the plan, and the tools ───────────────────────────────────────
       "FORM NOW, at the end of this prompt, is the form exactly as it is at this moment \u2014 updated after everything you do. Trust it over your memory of the conversation: if it says a field is answered, it is. DO NEXT is what to do next; do that, in your own words.",
-      "Call fill_fields the moment you hear an answer, and again whenever you hear more \u2014 several answers in one call. Fill only what they actually said, even for required fields. An answer you worked out rather than heard is how: inferred, and one they hedged is unsure \u2014 both wait for their yes.",
+      "Call fill_fields the moment you hear an answer, and again whenever you hear more \u2014 up to five answers in one call, then another call for the rest. Fill only what they actually said, even for required fields. An answer you worked out rather than heard is how: inferred, and one they hedged is unsure \u2014 both wait for their yes.",
       "Every answer's evidence is their own words, copied exactly, in the language they said them. They may mix English and Hindi; the value goes in English, in the Latin alphabet, never Devanagari. Evidence that isn't in what they said is thrown away.",
       "Each result says what went in, what didn't and why. Acknowledge what went in in a few words, not a readback. waiting_for_yes: nothing went in yet \u2014 ask, then report their reply with confirm_answer; you decide whether it was a yes. Never say everything is in while FORM NOW lists anything waiting for their yes. not_an_option: tried is what you sent; check the choices before saying anything is missing. quote_not_found: they did say it, so call again quoting their exact words \u2014 don't ask again. page_refused: ask them to say it once more. page_refused_twice: say plainly they'll need to type that one. not_heard: you sent none of their words, so nothing went in \u2014 say so and ask again. gone: say nothing. If you realise you got something wrong, fix it with a call straight away rather than just apologising.",
       "Answers from their last form are already on the page. Never read them out unless they ask \u2014 then four at a time \u2014 and change any they correct.",
@@ -8264,7 +8264,7 @@ ${text4}`.trim();
       this.unanswered = [];
       this.note("app", "a reply ended with nothing said or done \u2014 asked the agent to answer them");
       this.voice.createReply(
-        `They spoke and you have not answered yet. They said: "${said2}". Call fill_fields now for every answer in that which is not on the form yet, quoting their exact words, then reply in one short sentence and do what DO NEXT says.`
+        `They spoke and you have not answered yet. They said: "${said2}". Call fill_fields now for up to five answers in that which are not on the form yet, each quoting a few of their exact words, and call again for the rest; then reply in one short sentence and do what DO NEXT says.`
       );
     }
     // ── The trust layer ────────────────────────────────────────────────────────────────

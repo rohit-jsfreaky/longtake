@@ -46,9 +46,9 @@ const SECTIONS: { title: string; body: string[] }[] = [
     title: "Why the extension asks for each permission",
     body: [
       "The microphone is not an extension permission: when you press Start, Chrome asks you on that page, and you can take it back at any time.",
-      "Access to the pages you visit, and scripting — to read the form on the page you open Longtake on, fill in what you said, and show its small window there. It stays idle on every page until you open it with the hotkey or the icon.",
+      "Access to the pages you visit, and scripting — to read the form on the page you open Longtake on, fill in what you said, and show its small window there. It stays idle on every page until you click its icon.",
       "Access to longtake-web.vercel.app — to reach AssemblyAI through our server, which holds the key.",
-      "Active tab — to open on the tab you pressed the hotkey or the icon on.",
+      "Active tab — to open on the tab where you clicked its icon.",
       "Storage — to keep your saved answers and settings on your device.",
       "Web navigation — to find the frame that holds the form (some sites embed it), and to carry a call on when a form loads its next page.",
     ],

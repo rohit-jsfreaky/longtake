@@ -17,7 +17,7 @@ Package: `web/public/longtake-extension.zip` (`npm run pack:extension`). Visibil
 ```
 You already know the answers. Stop typing them into forty boxes.
 
-Open any web form — a job application, a Google Form with pages, a government or college form — press Ctrl+Shift+L, and talk for a minute like you would to a friend. Longtake fills every field you spoke to, at once, on a form it has never seen before. Then it asks out loud only for what you did not cover.
+Open any web form — a job application, a Google Form with pages, a government or college form — click the Longtake icon, and talk for a minute like you would to a friend. Longtake fills every field you spoke to, at once, on a form it has never seen before. Then it asks out loud only for what you did not cover.
 
 What it will never do:
 • Submit anything. It types into the form; you read it and press submit yourself.
@@ -48,8 +48,8 @@ Longtake fills in the web form on the page you open it on, from what you say out
 
 | Permission | Justification |
 |---|---|
-| activeTab | Opens Longtake on the tab where the person pressed the hotkey or the toolbar icon. |
-| scripting | Injects the form reader and its small window into a tab that was already open before the extension was installed, so the hotkey works without a reload. |
+| activeTab | Opens Longtake on the tab where the person clicked the toolbar icon. |
+| scripting | Injects the form reader and its small window into a tab that was already open before the extension was installed, so the icon works without a reload. |
 | storage | Keeps the person's saved answers and settings on their own device (chrome.storage.local), so the next form can be filled from what they said last time. Nothing is synced or sent to a server. |
 | webNavigation | Finds the frame that holds the form (many sites embed their application form in an iframe) and carries a voice call on when a multi-page form loads its next page. |
 | Host permission (content script on all URLs) | Forms live on any site. The content script stays idle until the person opens Longtake on that page; it then reads that page's form fields and fills in what the person said. |

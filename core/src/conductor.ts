@@ -781,7 +781,7 @@ export class Conductor {
     this.unanswered = [];
     this.note("app", "a reply ended with nothing said or done — asked the agent to answer them");
     this.voice.createReply(
-      `They spoke and you have not answered yet. They said: "${said}". Call fill_fields now for every answer in that which is not on the form yet, quoting their exact words, then reply in one short sentence and do what DO NEXT says.`,
+      `They spoke and you have not answered yet. They said: "${said}". Call fill_fields now for up to five answers in that which are not on the form yet, each quoting a few of their exact words, and call again for the rest; then reply in one short sentence and do what DO NEXT says.`,
     );
   }
 
