@@ -11,21 +11,14 @@ import { cue } from "@/lib/sound";
 import { useLongtake } from "@/lib/use-longtake";
 import type { StartProblem } from "@longtake/core";
 import { BrowserChrome } from "./BrowserChrome";
-import { ActsafeMembership } from "./ActsafeMembership";
-import { DiscordApplication } from "./DiscordApplication";
 import { GleanApplication } from "./GleanApplication";
-import { GoogleFormVolunteer } from "./GoogleFormVolunteer";
 import { StageReview } from "./StageReview";
 
 /**
- * The real forms on the page, and why each one is here.
- *
- * Greenhouse is the everyday case: a long job application with component dropdowns whose options
- * do not exist until opened. The Discord posting is Greenhouse's harder side: pickers that search
- * as you type, a phone number with its own country picker, and an Education block with "Add
- * another". The Google Form has three pages with Next between them, and a Submit that only the
- * person presses. Jotform is the hard one: a form that shows one question and grows
- * twenty more depending on the answer, with a different set for each answer.
+ * The real form on the page: Greenhouse, the everyday case — a job application with component
+ * dropdowns whose options do not exist until opened. The Discord, Google Form and Jotform copies
+ * are off the page for now: on the larger forms the voice agent's own reply to a long take too
+ * often comes back empty (measured 30 Sep), so they are not shown until that is fixed.
  */
 const FORMS = {
   glean: {
@@ -33,24 +26,6 @@ const FORMS = {
     source: "Greenhouse",
     url: "job-boards.greenhouse.io/gleanwork/jobs/4006731005",
     Form: GleanApplication,
-  },
-  discord: {
-    tab: "Search + add another",
-    source: "Greenhouse · searches as you type",
-    url: "job-boards.greenhouse.io/discord/jobs/8571766002",
-    Form: DiscordApplication,
-  },
-  google: {
-    tab: "Google Form, 3 pages",
-    source: "Google Forms · Next between pages",
-    url: "docs.google.com/forms/d/e/1FAIpQLSe9YP7zfEu01jKJ8IxIa_tjd0GaCoHv9B-nDlX351D-JRnQ9g/viewform",
-    Form: GoogleFormVolunteer,
-  },
-  actsafe: {
-    tab: "Membership form",
-    source: "Jotform · changes as you answer",
-    url: "form.jotform.com/221326312365043",
-    Form: ActsafeMembership,
   },
 } as const;
 
@@ -176,9 +151,8 @@ export function Stage() {
             <span className="text-paper/45">not one we made up.</span>
           </h2>
           <p className="mt-6 max-w-[52ch] text-[16px] leading-relaxed text-dim" data-reveal>
-            Four live forms, copied unchanged — two Greenhouse job applications, a Google Form with
-            three pages, and a Jotform that grows new questions as you answer. The labels, the order
-            and every option are theirs. Press the microphone and it tells you what the form needs.
+            A live Greenhouse job application, copied unchanged. The labels, the order and every
+            option are theirs. Press the microphone and it tells you what the form needs.
           </p>
         </Reveal>
 
