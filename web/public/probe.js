@@ -1218,6 +1218,7 @@
 
   // core/src/phones.ts
   var DIAL_CODE = /\+\d{1,4}\b/;
+  var PHONE_DIGITS = 7;
   var PHONE_WHOLE = "contact.phone";
   var PHONE_NUMBER = "contact.phone.number";
   var PHONE_CODE = "contact.phone.country_code";
@@ -2777,7 +2778,7 @@
   var EXECUTION_MODE = "interactive";
   var TIMEOUT_SECONDS = 60;
   var TOOL_DESCRIPTION = [
-    "Write answers into the form. Call it as soon as you hear answers, at most five per call; call again for the rest.",
+    "Write answers into the form. Call it as soon as you hear answers, at most eight per call; call again for the rest.",
     "Include only fields the person spoke about: leaving one out is always fine; filling one they did not mention never is, even if it seems obvious or is required.",
     "Each answer carries evidence \u2014 their own words, quoted \u2014 and how you heard it:",
     "named (they said this answer, in any words or language), inferred (you worked it out, or chose the closest option to what they said), unsure (they hedged or gave a range).",
@@ -4063,6 +4064,7 @@
     if (spec.range) facts.range = { min: spec.range.min, max: spec.range.max };
     return facts;
   }
+  var INCOMPLETE = "incomplete";
   var MOST_VALUE_TO_ECHO = 60;
   var MOST_TO_LIST = 8;
   function summarise({
@@ -4091,6 +4093,8 @@
       let why;
       if (o.status === "rejected-by-page") {
         why = o.retried ? "page_refused_twice" : "page_refused";
+      } else if (o.status === "refused" && o.reason === INCOMPLETE) {
+        why = "incomplete";
       } else if (o.status === "refused" && o.choices?.length) {
         why = "not_an_option";
       } else if (!present.has(o.fieldId)) {
@@ -4107,7 +4111,8 @@
         question: question(o.fieldId),
         why,
         ...why === "not_an_option" && tried !== void 0 ? { tried: String(tried) } : {},
-        ...o.status === "refused" && why === "not_an_option" ? { choices: o.choices } : {}
+        ...o.status === "refused" && why === "not_an_option" ? { choices: o.choices } : {},
+        ...why === "incomplete" ? { say: "Only part of it was heard (a phone's country code, not the number). Ask for the rest." } : {}
       };
     });
     const skip = new Set(declined);
@@ -4268,7 +4273,7 @@
       "",
       // ── 4. The form, the plan, and the tools ───────────────────────────────────────
       "FORM NOW, at the end of this prompt, is the form exactly as it is at this moment \u2014 updated after everything you do. Trust it over your memory of the conversation: if it says a field is answered, it is. DO NEXT is what to do next; do that, in your own words.",
-      "Call fill_fields the moment you hear an answer, and again whenever you hear more \u2014 up to five answers in one call, then another call for the rest. Fill only what they actually said, even for required fields. An answer you worked out rather than heard is how: inferred, and one they hedged is unsure \u2014 both wait for their yes.",
+      "Call fill_fields the moment you hear an answer, and again whenever you hear more \u2014 up to eight answers in one call, then another call for the rest. Fill only what they actually said, even for required fields. An answer you worked out rather than heard is how: inferred, and one they hedged is unsure \u2014 both wait for their yes.",
       "Every answer's evidence is their own words, copied exactly, in the language they said them. They may mix English and Hindi; the value goes in English, in the Latin alphabet, never Devanagari. Evidence that isn't in what they said is thrown away.",
       "Each result says what went in, what didn't and why. Acknowledge what went in in a few words, not a readback. waiting_for_yes: nothing went in yet \u2014 ask, then report their reply with confirm_answer; you decide whether it was a yes. Never say everything is in while FORM NOW lists anything waiting for their yes. not_an_option: tried is what you sent; check the choices before saying anything is missing. quote_not_found: they did say it, so call again quoting their exact words \u2014 don't ask again. page_refused: ask them to say it once more. page_refused_twice: say plainly they'll need to type that one. not_heard: you sent none of their words, so nothing went in \u2014 say so and ask again. gone: say nothing. If you realise you got something wrong, fix it with a call straight away rather than just apologising.",
       "Answers from their last form are already on the page. Never read them out unless they ask \u2014 then four at a time \u2014 and change any they correct.",
@@ -5117,7 +5122,12 @@
     if (!keep) return "";
     return `First, once: ask whether to remember their answers to ${keep.questions.join(", ")} for next time \u2014 they stay on this device \u2014 and call save_for_next_time for ${keep.fields.join(", ")} with agreed true or false. Then: `;
   }
+  var ALREADY_SAID = "If they already said any of these, put it in now with fill_fields from their words (a choice the form lacks: the closest option, how inferred) instead of asking. ";
   function doNext(move2) {
+    const text4 = nextFor(move2);
+    return move2.kind === "ask" || move2.kind === "offer_optional" || move2.kind === "optional" ? ALREADY_SAID + text4 : text4;
+  }
+  function nextFor(move2) {
     switch (move2.kind) {
       case "confirm":
         if (move2.reason === "draft") return `A draft for "${move2.field.question}" is ready, written from their words. Read it to them word for word, exactly as written, nothing added: "${move2.suggestion}". Then ask if it should go in as it is, or what to change. On their yes, confirm_answer for ${move2.field.field} with agreed true; to change it, draft_answer with mode revise and their words.`;
@@ -5226,9 +5236,9 @@
     lines.push("", `DO NEXT: ${doNext(move2)}`);
     return lines.join("\n");
   }
-  function resumeLine(state, move2) {
+  function resumeLine(state, move2, pageTurn = false) {
     const { filled, total } = state.progress;
-    const where = `Sorry, lost the line for a second. ${filled} of ${total} are in`;
+    const where = pageTurn ? `Right, the next page: ${total} question${total === 1 ? "" : "s"}${filled ? `, ${filled} already in` : ""}` : `Sorry, lost the line for a second. ${filled} of ${total} are in`;
     switch (move2.kind) {
       case "confirm":
         return move2.reason === "hedged" ? `${where}. For ${move2.field.question}, which was it?` : `${where}. For ${move2.field.question}, is ${move2.suggestion} right?`;
@@ -5587,8 +5597,24 @@
       const evidence = typeof args.evidence === "string" ? args.evidence : "";
       const spec = read.specs.find((s) => s.id === id);
       const pending = this.ledger.pendingFor(id);
+      if (spec && !pending && agreed && checkEvidence(heard, evidence).ok && (spec.kind === "select" || spec.kind === "radio")) {
+        const named = optionNamedIn(spec, evidence);
+        if (named && this.state().fields.find((f) => f.spec.id === id)?.value === null) {
+          return this.fill({ [id]: { value: named.label, evidence, how: "named" } }, heard);
+        }
+      }
       if (!spec || !pending) {
-        return { result: { error: `Nothing is waiting for a yes on "${id}".`, do_next: doNext(this.move()), submitted: false }, outcomes: [], spoken: [] };
+        const empty = spec && this.state().fields.find((f) => f.spec.id === id)?.value === null;
+        return {
+          result: {
+            error: `Nothing was waiting for a yes on "${id}", so nothing went in.`,
+            ...empty ? { do_now: `If they gave or agreed to an answer for "${fieldName(spec)}", call fill_fields for ${id} now with that answer, quoting the words in which they gave or agreed to it. Do not say it is in until that call says so.` } : {},
+            do_next: doNext(this.move()),
+            submitted: false
+          },
+          outcomes: [],
+          spoken: []
+        };
       }
       if (!checkEvidence(heard, evidence).ok) {
         return { result: { confirmed: false, why: "quote_not_found", submitted: false }, outcomes: [], spoken: [] };
@@ -5722,6 +5748,7 @@
       if (!action || !el) {
         return { result: { not_pressed: "That button is not on the page.", submitted: false }, outcomes: [], spoken: [] };
       }
+      const leaving = action.kind === "next" ? watchLeaving(NEXT_PAGE_LOAD_MS) : null;
       this.writing = true;
       let pressed;
       try {
@@ -5730,9 +5757,12 @@
         this.writing = false;
       }
       if (!pressed.pressed) {
+        leaving?.cancel();
         return { result: { not_pressed: pressed.reason, submitted: false }, outcomes: [], spoken: [] };
       }
       const reshaped = await this.pageChanged();
+      if (!reshaped && leaving && await leaving.going) return new Promise(() => void 0);
+      leaving?.cancel();
       this.options.onReshape?.();
       const stayed = action.kind === "next" && !reshaped;
       if (action.kind === "next" && !stayed) this.plan = { optionalOffered: false };
@@ -5770,8 +5800,8 @@
       );
     }
     /** The first words of a new session after the line dropped — where things stand, then the next ask. */
-    resumeGreeting() {
-      return resumeLine(this.state(), this.move());
+    resumeGreeting(pageTurn = false) {
+      return resumeLine(this.state(), this.move(), pageTurn);
     }
     /** Everything known about the person, newest first — for a surface to show and let them change. */
     known() {
@@ -6083,8 +6113,13 @@
       const phones = this.splitPhones(spoken, read.specs);
       const toWrite = [...phones.extra];
       const held = [];
+      const partPhones = [];
       for (const claim of spoken) {
         const spec = byId.get(claim.fieldId);
+        if (spec?.kind === "tel" && !Array.isArray(claim.value) && withoutDialCode(String(claim.value)).replace(/\D/g, "").length < PHONE_DIGITS) {
+          partPhones.push({ fieldId: claim.fieldId, status: "refused", reason: INCOMPLETE });
+          continue;
+        }
         const verdict = spec ? gate(spec, claim, this.ledger.pendingFor(claim.fieldId)) : { write: true };
         if (verdict.write) {
           toWrite.push(claim);
@@ -6114,7 +6149,7 @@
       }));
       const picked = results.some((r) => r.status === "written" && CHOICE_KINDS2.has(byId.get(r.fieldId)?.kind ?? ""));
       const reshaped = picked || this.movedWhileWriting ? await this.pageChanged() : null;
-      const outcomes = [...results, ...invented];
+      const outcomes = [...results, ...invented, ...partPhones];
       const result = this.report(outcomes, claimed, reshaped, { waiting_for_yes: held });
       this.options.onChange?.();
       return { result, outcomes, spoken: toWrite };
@@ -6400,6 +6435,23 @@
       return this.current?.specs ?? [];
     }
   };
+  var NEXT_PAGE_LOAD_MS = 4e3;
+  function watchLeaving(ms) {
+    if (typeof window === "undefined") return { going: Promise.resolve(false), cancel: () => void 0 };
+    let finish = () => void 0;
+    const going = new Promise((resolve) => finish = resolve);
+    const on = () => done(true);
+    const timer = setTimeout(() => done(false), ms);
+    function done(value) {
+      clearTimeout(timer);
+      window.removeEventListener("beforeunload", on);
+      window.removeEventListener("pagehide", on);
+      finish(value);
+    }
+    window.addEventListener("beforeunload", on);
+    window.addEventListener("pagehide", on);
+    return { going, cancel: () => done(false) };
+  }
 
   // core/src/clip.ts
   var COMMON = /* @__PURE__ */ new Set([
@@ -6766,13 +6818,16 @@
       nextStartTime = audioCtx.currentTime;
       fullVoice();
     }
-    const DUCKED = 0.15;
+    const DUCKED = 0;
+    const RESTORE_AFTER_MS = 1200;
+    let restoreTimer;
     const LEVEL_FRAME = TARGET_SAMPLE_RATE / 50;
     const localSpeech = new LocalSpeech();
     const levelBlock = new Int16Array(LEVEL_FRAME);
     let levelFill = 0;
     let ducked = false;
     function lowerVoice() {
+      clearTimeout(restoreTimer);
       if (ducked) return;
       ducked = true;
       const t = audioCtx.currentTime;
@@ -6780,6 +6835,7 @@
       outputGain.gain.setTargetAtTime(DUCKED, t, 0.03);
     }
     function fullVoice(slowly = false) {
+      clearTimeout(restoreTimer);
       if (!ducked) return;
       ducked = false;
       const t = audioCtx.currentTime;
@@ -6805,7 +6861,10 @@
           onEvent?.("in", { type: "longtake.heard_them", over_the_agent: over });
           onLocalSpeech?.(true);
         } else if (change === "end") {
-          fullVoice(true);
+          if (ducked) {
+            clearTimeout(restoreTimer);
+            restoreTimer = setTimeout(() => fullVoice(true), RESTORE_AFTER_MS);
+          }
           onEvent?.("in", { type: "longtake.they_stopped" });
           onLocalSpeech?.(false);
         }
@@ -7113,6 +7172,10 @@
         flushReplies();
       },
       unsentResults: () => results.peek().map((held) => ({ callId: held.call_id, result: held.result })),
+      answerNow: (answers) => {
+        results.clear();
+        for (const answer of answers) send({ type: "tool.result", call_id: answer.callId, result: JSON.stringify(answer.result) });
+      },
       stop: async () => {
         closing = true;
         clearTimeout(reconnectTimer);
@@ -7690,7 +7753,8 @@ ${input.page.text}`;
     page_refused_twice: "the page won't take it \u2014 type it yourself",
     needs_the_person: "only you can do this one",
     // The agent sent it without any of the person's words — not a hearing problem.
-    not_heard: "Longtake had none of your words for it"
+    not_heard: "Longtake had none of your words for it",
+    incomplete: "only part of it was heard, say the whole number"
   };
   function missesIn(result) {
     const notFilled = result?.not_filled;
@@ -7900,6 +7964,23 @@ ${input.page.text}`;
     get sessionId() {
       return this.currentSession;
     }
+    /**
+     * The page is going, mid-call. Every call the agent is still waiting on is answered from this
+     * page, now: a Next it pressed as pressed, the next page loading. Live: a Next the agent pressed
+     * left its call open across the load, and the next page never came back; a Next pressed by hand
+     * (nothing open) carried on every time. So nothing is left open, and both go the same way.
+     */
+    leavePage() {
+      const pending = this.pendingCalls();
+      if (pending.length === 0 || !this.voice) return pending;
+      this.voice.answerNow(
+        pending.map((call) => ({
+          callId: call.callId,
+          result: call.result ?? (call.name === PRESS_TOOL_NAME ? { pressed: true, next_page_loading: true, do_next: "The next page is loading. Say nothing until you are told what is on it.", submitted: false } : { error: "The page moved on before this finished.", submitted: false })
+        }))
+      );
+      return [];
+    }
     /** Tool calls the agent made that have not been answered yet — what a page load would cut off. */
     pendingCalls() {
       const unsent = this.voice?.unsentResults() ?? [];
@@ -7951,7 +8032,7 @@ ${input.page.text}`;
           // The line dropped past saving: a new agent, told the form as it is and where to pick up.
           freshStart: () => {
             this.sentPrompt = this.session.prompt();
-            return { systemPrompt: this.sentPrompt, greeting: this.session.resumeGreeting(), tools: this.session.tools() };
+            return { systemPrompt: this.sentPrompt, greeting: this.session.resumeGreeting(carrying), tools: this.session.tools() };
           },
           // A draft is written, checked, maybe written once more: longer than any other tool.
           toolDeadlineMs: (name) => name === DRAFT_TOOL_NAME ? DRAFT_DEADLINE_MS : void 0,
@@ -8264,7 +8345,7 @@ ${text4}`.trim();
       this.unanswered = [];
       this.note("app", "a reply ended with nothing said or done \u2014 asked the agent to answer them");
       this.voice.createReply(
-        `They spoke and you have not answered yet. They said: "${said2}". Call fill_fields now for up to five answers in that which are not on the form yet, each quoting a few of their exact words, and call again for the rest; then reply in one short sentence and do what DO NEXT says.`
+        `They spoke and you have not answered yet. They said: "${said2}". Call fill_fields now for up to eight answers in that which are not on the form yet, each quoting a few of their exact words, and call again for the rest; then reply in one short sentence and do what DO NEXT says.`
       );
     }
     // ── The trust layer ────────────────────────────────────────────────────────────────
@@ -8291,7 +8372,14 @@ ${text4}`.trim();
         const claims = validateClaims(raw, ask.said, [...byId.keys()]);
         const found = mismatches(
           claims,
-          (field) => byId.get(field)?.value !== null && byId.get(field)?.value !== void 0 && !ask.notIn.includes(field),
+          // A field waiting for their yes is being asked about, which is right whatever the words:
+          // live, "I've put down Social Media, is that right?" was corrected with a second reply,
+          // "sorry, I haven't put that in", on the one field that was correctly held.
+          (field) => {
+            const f = byId.get(field);
+            if (f?.pending) return true;
+            return f?.value !== null && f?.value !== void 0 && !ask.notIn.includes(field);
+          },
           (field) => {
             const f = byId.get(field);
             return f ? fieldName(f.spec) : field;
@@ -8463,7 +8551,10 @@ ${text4}`.trim();
           setTranscriptionMode: (value) => this.sent.push({ kind: "transcriptionMode", value }),
           createReply: (value) => this.sent.push({ kind: "reply", value }),
           // Results go out at once here: nothing is ever held.
-          unsentResults: () => []
+          unsentResults: () => [],
+          answerNow: (answers) => {
+            for (const answer of answers) this.sent.push({ kind: "reply", value: `answered ${answer.callId}` });
+          }
         };
       });
     }

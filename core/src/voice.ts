@@ -428,9 +428,13 @@ export async function startVoiceSession(options: VoiceSessionOptions): Promise<V
   // 2b — Hearing them over the agent. The server's barge-in is semantic: it waits to understand
   // what they said before it stops the agent — 1.5 s for "wait, stop", over 3 s for "uh, my gender
   // is…" (RESEARCH.md §9i) — and until then it talks on at full voice, as if it had not heard. So
-  // the moment the microphone hears them over it, its voice drops; the server still decides whether
-  // that was an interruption (flushPlayback) or an "mm-hm" (the voice comes back when they stop).
-  const DUCKED = 0.15;
+  // the moment the microphone hears them over it, its voice goes; the server still decides whether
+  // that was an interruption (flushPlayback) or an "mm-hm" (the voice comes back after they stop).
+  // Live, a voice only lowered (to 15%) and back the instant they paused sounded like an agent that
+  // would not stop for 4–5 s. Muted, and held a moment after they stop for the server to decide.
+  const DUCKED = 0;
+  const RESTORE_AFTER_MS = 1200;
+  let restoreTimer: ReturnType<typeof setTimeout> | undefined;
   const LEVEL_FRAME = TARGET_SAMPLE_RATE / 50; // 20 ms
   const localSpeech = new LocalSpeech();
   const levelBlock = new Int16Array(LEVEL_FRAME);
@@ -438,6 +442,7 @@ export async function startVoiceSession(options: VoiceSessionOptions): Promise<V
   let ducked = false;
 
   function lowerVoice() {
+    clearTimeout(restoreTimer);
     if (ducked) return;
     ducked = true;
     const t = audioCtx.currentTime;
@@ -446,6 +451,7 @@ export async function startVoiceSession(options: VoiceSessionOptions): Promise<V
   }
 
   function fullVoice(slowly = false) {
+    clearTimeout(restoreTimer);
     if (!ducked) return;
     ducked = false;
     const t = audioCtx.currentTime;
@@ -472,7 +478,11 @@ export async function startVoiceSession(options: VoiceSessionOptions): Promise<V
         onEvent?.("in", { type: "longtake.heard_them", over_the_agent: over });
         onLocalSpeech?.(true);
       } else if (change === "end") {
-        fullVoice(true);
+        // Not straight back: the server may be about to call it an interruption (flushPlayback).
+        if (ducked) {
+          clearTimeout(restoreTimer);
+          restoreTimer = setTimeout(() => fullVoice(true), RESTORE_AFTER_MS);
+        }
         onEvent?.("in", { type: "longtake.they_stopped" });
         onLocalSpeech?.(false);
       }

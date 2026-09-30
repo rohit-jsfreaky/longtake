@@ -110,3 +110,46 @@ test("a judge that claims what is true — the answer is on the form — correct
   });
   expect(out.asked).toBe(0);
 });
+
+/**
+ * Live, 30 Sep: Twitter is not on the list, so "Social Media" waits for their yes. The agent asked
+ * "Since Twitter isn't an option, I've put down Social Media. Is that right?" — the judge read a
+ * put_in, and a second reply followed: "Sorry, I haven't put that in yet." Asking about a field that
+ * is waiting for a yes is right, whatever the words.
+ */
+test("a field waiting for their yes is never 'corrected' — asking about it is right", async ({ page }) => {
+  await load(page, `<label for="h">How did you hear about us?</label>
+    <select id="h"><option value="">Select…</option><option>Conference</option><option>LinkedIn</option><option>Social Media</option></select>`);
+  const out = await page.evaluate(async () => {
+    const L = window.__longtake;
+    const fake = new L.FakeVoice();
+    const judged: unknown[] = [];
+    const conductor = new L.Conductor({
+      root: () => document,
+      ignore: "[data-longtake-ignore]",
+      services: {
+        getToken: async () => "t",
+        workletUrl: "",
+        startVoice: fake.start,
+        check: async (input) => {
+          judged.push(input);
+          return { claims: [{ field: "how_did_you_hear_about_us", claim: "put_in", quote: "I've put down Social Media" }] };
+        },
+      },
+    });
+    await conductor.start();
+    await new Promise((r) => setTimeout(r, 20));
+    fake.userSays("I heard about you on Twitter");
+    await fake.toolCall("fill_fields", { how_did_you_hear_about_us: { value: "Social Media", evidence: "on Twitter", how: "inferred" } });
+    fake.agentSays("Since Twitter isn't an option, I've put down Social Media. Is that right?");
+    await new Promise((r) => setTimeout(r, 50));
+    return {
+      waiting: conductor.session.state().fields.find((f) => f.spec.id === "how_did_you_hear_about_us")?.pending?.suggestion,
+      asked: fake.asked,
+      missed: conductor.view().missed.length,
+    };
+  });
+  expect(out.waiting).toBe("Social Media");
+  expect(out.asked).toEqual([]);
+  expect(out.missed).toBe(0);
+});

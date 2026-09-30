@@ -447,7 +447,7 @@ export class Conductor {
         // The line dropped past saving: a new agent, told the form as it is and where to pick up.
         freshStart: () => {
           this.sentPrompt = this.session.prompt();
-          return { systemPrompt: this.sentPrompt, greeting: this.session.resumeGreeting(), tools: this.session.tools() };
+          return { systemPrompt: this.sentPrompt, greeting: this.session.resumeGreeting(carrying), tools: this.session.tools() };
         },
         // A draft is written, checked, maybe written once more: longer than any other tool.
         toolDeadlineMs: (name) => (name === DRAFT_TOOL_NAME ? DRAFT_DEADLINE_MS : undefined),
@@ -803,7 +803,7 @@ export class Conductor {
     this.unanswered = [];
     this.note("app", "a reply ended with nothing said or done — asked the agent to answer them");
     this.voice.createReply(
-      `They spoke and you have not answered yet. They said: "${said}". Call fill_fields now for up to five answers in that which are not on the form yet, each quoting a few of their exact words, and call again for the rest; then reply in one short sentence and do what DO NEXT says.`,
+      `They spoke and you have not answered yet. They said: "${said}". Call fill_fields now for up to eight answers in that which are not on the form yet, each quoting a few of their exact words, and call again for the rest; then reply in one short sentence and do what DO NEXT says.`,
     );
   }
 
@@ -836,7 +836,14 @@ export class Conductor {
         const claims = validateClaims(raw, ask.said, [...byId.keys()]);
         const found = mismatches(
           claims,
-          (field) => byId.get(field)?.value !== null && byId.get(field)?.value !== undefined && !ask.notIn.includes(field),
+          // A field waiting for their yes is being asked about, which is right whatever the words:
+          // live, "I've put down Social Media, is that right?" was corrected with a second reply,
+          // "sorry, I haven't put that in", on the one field that was correctly held.
+          (field) => {
+            const f = byId.get(field);
+            if (f?.pending) return true;
+            return f?.value !== null && f?.value !== undefined && !ask.notIn.includes(field);
+          },
           (field) => { const f = byId.get(field); return f ? fieldName(f.spec) : field; },
         );
         if (found.length > 0) this.correct(found);

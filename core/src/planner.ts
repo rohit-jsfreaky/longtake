@@ -265,7 +265,20 @@ function keepFirst(keep: KeepFacts | undefined): string {
 }
 
 /** The instruction for the next move. What to do, never the words to say. */
+/**
+ * Before asking for anything: fill what they already said. Live (rehearsal, 30 Sep): a long take
+ * named eight answers, the first call carried six, and the agent then asked for one of the two it had
+ * dropped ("I missed how you heard about Glean") and never put in the other.
+ */
+const ALREADY_SAID =
+  "If they already said any of these, put it in now with fill_fields from their words (a choice the form lacks: the closest option, how inferred) instead of asking. ";
+
 export function doNext(move: Move): string {
+  const text = nextFor(move);
+  return move.kind === "ask" || move.kind === "offer_optional" || move.kind === "optional" ? ALREADY_SAID + text : text;
+}
+
+function nextFor(move: Move): string {
   switch (move.kind) {
     case "confirm":
       // Read word for word: they are agreeing to the words that will go in, so they must hear them.
@@ -415,9 +428,14 @@ export function brief(state: FormState, move: Move): string {
  * agent has no memory of the call, but the form does, and the person should not have to repeat
  * what is already in it.
  */
-export function resumeLine(state: FormState, move: Move): string {
+export function resumeLine(state: FormState, move: Move, pageTurn = false): string {
   const { filled, total } = state.progress;
-  const where = `Sorry, lost the line for a second. ${filled} of ${total} are in`;
+  // A new page starts a new session (the server ends one when the page goes — rehearsal, 30 Sep:
+  // session_not_found every time), so this is where a page turn is announced. "Lost the line" there
+  // sounded like a fault.
+  const where = pageTurn
+    ? `Right, the next page: ${total} question${total === 1 ? "" : "s"}${filled ? `, ${filled} already in` : ""}`
+    : `Sorry, lost the line for a second. ${filled} of ${total} are in`;
   switch (move.kind) {
     case "confirm":
       return move.reason === "hedged"

@@ -30,8 +30,9 @@ import {
   validateTool,
   type VoiceAgentTool,
 } from "./binder";
+import { optionNamedIn } from "./choices";
 import { conceptById } from "./concepts";
-import { openingLine, phoneFields, summarise, type FormReshape } from "./conversation";
+import { INCOMPLETE, openingLine, phoneFields, summarise, type FormReshape } from "./conversation";
 import { exclusively, whenSettled } from "./dom-path";
 import { checkEvidence, keepOnlyWhatWasSaid } from "./evidence";
 import { snapshot, type FormState } from "./form-state";
@@ -54,7 +55,7 @@ import {
   type ProfileChange,
   type Provenance,
 } from "./profile";
-import { dialCodeOf, optionForDialCode, PHONE_NUMBER, PHONE_WHOLE, withoutDialCode } from "./phones";
+import { dialCodeOf, optionForDialCode, PHONE_DIGITS, PHONE_NUMBER, PHONE_WHOLE, withoutDialCode } from "./phones";
 import { memoryProfileStore, type ProfileStore } from "./profile-store";
 import { harvestOptions, readForm, titleOf, waitForForm } from "./reader";
 import { FieldRegistry } from "./reconcile";
@@ -250,8 +251,30 @@ export class LongtakeSession {
     const spec = read.specs.find((s) => s.id === id);
     const pending = this.ledger.pendingFor(id);
 
+    // Live (rehearsal): the agent's call left the choice out, yet it said "I've put Social Media,
+    // okay?" and heard "Yes, Social Media is fine". Nothing was waiting, so the yes was lost and a
+    // third turn followed. Their own words name the option: that is the answer, as said.
+    if (spec && !pending && agreed && checkEvidence(heard, evidence).ok && (spec.kind === "select" || spec.kind === "radio")) {
+      const named = optionNamedIn(spec, evidence);
+      if (named && this.state().fields.find((f) => f.spec.id === id)?.value === null) {
+        return this.fill({ [id]: { value: named.label, evidence, how: "named" } }, heard);
+      }
+    }
     if (!spec || !pending) {
-      return { result: { error: `Nothing is waiting for a yes on "${id}".`, do_next: doNext(this.move()), submitted: false }, outcomes: [], spoken: [] };
+      // Live: the agent asked "was it Twitter?" about a field it had never sent, heard "yes, social
+      // media is fine", confirmed a field nothing was waiting on — and the yes was lost; it then
+      // said "I've put social media" with nothing in. Nothing went in, and it is told how to put it in.
+      const empty = spec && this.state().fields.find((f) => f.spec.id === id)?.value === null;
+      return {
+        result: {
+          error: `Nothing was waiting for a yes on "${id}", so nothing went in.`,
+          ...(empty ? { do_now: `If they gave or agreed to an answer for "${fieldName(spec)}", call fill_fields for ${id} now with that answer, quoting the words in which they gave or agreed to it. Do not say it is in until that call says so.` } : {}),
+          do_next: doNext(this.move()),
+          submitted: false,
+        },
+        outcomes: [],
+        spoken: [],
+      };
     }
     if (!checkEvidence(heard, evidence).ok) {
       return { result: { confirmed: false, why: "quote_not_found", submitted: false }, outcomes: [], spoken: [] };
@@ -461,8 +484,8 @@ export class LongtakeSession {
   }
 
   /** The first words of a new session after the line dropped — where things stand, then the next ask. */
-  resumeGreeting(): string {
-    return resumeLine(this.state(), this.move());
+  resumeGreeting(pageTurn = false): string {
+    return resumeLine(this.state(), this.move(), pageTurn);
   }
 
   /** Everything known about the person, newest first — for a surface to show and let them change. */
@@ -840,8 +863,15 @@ export class LongtakeSession {
     const phones = this.splitPhones(spoken, read.specs);
     const toWrite: SpokenValue[] = [...phones.extra];
     const held: { field: string; question: string; suggestion: string; they_said: string }[] = [];
+    const partPhones: WriteOutcome[] = [];
     for (const claim of spoken) {
       const spec = byId.get(claim.fieldId);
+      // Live: speech-to-text kept "+91" and lost the digits after it, and "+91" went in as the phone
+      // and counted as filled. A phone is written only with its number.
+      if (spec?.kind === "tel" && !Array.isArray(claim.value) && withoutDialCode(String(claim.value)).replace(/\D/g, "").length < PHONE_DIGITS) {
+        partPhones.push({ fieldId: claim.fieldId, status: "refused", reason: INCOMPLETE });
+        continue;
+      }
       const verdict = spec ? gate(spec, claim, this.ledger.pendingFor(claim.fieldId)) : { write: true as const };
       if (verdict.write) {
         toWrite.push(claim);
@@ -876,7 +906,7 @@ export class LongtakeSession {
     const picked = results.some((r) => r.status === "written" && CHOICE_KINDS.has(byId.get(r.fieldId)?.kind ?? ""));
     const reshaped = picked || this.movedWhileWriting ? await this.pageChanged() : null;
 
-    const outcomes = [...results, ...invented];
+    const outcomes = [...results, ...invented, ...partPhones];
     const result = this.report(outcomes, claimed, reshaped, { waiting_for_yes: held });
     this.options.onChange?.();
     return { result, outcomes, spoken: toWrite };

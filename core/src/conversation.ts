@@ -428,7 +428,12 @@ export type NotFilledReason =
   /** Cannot be done by voice — a file upload. Theirs to do. */
   | "needs_the_person"
   /** The field is no longer on the page. */
-  | "gone";
+  | "gone"
+  /** Only part of it was heard: a phone's country code without the number. Ask for the rest. */
+  | "incomplete";
+
+/** The refusal reason a writer-side check gives for an answer heard only in part. */
+export const INCOMPLETE = "incomplete";
 
 /** Long answers are acknowledged, not read back. */
 const MOST_VALUE_TO_ECHO = 60;
@@ -445,6 +450,7 @@ export type Summary = {
     /** What the agent tried to put in — so it can see its own mistake instead of blaming the form. */
     tried?: string;
     choices?: string[];
+    say?: string;
   }[];
   progress: { filled: number; total: number; required_left: number; optional_left: number };
   next_required: FieldFacts[];
@@ -518,6 +524,8 @@ export function summarise({
       let why: NotFilledReason;
       if (o.status === "rejected-by-page") {
         why = o.retried ? "page_refused_twice" : "page_refused";
+      } else if (o.status === "refused" && o.reason === INCOMPLETE) {
+        why = "incomplete";
       } else if (o.status === "refused" && o.choices?.length) {
         why = "not_an_option";
       } else if (!present.has(o.fieldId)) {
@@ -538,6 +546,7 @@ export function summarise({
         why,
         ...(why === "not_an_option" && tried !== undefined ? { tried: String(tried) } : {}),
         ...(o.status === "refused" && why === "not_an_option" ? { choices: o.choices } : {}),
+        ...(why === "incomplete" ? { say: "Only part of it was heard (a phone's country code, not the number). Ask for the rest." } : {}),
       };
     });
 

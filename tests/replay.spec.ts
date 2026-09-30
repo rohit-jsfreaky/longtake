@@ -253,3 +253,46 @@ test.describe("a reply with nothing in it", () => {
     expect(asked).toEqual([]);
   });
 });
+
+/** Live, 30 Sep: speech-to-text lost the digits after "+91", and "+91" went in as the phone. */
+test("a phone heard without its number is not written; the whole number is", async ({ page }) => {
+  await load(page, `<label for="p">Phone</label><input id="p" type="tel">`);
+  const out = await page.evaluate(async () => {
+    const L = window.__longtake;
+    const fake = new L.FakeVoice();
+    const conductor = new L.Conductor({ root: () => document, ignore: "[data-longtake-ignore]", services: { getToken: async () => "t", workletUrl: "", startVoice: fake.start } });
+    await conductor.start();
+    await new Promise((r) => setTimeout(r, 20));
+    fake.userSays("mera phone number hai +91");
+    const part = (await fake.toolCall("fill_fields", { phone: { value: "+91", evidence: "phone number hai +91", how: "named" } })) as { not_filled: { why: string; say?: string }[] };
+    const afterPart = (document.getElementById("p") as HTMLInputElement).value;
+    fake.userSays("+91 98765 43210");
+    await fake.toolCall("fill_fields", { phone: { value: "+91 98765 43210", evidence: "+91 98765 43210", how: "named" } });
+    return { why: part.not_filled[0]?.why, say: part.not_filled[0]?.say ?? "", afterPart, afterWhole: (document.getElementById("p") as HTMLInputElement).value };
+  });
+  expect(out.why).toBe("incomplete");
+  expect(out.say).toContain("Ask for the rest");
+  expect(out.afterPart).toBe("");
+  expect(out.afterWhole).toContain("98765");
+});
+
+/**
+ * Rehearsal, 30 Sep: the agent's call left "How did you hear" out, it said "I've put Social Media,
+ * okay?", and heard "Yes, Social Media is fine" — a yes with nothing waiting, which was lost. Their
+ * yes names the option: it goes in.
+ */
+test("a yes that names the option goes in, even when the call had left the field out", async ({ page }) => {
+  await load(page, FORM);
+  const out = await page.evaluate(async () => {
+    const L = window.__longtake;
+    const fake = new L.FakeVoice();
+    const conductor = new L.Conductor({ root: () => document, ignore: "[data-longtake-ignore]", services: { getToken: async () => "t", workletUrl: "", startVoice: fake.start } });
+    await conductor.start();
+    await new Promise((r) => setTimeout(r, 20));
+    fake.userSays("Yes, Social Media is fine.");
+    const r = (await fake.toolCall("confirm_answer", { field: "how_did_you_hear_about_us", agreed: true, evidence: "Yes, Social Media is fine" })) as { just_filled?: { field: string }[] };
+    return { filled: r.just_filled?.map((f) => f.field) ?? [], value: (document.getElementById("h") as HTMLSelectElement).value };
+  });
+  expect(out.filled).toEqual(["how_did_you_hear_about_us"]);
+  expect(out.value).toBe("Social Media");
+});

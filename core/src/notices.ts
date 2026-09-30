@@ -17,6 +17,7 @@ export const WHY: Record<Exclude<NotFilledReason, "gone">, string> = {
   needs_the_person: "only you can do this one",
   // The agent sent it without any of the person's words — not a hearing problem.
   not_heard: "Longtake had none of your words for it",
+  incomplete: "only part of it was heard, say the whole number",
 };
 
 export type Missed = { fieldId: string; question: string; why: string };

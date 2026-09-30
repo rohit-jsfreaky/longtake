@@ -328,7 +328,8 @@ test.describe("5 · several questions at once, not one per turn", () => {
     expect(r.first).toContain("Ask for these together");
     expect(r.first.split(";").length).toBe(4);
     expect(r.first).not.toContain("Why do you want");
-    expect(r.second).toMatch(/^Ask for Why do you want to work here\? — a longer answer/);
+    // Asked on its own (after the standing "fill what they already said" line).
+    expect(r.second).toMatch(/instead of asking\. Ask for Why do you want to work here\? — a longer answer/);
   });
 });
 

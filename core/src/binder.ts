@@ -76,7 +76,7 @@ const TIMEOUT_SECONDS = 60;
  * outcome — which is the opposite of what a helpful assistant assumes by default.
  */
 const TOOL_DESCRIPTION = [
-  "Write answers into the form. Call it as soon as you hear answers, at most five per call; call again for the rest.",
+  "Write answers into the form. Call it as soon as you hear answers, at most eight per call; call again for the rest.",
   "Include only fields the person spoke about: leaving one out is always fine; filling one they did not mention never is, even if it seems obvious or is required.",
   "Each answer carries evidence — their own words, quoted — and how you heard it:",
   "named (they said this answer, in any words or language), inferred (you worked it out, or chose the closest option to what they said), unsure (they hedged or gave a range).",

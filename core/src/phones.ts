@@ -15,6 +15,9 @@ import type { FieldSpec } from "./types";
 /** Options that are dialling codes: "India (+91)", "+1 United States". */
 export const DIAL_CODE = /\+\d{1,4}\b/;
 
+/** Fewer digits than this after the dialling code is not a phone number yet: "+91" alone, say. */
+export const PHONE_DIGITS = 7;
+
 /** The concepts that are pieces of one phone number. */
 export const PHONE_WHOLE = "contact.phone";
 export const PHONE_NUMBER = "contact.phone.number";
